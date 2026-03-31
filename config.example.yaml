@@ -1,0 +1,11 @@
+# Android Remote Control 配置示例
+
+channels:
+  android:
+    enabled: true
+    host: "0.0.0.0"
+    port: 8765
+    allow_from: ["*"]  # 允许所有设备，或指定设备ID如 ["android_SM-G991B"]
+    asr_url: "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel"
+    asr_app_id: "你的火山云应用ID"
+    asr_access_key: "你的火山云access_key"
