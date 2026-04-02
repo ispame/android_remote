@@ -5,7 +5,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 
@@ -14,20 +13,6 @@ fun MainScreen(wsManager: WebSocketManager, audioRecorder: AudioRecorder) {
     var textInput by remember { mutableStateOf("") }
     val messages by wsManager.messages.collectAsState()
     val isRecording by audioRecorder.isRecording.collectAsState()
-    val isStreaming by audioRecorder.isStreaming.collectAsState()
-
-    // ASR 实时识别文字
-    var asrPartialText by remember { mutableStateOf("") }
-
-    // 监听 ASR 回调
-    LaunchedEffect(Unit) {
-        wsManager.onAsrPartial = { partial ->
-            asrPartialText = partial
-        }
-        wsManager.onAsrDone = {
-            asrPartialText = ""
-        }
-    }
 
     LaunchedEffect(Unit) {
         wsManager.connect()
@@ -38,33 +23,6 @@ fun MainScreen(wsManager: WebSocketManager, audioRecorder: AudioRecorder) {
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        // ─── ASR 实时识别区域 ───────────────────────────────────────
-        if (asrPartialText.isNotEmpty()) {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.tertiaryContainer
-                )
-            ) {
-                Row(
-                    modifier = Modifier.padding(12.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(16.dp),
-                        strokeWidth = 2.dp
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        "识别中: $asrPartialText",
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-                }
-            }
-            Spacer(modifier = Modifier.height(8.dp))
-        }
-
-        // ─── 消息列表 ────────────────────────────────────────────────
         LazyColumn(
             modifier = Modifier.weight(1f).fillMaxWidth(),
             verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -76,7 +34,6 @@ fun MainScreen(wsManager: WebSocketManager, audioRecorder: AudioRecorder) {
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        // ─── 文字输入 ────────────────────────────────────────────────
         Row(modifier = Modifier.fillMaxWidth()) {
             TextField(
                 value = textInput,
@@ -97,33 +54,19 @@ fun MainScreen(wsManager: WebSocketManager, audioRecorder: AudioRecorder) {
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        // ─── 录音按钮（流式模式）────────────────────────────────────
         Button(
             onClick = {
-                if (isStreaming) {
-                    // 停止流式录音
-                    audioRecorder.stopStreaming()
-                    wsManager.endAudioStream()
+                if (isRecording) {
+                    audioRecorder.stopRecording { audioData ->
+                        wsManager.sendAudio(audioData)
+                    }
                 } else {
-                    // 开始流式录音
-                    wsManager.startAudioStream()
-                    audioRecorder.startStreaming(object : AudioChunkCallback {
-                        override fun onChunk(chunk: ByteArray, isLast: Boolean) {
-                            wsManager.sendAudioChunk(chunk, isLast)
-                        }
-                    })
+                    audioRecorder.startRecording()
                 }
             },
-            modifier = Modifier.fillMaxWidth(),
-            colors = if (isStreaming) {
-                ButtonDefaults.buttonColors(
-                    containerColor = MaterialTheme.colorScheme.error
-                )
-            } else {
-                ButtonDefaults.buttonColors()
-            }
+            modifier = Modifier.fillMaxWidth()
         ) {
-            Text(if (isStreaming) "松开停止" else "按住说话")
+            Text(if (isRecording) "停止录音" else "按住说话")
         }
     }
 }

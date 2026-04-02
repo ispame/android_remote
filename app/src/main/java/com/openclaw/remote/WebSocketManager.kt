@@ -15,14 +15,6 @@ class WebSocketManager(private val host: String, private val port: Int) {
     private val _messages = MutableStateFlow<List<ChatMessage>>(emptyList())
     val messages: StateFlow<List<ChatMessage>> = _messages
 
-    // 流式音频状态
-    private var isStreamingAudio = false
-    private var chunkSeq = 0
-
-    // ASR 实时回调
-    var onAsrPartial: ((String) -> Unit)? = null
-    var onAsrDone: (() -> Unit)? = null
-
     fun connect() {
         val request = Request.Builder()
             .url("ws://$host:$port/ws")
@@ -60,52 +52,6 @@ class WebSocketManager(private val host: String, private val port: Int) {
         addMessage("发送语音...")
     }
 
-    // ─── 流式音频 API ────────────────────────────────────────────
-
-    /**
-     * 开始流式音频: 发送 audio_start 消息
-     */
-    fun startAudioStream() {
-        isStreamingAudio = true
-        chunkSeq = 0
-        val json = JSONObject().apply {
-            put("type", "audio_start")
-            put("sender_id", "android_${android.os.Build.MODEL}")
-        }
-        webSocket?.send(json.toString())
-    }
-
-    /**
-     * 发送一个音频chunk
-     */
-    fun sendAudioChunk(chunk: ByteArray, isLast: Boolean = false) {
-        if (!isStreamingAudio) return
-        chunkSeq++
-        val base64Audio = Base64.encodeToString(chunk, Base64.NO_WRAP)
-        val json = JSONObject().apply {
-            put("type", "audio_chunk")
-            put("seq", chunkSeq)
-            put("data", base64Audio)
-            put("is_last", isLast)
-            put("sender_id", "android_${android.os.Build.MODEL}")
-        }
-        webSocket?.send(json.toString())
-    }
-
-    /**
-     * 结束流式音频: 发送 audio_end 消息
-     */
-    fun endAudioStream() {
-        isStreamingAudio = false
-        val json = JSONObject().apply {
-            put("type", "audio_end")
-            put("sender_id", "android_${android.os.Build.MODEL}")
-        }
-        webSocket?.send(json.toString())
-    }
-
-    // ─── 消息处理 ────────────────────────────────────────────────
-
     private fun handleMessage(text: String) {
         val json = JSONObject(text)
         val type = json.optString("type")
@@ -120,15 +66,6 @@ class WebSocketManager(private val host: String, private val port: Int) {
                 if (status == "error") {
                     addMessage("错误: ${json.optString("message")}")
                 }
-            }
-            // ASR 实时部分识别结果
-            "asr_partial" -> {
-                val content = json.optString("content", "")
-                onAsrPartial?.invoke(content)
-            }
-            // ASR 识别完成
-            "asr_done" -> {
-                onAsrDone?.invoke()
             }
         }
     }
