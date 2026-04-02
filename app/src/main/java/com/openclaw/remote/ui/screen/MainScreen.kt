@@ -61,6 +61,11 @@ fun MainScreen(
         val connectionState by wsManager.connectionState.collectAsState()
         val listState = rememberLazyListState()
 
+        // 连接 WebSocket
+        LaunchedEffect(Unit) {
+            wsManager.connect()
+        }
+
         // 新消息到来时自动滚动到底部
         LaunchedEffect(messages.size) {
             if (messages.isNotEmpty()) {
