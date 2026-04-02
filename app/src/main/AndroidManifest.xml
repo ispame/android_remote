@@ -6,7 +6,7 @@
 
     <application
         android:label="OpenClaw Remote"
-        android:theme="@android:style/Theme.Material.Light"
+        android:theme="@android:style/Theme.Material.Light.NoActionBar"
         android:networkSecurityConfig="@xml/network_security_config">
         <activity
             android:name=".MainActivity"

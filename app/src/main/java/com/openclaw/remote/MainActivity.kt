@@ -6,14 +6,9 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import com.openclaw.remote.ui.screen.MainScreen
+import com.openclaw.remote.ui.theme.MochiTheme
 
 class MainActivity : ComponentActivity() {
     private lateinit var wsManager: WebSocketManager
@@ -23,7 +18,7 @@ class MainActivity : ComponentActivity() {
         ActivityResultContracts.RequestPermission()
     ) { isGranted ->
         if (!isGranted) {
-            // Handle permission denied
+            // 权限被拒绝，录音功能不可用
         }
     }
 
@@ -36,9 +31,8 @@ class MainActivity : ComponentActivity() {
         checkPermissions()
 
         setContent {
-            MaterialTheme {
-                MainScreen(wsManager, audioRecorder)
-            }
+            // MainScreen 自己管理主题状态并应用 MochiTheme
+            MainScreen(wsManager, audioRecorder)
         }
     }
 
