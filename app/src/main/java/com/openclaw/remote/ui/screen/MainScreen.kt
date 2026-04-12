@@ -382,7 +382,13 @@ private fun TextInputRow(
 
         SendButton(
             text = textFieldValue.text,
-            onSend = onSend,
+            onClick = {
+                val trimmed = textFieldValue.text.trim()
+                if (trimmed.isNotEmpty()) {
+                    onSend(trimmed)
+                    textFieldValue = TextFieldValue()
+                }
+            },
             colors = colors,
         )
     }
@@ -394,7 +400,7 @@ private fun TextInputRow(
 @Composable
 private fun SendButton(
     text: String,
-    onSend: (String) -> Unit,
+    onClick: () -> Unit,
     colors: MochiColors,
 ) {
     Box(
@@ -402,12 +408,7 @@ private fun SendButton(
             .size(44.dp)
             .clip(CircleShape)
             .background(if (text.isNotBlank()) colors.primary else colors.inputBorder)
-            .clickable(enabled = text.isNotBlank()) {
-                val trimmed = text.trim()
-                if (trimmed.isNotEmpty()) {
-                    onSend(trimmed)
-                }
-            },
+            .clickable(enabled = text.isNotBlank(), onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
         Icon(

@@ -2,16 +2,13 @@ package com.openclaw.remote.ui.screen
 
 import android.net.Uri
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.LinkOff
 import androidx.compose.material.icons.filled.QrCodeScanner
@@ -20,8 +17,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.platform.LocalClipboardManager
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -44,11 +39,12 @@ fun SettingsScreen(
 
     var gatewayUrl by remember(config) { mutableStateOf(config.gatewayUrl) }
     var deviceLabel by remember(config) { mutableStateOf(config.deviceLabel) }
+    var manualBackendId by remember(config) { mutableStateOf(config.pairedBackendId ?: "") }
+    var manualToken by remember(config) { mutableStateOf(config.token) }
     var showQRScanner by remember { mutableStateOf(false) }
     var pendingPairBackendId by remember { mutableStateOf<String?>(null) }
     var showSavedSnackbar by remember { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
-    val clipboardManager = LocalClipboardManager.current
 
     LaunchedEffect(showSavedSnackbar) {
         if (showSavedSnackbar) {
@@ -66,6 +62,7 @@ fun SettingsScreen(
                     when (result) {
                         is QRParseResult.Success -> {
                             gatewayUrl = result.gatewayUrl
+                            manualToken = result.token
                             pendingPairBackendId = result.backendId
                             scope.launch {
                                 snackbarHostState.showSnackbar("已解析二维码，正在连接并配对...")
@@ -75,6 +72,7 @@ fun SettingsScreen(
                                         gatewayUrl = result.gatewayUrl,
                                         deviceId = config.deviceId,
                                         deviceLabel = deviceLabel.ifEmpty { "我的手机" },
+                                        token = result.token,
                                         pairedBackendId = null,
                                         pairedBackendLabel = null
                                     )
@@ -115,6 +113,7 @@ fun SettingsScreen(
                                         gatewayUrl = gatewayUrl,
                                         deviceId = config.deviceId,
                                         deviceLabel = deviceLabel.ifEmpty { "我的手机" },
+                                        token = manualToken,
                                         pairedBackendId = config.pairedBackendId,
                                         pairedBackendLabel = config.pairedBackendLabel
                                     )
@@ -171,6 +170,77 @@ fun SettingsScreen(
 
             HorizontalDivider()
 
+            // ===== 手动配对 =====
+            SectionTitle("手动配对")
+            Text(
+                text = "输入 Gateway 地址和 Backend ID 进行配对",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(bottom = 4.dp)
+            )
+
+            OutlinedTextField(
+                value = manualBackendId,
+                onValueChange = { manualBackendId = it },
+                label = { Text("Backend ID") },
+                placeholder = { Text("agent backend ID") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
+            )
+
+            OutlinedTextField(
+                value = manualToken,
+                onValueChange = { manualToken = it },
+                label = { Text("Token") },
+                placeholder = { Text("配对 Token") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
+            )
+
+            Button(
+                onClick = {
+                    if (gatewayUrl.isBlank()) {
+                        scope.launch {
+                            snackbarHostState.showSnackbar("请先填写 Gateway 地址")
+                        }
+                        return@Button
+                    }
+                    if (manualBackendId.isBlank()) {
+                        scope.launch {
+                            snackbarHostState.showSnackbar("请填写 Backend ID")
+                        }
+                        return@Button
+                    }
+                    scope.launch {
+                        settingsManager.updateConfig(
+                            GatewayConfig(
+                                gatewayUrl = gatewayUrl,
+                                deviceId = config.deviceId,
+                                deviceLabel = deviceLabel.ifEmpty { "我的手机" },
+                                token = manualToken,
+                                pairedBackendId = null,
+                                pairedBackendLabel = null
+                            )
+                        )
+                        snackbarHostState.showSnackbar("正在连接并配对...")
+                        kotlinx.coroutines.delay(500)
+                        onRequestPair(manualBackendId)
+                    }
+                },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = connectionState != ConnectionState.CONNECTING
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Link,
+                    contentDescription = null,
+                    modifier = Modifier.size(20.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("配对")
+            }
+
+            HorizontalDivider()
+
             // ===== 服务器配置 =====
             SectionTitle("Gateway 地址")
             OutlinedTextField(
@@ -203,6 +273,7 @@ fun SettingsScreen(
                                 gatewayUrl = gatewayUrl,
                                 deviceId = config.deviceId,
                                 deviceLabel = deviceLabel.ifEmpty { "我的手机" },
+                                token = manualToken,
                                 pairedBackendId = config.pairedBackendId,
                                 pairedBackendLabel = config.pairedBackendLabel
                             )

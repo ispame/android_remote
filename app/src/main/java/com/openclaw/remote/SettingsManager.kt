@@ -17,6 +17,7 @@ data class GatewayConfig(
     val gatewayUrl: String = "ws://192.168.1.14:8765",
     val deviceId: String = "",        // 设备唯一 ID（自动生成）
     val deviceLabel: String = "",       // 显示名称
+    val token: String = "",             // 配对 Token
     val pairedBackendId: String? = null,    // 已配对的 backend ID（null=未配对）
     val pairedBackendLabel: String? = null,  // 已配对的 backend 显示名
 )
@@ -27,6 +28,7 @@ class SettingsManager(private val context: Context) {
         private val GATEWAY_URL = stringPreferencesKey("gateway_url")
         private val DEVICE_ID = stringPreferencesKey("device_id")
         private val DEVICE_LABEL = stringPreferencesKey("device_label")
+        private val TOKEN = stringPreferencesKey("token")
         private val PAIRED_BACKEND_ID = stringPreferencesKey("paired_backend_id")
         private val PAIRED_BACKEND_LABEL = stringPreferencesKey("paired_backend_label")
     }
@@ -36,6 +38,7 @@ class SettingsManager(private val context: Context) {
             gatewayUrl = prefs[GATEWAY_URL] ?: "ws://192.168.1.14:8765",
             deviceId = prefs[DEVICE_ID] ?: "",
             deviceLabel = prefs[DEVICE_LABEL] ?: "",
+            token = prefs[TOKEN] ?: "",
             pairedBackendId = prefs[PAIRED_BACKEND_ID],
             pairedBackendLabel = prefs[PAIRED_BACKEND_LABEL],
         )
@@ -46,6 +49,7 @@ class SettingsManager(private val context: Context) {
             prefs[GATEWAY_URL] = config.gatewayUrl
             prefs[DEVICE_ID] = config.deviceId
             prefs[DEVICE_LABEL] = config.deviceLabel
+            prefs[TOKEN] = config.token
             if (config.pairedBackendId != null) {
                 prefs[PAIRED_BACKEND_ID] = config.pairedBackendId
             } else {

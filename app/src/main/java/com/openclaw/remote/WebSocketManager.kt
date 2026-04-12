@@ -39,6 +39,7 @@ class WebSocketManager(
     private val wsUrl: String,
     private val deviceId: String,
     private val deviceLabel: String,
+    private val token: String = "",
 ) {
     private var webSocket: WebSocket? = null
     private val client = OkHttpClient()
@@ -171,6 +172,9 @@ class WebSocketManager(
             put("client_type", "app")
             put("client_id", deviceId)
             put("label", deviceLabel)
+            if (token.isNotEmpty()) {
+                put("token", token)
+            }
         }
         send(frame)
     }

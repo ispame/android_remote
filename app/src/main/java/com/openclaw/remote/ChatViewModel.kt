@@ -77,6 +77,7 @@ class ChatViewModel(
             wsUrl = config.gatewayUrl,
             deviceId = deviceId,
             deviceLabel = config.deviceLabel.ifEmpty { "我的手机" },
+            token = config.token,
         )
 
         // 收集连接状态
