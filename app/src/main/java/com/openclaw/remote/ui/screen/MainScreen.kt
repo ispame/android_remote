@@ -10,7 +10,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -52,129 +51,126 @@ import kotlin.math.roundToInt
 
 @Composable
 fun MainScreen(
+    messages: List<ChatMessage>,
+    isRecording: Boolean,
+    connectionState: ConnectionState,
+    pairingState: PairingState,
+    pairedBackendLabel: String?,
+    isDark: Boolean,
+    isLoadingHistory: Boolean,
+    hasMoreHistory: Boolean,
     viewModel: ChatViewModel,
     audioRecorder: AudioRecorder,
+    onToggleTheme: () -> Unit,
     onNavigateToSettings: () -> Unit = {},
 ) {
-    val systemDark = isSystemInDarkTheme()
-    var isDark by rememberSaveable(systemDark) { mutableStateOf(systemDark) }
+    val colors = MochiTheme.colors
+    val listState = rememberLazyListState()
 
-    MochiTheme(darkTheme = isDark) {
-        val colors = MochiTheme.colors
+    LaunchedEffect(Unit) {
+        viewModel.connect()
+    }
 
-        val messages by viewModel.messages.collectAsState()
-        val isRecording by audioRecorder.isRecording.collectAsState()
-        val connectionState by viewModel.connectionState.collectAsState()
-        val pairingState by viewModel.pairingState.collectAsState()
-        val pairedBackendLabel by viewModel.pairedBackendLabel.collectAsState()
-        val isLoadingHistory by viewModel.isLoadingHistory.collectAsState()
-        val hasMoreHistory by viewModel.hasMoreHistory.collectAsState()
-        val listState = rememberLazyListState()
-
-        LaunchedEffect(Unit) {
-            viewModel.connect()
+    // 新消息到来时自动滚动到底部
+    LaunchedEffect(messages.size) {
+        if (messages.isNotEmpty()) {
+            listState.animateScrollToItem(messages.size - 1)
         }
+    }
 
-        // 新消息到来时自动滚动到底部
-        LaunchedEffect(messages.size) {
-            if (messages.isNotEmpty()) {
-                listState.animateScrollToItem(messages.size - 1)
-            }
-        }
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(colors.background)
+            .imePadding()
+    ) {
+        TopBar(
+            connectionState = connectionState,
+            pairingState = pairingState,
+            pairedBackendLabel = pairedBackendLabel,
+            isDark = isDark,
+            onToggleTheme = onToggleTheme,
+            onNavigateToSettings = onNavigateToSettings,
+            colors = colors,
+        )
 
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(colors.background)
-        ) {
-            TopBar(
-                connectionState = connectionState,
-                pairingState = pairingState,
-                pairedBackendLabel = pairedBackendLabel,
-                isDark = isDark,
-                onToggleTheme = { isDark = !isDark },
-                onNavigateToSettings = onNavigateToSettings,
-                colors = colors,
-            )
+        HorizontalDivider(color = colors.divider, thickness = 0.5.dp)
 
-            HorizontalDivider(color = colors.divider, thickness = 0.5.dp)
-
-            Box(modifier = Modifier.weight(1f)) {
-                LazyColumn(
-                    state = listState,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(horizontal = 16.dp),
-                    verticalArrangement = Arrangement.spacedBy(16.dp),
-                    contentPadding = PaddingValues(vertical = 16.dp),
-                    reverseLayout = false,
-                ) {
-                    // 加载更多历史
-                    if (hasMoreHistory) {
-                        item {
-                            Box(
-                                modifier = Modifier.fillMaxWidth(),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                if (isLoadingHistory) {
-                                    CircularProgressIndicator(
-                                        modifier = Modifier.size(20.dp),
-                                        strokeWidth = 2.dp,
-                                        color = colors.accent,
+        Box(modifier = Modifier.weight(1f)) {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+                contentPadding = PaddingValues(vertical = 16.dp),
+                reverseLayout = false,
+            ) {
+                // 加载更多历史
+                if (hasMoreHistory) {
+                    item {
+                        Box(
+                            modifier = Modifier.fillMaxWidth(),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (isLoadingHistory) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(20.dp),
+                                    strokeWidth = 2.dp,
+                                    color = colors.accent,
+                                )
+                            } else {
+                                TextButton(onClick = { viewModel.loadMoreHistory() }) {
+                                    Text(
+                                        text = "查看历史消息 ↑",
+                                        fontSize = 13.sp,
+                                        color = colors.textSecondary,
                                     )
-                                } else {
-                                    TextButton(onClick = { viewModel.loadMoreHistory() }) {
-                                        Text(
-                                            text = "查看历史消息 ↑",
-                                            fontSize = 13.sp,
-                                            color = colors.textSecondary,
-                                        )
-                                    }
                                 }
                             }
                         }
                     }
-
-                    items(messages) { msg ->
-                        val isUser = msg.senderId == "user"
-                        MessageBubble(
-                            message = ChatMessage(msg.content, msg.timestamp, msg.senderId),
-                            isUser = isUser,
-                        )
-                    }
                 }
 
-                // Not paired overlay
-                if (pairingState != PairingState.PAIRED) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(horizontal = 16.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text(
-                                text = "请先扫码配对 OpenClaw",
-                                fontSize = 16.sp,
-                                color = colors.textSecondary,
-                            )
-                            Spacer(modifier = Modifier.height(8.dp))
-                            TextButton(onClick = onNavigateToSettings) {
-                                Text("去设置", fontSize = 14.sp)
-                            }
+                items(messages) { msg ->
+                    val isUser = msg.senderId == "user"
+                    MessageBubble(
+                        message = ChatMessage(msg.content, msg.timestamp, msg.senderId),
+                        isUser = isUser,
+                    )
+                }
+            }
+
+            // Not paired overlay
+            if (pairingState != PairingState.PAIRED) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 16.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            text = "请先扫码配对 OpenClaw",
+                            fontSize = 16.sp,
+                            color = colors.textSecondary,
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        TextButton(onClick = onNavigateToSettings) {
+                            Text("去设置", fontSize = 14.sp)
                         }
                     }
                 }
             }
-
-            InputArea(
-                isRecording = isRecording,
-                colors = colors,
-                viewModel = viewModel,
-                audioRecorder = audioRecorder,
-                pairingState = pairingState,
-            )
         }
+
+        InputArea(
+            isRecording = isRecording,
+            colors = colors,
+            viewModel = viewModel,
+            audioRecorder = audioRecorder,
+            pairingState = pairingState,
+        )
     }
 }
 

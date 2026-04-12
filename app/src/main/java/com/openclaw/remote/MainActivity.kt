@@ -7,7 +7,9 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModelProvider
 import com.openclaw.remote.ui.screen.MainScreen
@@ -20,6 +22,7 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var viewModel: ChatViewModel
     private lateinit var settingsManager: SettingsManager
+    private lateinit var audioRecorder: AudioRecorder
     private val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main)
 
     private val requestPermission = registerForActivityResult(
@@ -31,6 +34,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         settingsManager = SettingsManager(this)
+        audioRecorder = AudioRecorder(this)
 
         // 从配置变更中恢复 ViewModel，或创建新的
         @Suppress("DEPRECATION")
@@ -46,11 +50,18 @@ class MainActivity : ComponentActivity() {
         handleIntent(intent)
 
         setContent {
-            MochiTheme {
-                var showSettings by remember { mutableStateOf(false) }
+            val systemDark = isSystemInDarkTheme()
+            var isDark by rememberSaveable(systemDark) { mutableStateOf(systemDark) }
+            var showSettings by remember { mutableStateOf(false) }
+
+            MochiTheme(darkTheme = isDark) {
                 val connectionState by viewModel.connectionState.collectAsState()
                 val pairingState by viewModel.pairingState.collectAsState()
                 val pairedBackendLabel by viewModel.pairedBackendLabel.collectAsState()
+                val isRecording by audioRecorder.isRecording.collectAsState()
+                val messages by viewModel.messages.collectAsState()
+                val isLoadingHistory by viewModel.isLoadingHistory.collectAsState()
+                val hasMoreHistory by viewModel.hasMoreHistory.collectAsState()
 
                 if (showSettings) {
                     SettingsScreen(
@@ -58,6 +69,8 @@ class MainActivity : ComponentActivity() {
                         connectionState = connectionState,
                         pairingState = pairingState,
                         pairedBackendLabel = pairedBackendLabel,
+                        isDark = isDark,
+                        onToggleTheme = { isDark = !isDark },
                         onRequestPair = { backendId ->
                             viewModel.requestPair(backendId)
                             showSettings = false
@@ -69,8 +82,17 @@ class MainActivity : ComponentActivity() {
                     )
                 } else {
                     MainScreen(
+                        messages = messages,
+                        isRecording = isRecording,
+                        connectionState = connectionState,
+                        pairingState = pairingState,
+                        pairedBackendLabel = pairedBackendLabel,
+                        isDark = isDark,
+                        isLoadingHistory = isLoadingHistory,
+                        hasMoreHistory = hasMoreHistory,
                         viewModel = viewModel,
-                        audioRecorder = AudioRecorder(this),
+                        audioRecorder = audioRecorder,
+                        onToggleTheme = { isDark = !isDark },
                         onNavigateToSettings = { showSettings = true }
                     )
                 }

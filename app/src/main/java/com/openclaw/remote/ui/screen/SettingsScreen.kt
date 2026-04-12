@@ -9,6 +9,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.DarkMode
+import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.LinkOff
 import androidx.compose.material.icons.filled.QrCodeScanner
@@ -30,6 +32,8 @@ fun SettingsScreen(
     connectionState: ConnectionState,
     pairingState: PairingState,
     pairedBackendLabel: String?,
+    isDark: Boolean,
+    onToggleTheme: () -> Unit,
     onRequestPair: (String) -> Unit,
     onUnpair: () -> Unit,
     onBack: () -> Unit
@@ -105,6 +109,12 @@ fun SettingsScreen(
                     }
                 },
                 actions = {
+                    IconButton(onClick = onToggleTheme) {
+                        Icon(
+                            imageVector = if (isDark) Icons.Filled.LightMode else Icons.Filled.DarkMode,
+                            contentDescription = if (isDark) "切换到浅色模式" else "切换到深色模式",
+                        )
+                    }
                     IconButton(
                         onClick = {
                             scope.launch {
@@ -218,7 +228,7 @@ fun SettingsScreen(
                                 deviceId = config.deviceId,
                                 deviceLabel = deviceLabel.ifEmpty { "我的手机" },
                                 token = manualToken,
-                                pairedBackendId = null,
+                                pairedBackendId = manualBackendId,
                                 pairedBackendLabel = null
                             )
                         )
@@ -274,7 +284,7 @@ fun SettingsScreen(
                                 deviceId = config.deviceId,
                                 deviceLabel = deviceLabel.ifEmpty { "我的手机" },
                                 token = manualToken,
-                                pairedBackendId = config.pairedBackendId,
+                                pairedBackendId = manualBackendId.ifEmpty { null },
                                 pairedBackendLabel = config.pairedBackendLabel
                             )
                         )
