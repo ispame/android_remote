@@ -14,5 +14,7 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "OpenClaw Remote"
-include(":app")
+rootProject.name = "OpenClawRemote"
+include(":shared")
+include(":androidApp")
+include(":iosApp")
