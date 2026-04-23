@@ -3,14 +3,7 @@ use_frameworks!
 inhibit_all_warnings!
 
 target 'OpenClawRemote' do
-  # Kotlin/Native frameworks would be linked here
-  # pod 'shared', :path => '../shared'
-
-  # Networking
-  pod 'KtorClientDarwin', '~> 2.3.7'
-
-  # Camera for QR scanning
-  pod 'AVFoundation'
+  # AVFoundation and other iOS system frameworks are linked automatically — no pods needed
 end
 
 post_install do |installer|

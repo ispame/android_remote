@@ -12,29 +12,23 @@ kotlin {
             }
         }
     }
-    iosX64()
-    iosArm64()
-    iosSimulatorArm64()
 
     sourceSets {
         val commonMain by getting {
             dependencies {
-                @OptIn(org.jetbrains.kotlin.gradle.ExperimentalKotlinGradlePluginApi::class)
-                dependencies {
-                    implementation(compose.runtime)
-                    implementation(compose.foundation)
-                    implementation(compose.material3)
-                    implementation(compose.material.icons.extended)
-                    implementation(compose.ui)
-                    implementation(compose.ui.graphics)
-                    implementation(compose.components.resources)
-                    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.3")
-                    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.2")
-                    implementation("io.ktor:ktor-client-core:2.3.7")
-                    implementation("io.ktor:ktor-client-websockets:2.3.7")
-                    implementation("io.ktor:ktor-client-content-negotiation:2.3.7")
-                    implementation("io.ktor:ktor-serialization-kotlinx-json:2.3.7")
-                }
+                implementation("org.jetbrains.compose.runtime:runtime:1.6.0")
+                implementation("org.jetbrains.compose.foundation:foundation:1.6.0")
+                implementation("org.jetbrains.compose.material3:material3:1.2.0")
+                implementation("org.jetbrains.compose.material:material-icons-extended:1.6.0")
+                implementation("org.jetbrains.compose.ui:ui:1.6.0")
+                implementation("org.jetbrains.compose.ui:ui-graphics:1.6.0")
+                implementation("org.jetbrains.compose.components:components-resources:1.6.0")
+                implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.3")
+                implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.2")
+                implementation("io.ktor:ktor-client-core:2.3.7")
+                implementation("io.ktor:ktor-client-websockets:2.3.7")
+                implementation("io.ktor:ktor-client-content-negotiation:2.3.7")
+                implementation("io.ktor:ktor-serialization-kotlinx-json:2.3.7")
             }
         }
         val androidMain by getting {
@@ -44,11 +38,6 @@ kotlin {
                 implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.6.2")
                 implementation("androidx.datastore:datastore-preferences:1.0.0")
                 implementation("io.ktor:ktor-client-okhttp:2.3.7")
-            }
-        }
-        val iosMain by getting {
-            dependencies {
-                implementation("io.ktor:ktor-client-darwin:2.3.7")
             }
         }
     }

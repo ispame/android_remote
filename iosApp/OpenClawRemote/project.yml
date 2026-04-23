@@ -1,0 +1,28 @@
+name: OpenClawRemote
+options:
+  bundleIdPrefix: boson-tech
+  deploymentTarget:
+    iOS: "15.0"
+  xcodeVersion: "15.0"
+  generateEmptyDirectories: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    TARGETED_DEVICE_FAMILY: "1"
+    INFOPLIST_FILE: Info.plist
+    CODE_SIGN_STYLE: Automatic
+    PRODUCT_BUNDLE_IDENTIFIER: boson-tech.OpenClawRemote
+    GENERATE_INFOPLIST_FILE: NO
+
+targets:
+  OpenClawRemote:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+      - path: LaunchScreen.storyboard
+    settings:
+      base:
+        PRODUCT_NAME: OpenClawRemote
+        DEVELOPMENT_TEAM: ""

@@ -17,4 +17,4 @@ dependencyResolutionManagement {
 rootProject.name = "OpenClawRemote"
 include(":shared")
 include(":androidApp")
-include(":iosApp")
+// include(":iosApp")

@@ -1,0 +1,348 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		1B5B33DFF38C672BE1947434 /* InputAreaView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2DD481DC8CD7C44EB62100B1 /* InputAreaView.swift */; };
+		3F714AF4F704E166FDC5DC8A /* QRScannerScreenView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A609FE540C0EE0FA6D377651 /* QRScannerScreenView.swift */; };
+		4E1E63A428CD678307FFACF9 /* SettingsScreenView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A602978B2C24D4294DF971F /* SettingsScreenView.swift */; };
+		5EC8C5FB31CB74CAA10BDF37 /* WebSocketManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF27902A11DB4EFB0E211233 /* WebSocketManager.swift */; };
+		757F44AF1E57EADB8B1A4FD7 /* SettingsManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 588828949ADF26913AD9F483 /* SettingsManager.swift */; };
+		895CCA6DF685313BBF44A9A8 /* MessageBubbleView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7373BB88261A2851504B020F /* MessageBubbleView.swift */; };
+		916447AB25FB0B3836E6DCBE /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 4CE1DF8496D56DC00F4FE1A9 /* LaunchScreen.storyboard */; };
+		953448EA4BD143E79D81431D /* AudioRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = D8723AA06B30B5639AC2D8FF /* AudioRecorder.swift */; };
+		97BCF21F9FEFBE50BB814EDC /* MainScreenView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0485DBA11E12B632C6AA47D7 /* MainScreenView.swift */; };
+		A8C9EB0C43E66C5D634C4D39 /* OpenClawRemoteApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A4955135A9774CBE701184A /* OpenClawRemoteApp.swift */; };
+		E28515B792A354E3C6609424 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7A4D618EC6F318502FD22F9 /* Models.swift */; };
+		E356817A883ABBDA11B4B2EB /* MochiColors.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C60717D2A2A02F7B79A6551 /* MochiColors.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		0485DBA11E12B632C6AA47D7 /* MainScreenView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainScreenView.swift; sourceTree = "<group>"; };
+		0C60717D2A2A02F7B79A6551 /* MochiColors.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MochiColors.swift; sourceTree = "<group>"; };
+		2DD481DC8CD7C44EB62100B1 /* InputAreaView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InputAreaView.swift; sourceTree = "<group>"; };
+		3A602978B2C24D4294DF971F /* SettingsScreenView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsScreenView.swift; sourceTree = "<group>"; };
+		4CE1DF8496D56DC00F4FE1A9 /* LaunchScreen.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = LaunchScreen.storyboard; sourceTree = "<group>"; };
+		54F44A7556003A94BF41818D /* OpenClawRemote.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OpenClawRemote.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		588828949ADF26913AD9F483 /* SettingsManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsManager.swift; sourceTree = "<group>"; };
+		7373BB88261A2851504B020F /* MessageBubbleView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageBubbleView.swift; sourceTree = "<group>"; };
+		7A4955135A9774CBE701184A /* OpenClawRemoteApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenClawRemoteApp.swift; sourceTree = "<group>"; };
+		A609FE540C0EE0FA6D377651 /* QRScannerScreenView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QRScannerScreenView.swift; sourceTree = "<group>"; };
+		BF27902A11DB4EFB0E211233 /* WebSocketManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebSocketManager.swift; sourceTree = "<group>"; };
+		D8723AA06B30B5639AC2D8FF /* AudioRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioRecorder.swift; sourceTree = "<group>"; };
+		F7A4D618EC6F318502FD22F9 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		0638353D6639E542F59D0912 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				54F44A7556003A94BF41818D /* OpenClawRemote.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		4F380096E56571C95D3C0373 = {
+			isa = PBXGroup;
+			children = (
+				4CE1DF8496D56DC00F4FE1A9 /* LaunchScreen.storyboard */,
+				893917C58E04C23AC21F869F /* Sources */,
+				0638353D6639E542F59D0912 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		893917C58E04C23AC21F869F /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				D8723AA06B30B5639AC2D8FF /* AudioRecorder.swift */,
+				2DD481DC8CD7C44EB62100B1 /* InputAreaView.swift */,
+				0485DBA11E12B632C6AA47D7 /* MainScreenView.swift */,
+				7373BB88261A2851504B020F /* MessageBubbleView.swift */,
+				0C60717D2A2A02F7B79A6551 /* MochiColors.swift */,
+				F7A4D618EC6F318502FD22F9 /* Models.swift */,
+				7A4955135A9774CBE701184A /* OpenClawRemoteApp.swift */,
+				A609FE540C0EE0FA6D377651 /* QRScannerScreenView.swift */,
+				588828949ADF26913AD9F483 /* SettingsManager.swift */,
+				3A602978B2C24D4294DF971F /* SettingsScreenView.swift */,
+				BF27902A11DB4EFB0E211233 /* WebSocketManager.swift */,
+			);
+			path = Sources;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		557C179B1EA27BC7CE96D658 /* OpenClawRemote */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 9DC830C1DB564014ED8B3085 /* Build configuration list for PBXNativeTarget "OpenClawRemote" */;
+			buildPhases = (
+				FB92072CDD8931FF1C69EB7E /* Sources */,
+				6AB989F2846EFCE8ED135BF6 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = OpenClawRemote;
+			packageProductDependencies = (
+			);
+			productName = OpenClawRemote;
+			productReference = 54F44A7556003A94BF41818D /* OpenClawRemote.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		6E7E587C537B552716668A42 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1500;
+				TargetAttributes = {
+					557C179B1EA27BC7CE96D658 = {
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = 06E39E6587E765B4CF58E56B /* Build configuration list for PBXProject "OpenClawRemote" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 4F380096E56571C95D3C0373;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 0638353D6639E542F59D0912 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				557C179B1EA27BC7CE96D658 /* OpenClawRemote */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		6AB989F2846EFCE8ED135BF6 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				916447AB25FB0B3836E6DCBE /* LaunchScreen.storyboard in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		FB92072CDD8931FF1C69EB7E /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				953448EA4BD143E79D81431D /* AudioRecorder.swift in Sources */,
+				1B5B33DFF38C672BE1947434 /* InputAreaView.swift in Sources */,
+				97BCF21F9FEFBE50BB814EDC /* MainScreenView.swift in Sources */,
+				895CCA6DF685313BBF44A9A8 /* MessageBubbleView.swift in Sources */,
+				E356817A883ABBDA11B4B2EB /* MochiColors.swift in Sources */,
+				E28515B792A354E3C6609424 /* Models.swift in Sources */,
+				A8C9EB0C43E66C5D634C4D39 /* OpenClawRemoteApp.swift in Sources */,
+				3F714AF4F704E166FDC5DC8A /* QRScannerScreenView.swift in Sources */,
+				757F44AF1E57EADB8B1A4FD7 /* SettingsManager.swift in Sources */,
+				4E1E63A428CD678307FFACF9 /* SettingsScreenView.swift in Sources */,
+				5EC8C5FB31CB74CAA10BDF37 /* WebSocketManager.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		5FBBAFCDA12DD46354CD9789 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				DEVELOPMENT_TEAM = A3V5JPZR2J;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_NAME = OpenClawRemote;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		9AAAB9B1518D8A95F900D765 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = "boson-tech.OpenClawRemote";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.9;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		C1EA184B62892E93F0E877AF /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = "boson-tech.OpenClawRemote";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.9;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+		DD0050F6AB6B03A87DCFB008 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				DEVELOPMENT_TEAM = A3V5JPZR2J;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_NAME = OpenClawRemote;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		06E39E6587E765B4CF58E56B /* Build configuration list for PBXProject "OpenClawRemote" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				9AAAB9B1518D8A95F900D765 /* Debug */,
+				C1EA184B62892E93F0E877AF /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		9DC830C1DB564014ED8B3085 /* Build configuration list for PBXNativeTarget "OpenClawRemote" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				DD0050F6AB6B03A87DCFB008 /* Debug */,
+				5FBBAFCDA12DD46354CD9789 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 6E7E587C537B552716668A42 /* Project object */;
+}
