@@ -19,7 +19,7 @@ struct InputAreaView: View {
     private var isCancelled: Bool { dragOffsetY < -80 && isDragging }
 
     var body: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 0) {
             Divider().background(colors.divider)
 
             if inputMode == .text {
@@ -62,6 +62,8 @@ struct InputAreaView: View {
     }
 }
 
+// MARK: - Text Input Row
+
 struct TextInputRowView: View {
     @Binding var textFieldValue: String
     let colors: MochiColors
@@ -70,6 +72,7 @@ struct TextInputRowView: View {
 
     var body: some View {
         HStack(spacing: 8) {
+            // Voice mode toggle button
             Button(action: onSwitchToVoice) {
                 Image(systemName: "mic.fill")
                     .font(.system(size: 22))
@@ -77,25 +80,32 @@ struct TextInputRowView: View {
             }
             .frame(width: 44, height: 44)
 
-            HStack {
+            // Input field — matches Android's RoundedCornerShape + border style
+            ZStack(alignment: .leading) {
                 if textFieldValue.isEmpty {
                     Text("输入消息...")
-                        .font(.system(size: 15))
+                        .font(.system(size: 15, weight: .regular))
                         .foregroundColor(colors.inputPlaceholder)
+                        .padding(.horizontal, 16)
                 }
                 TextField("", text: $textFieldValue)
-                    .font(.system(size: 15))
+                    .font(.system(size: 15, weight: .regular))
                     .foregroundColor(colors.inputText)
                     .lineLimit(3)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 0)
             }
-            .padding(.horizontal, 16)
             .frame(height: 56)
-            .background(colors.inputBg)
-            .overlay(
-                RoundedRectangle(cornerRadius: 22)
-                    .stroke(colors.inputBorder, lineWidth: 1)
+            .background(
+                ZStack {
+                    RoundedRectangle(cornerRadius: 22)
+                        .fill(colors.inputBg)
+                    RoundedRectangle(cornerRadius: 22)
+                        .strokeBorder(colors.inputBorder, lineWidth: 1)
+                }
             )
 
+            // Send button — matches Android's circular SendButton
             Button(action: {
                 let trimmed = textFieldValue.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !trimmed.isEmpty {
@@ -114,6 +124,8 @@ struct TextInputRowView: View {
         .padding(.vertical, 12)
     }
 }
+
+// MARK: - Voice Input Row
 
 struct VoiceInputRowView: View {
     let isRecording: Bool
@@ -177,7 +189,7 @@ struct VoiceMicButtonView: View {
     let onRelease: (Bool) -> Void
     let onDrag: (CGFloat) -> Void
 
-    var backgroundColor: Color {
+    private var backgroundColor: Color {
         if isCancelled { return theme.recordingRed.opacity(0.8) }
         if isRecording { return theme.recordingRed }
         return theme.secondary
@@ -234,12 +246,12 @@ struct CancelProgressView: View {
                 .frame(width: 120, height: 3)
 
                 Text(isCancelled ? "松开取消" : "上划取消")
-                    .font(.system(size: 12))
+                    .font(.system(size: 12, weight: .regular))
                     .foregroundColor(isCancelled ? theme.recordingRed : theme.textSecondary)
             }
         } else {
             Text("松手发送，上滑取消")
-                .font(.system(size: 12))
+                .font(.system(size: 12, weight: .regular))
                 .foregroundColor(theme.textSecondary)
         }
     }

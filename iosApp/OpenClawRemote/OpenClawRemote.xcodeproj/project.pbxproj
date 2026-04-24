@@ -17,6 +17,7 @@
 		953448EA4BD143E79D81431D /* AudioRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = D8723AA06B30B5639AC2D8FF /* AudioRecorder.swift */; };
 		97BCF21F9FEFBE50BB814EDC /* MainScreenView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0485DBA11E12B632C6AA47D7 /* MainScreenView.swift */; };
 		A8C9EB0C43E66C5D634C4D39 /* OpenClawRemoteApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A4955135A9774CBE701184A /* OpenClawRemoteApp.swift */; };
+		C1B553EB17B6EEFF9EC66F56 /* MochiTypography.swift in Sources */ = {isa = PBXBuildFile; fileRef = ACC1BA8D2A85A4A40055F08E /* MochiTypography.swift */; };
 		E28515B792A354E3C6609424 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7A4D618EC6F318502FD22F9 /* Models.swift */; };
 		E356817A883ABBDA11B4B2EB /* MochiColors.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C60717D2A2A02F7B79A6551 /* MochiColors.swift */; };
 /* End PBXBuildFile section */
@@ -32,6 +33,7 @@
 		7373BB88261A2851504B020F /* MessageBubbleView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageBubbleView.swift; sourceTree = "<group>"; };
 		7A4955135A9774CBE701184A /* OpenClawRemoteApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenClawRemoteApp.swift; sourceTree = "<group>"; };
 		A609FE540C0EE0FA6D377651 /* QRScannerScreenView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QRScannerScreenView.swift; sourceTree = "<group>"; };
+		ACC1BA8D2A85A4A40055F08E /* MochiTypography.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MochiTypography.swift; sourceTree = "<group>"; };
 		BF27902A11DB4EFB0E211233 /* WebSocketManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebSocketManager.swift; sourceTree = "<group>"; };
 		D8723AA06B30B5639AC2D8FF /* AudioRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioRecorder.swift; sourceTree = "<group>"; };
 		F7A4D618EC6F318502FD22F9 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
@@ -63,6 +65,7 @@
 				0485DBA11E12B632C6AA47D7 /* MainScreenView.swift */,
 				7373BB88261A2851504B020F /* MessageBubbleView.swift */,
 				0C60717D2A2A02F7B79A6551 /* MochiColors.swift */,
+				ACC1BA8D2A85A4A40055F08E /* MochiTypography.swift */,
 				F7A4D618EC6F318502FD22F9 /* Models.swift */,
 				7A4955135A9774CBE701184A /* OpenClawRemoteApp.swift */,
 				A609FE540C0EE0FA6D377651 /* QRScannerScreenView.swift */,
@@ -148,6 +151,7 @@
 				97BCF21F9FEFBE50BB814EDC /* MainScreenView.swift in Sources */,
 				895CCA6DF685313BBF44A9A8 /* MessageBubbleView.swift in Sources */,
 				E356817A883ABBDA11B4B2EB /* MochiColors.swift in Sources */,
+				C1B553EB17B6EEFF9EC66F56 /* MochiTypography.swift in Sources */,
 				E28515B792A354E3C6609424 /* Models.swift in Sources */,
 				A8C9EB0C43E66C5D634C4D39 /* OpenClawRemoteApp.swift in Sources */,
 				3F714AF4F704E166FDC5DC8A /* QRScannerScreenView.swift in Sources */,

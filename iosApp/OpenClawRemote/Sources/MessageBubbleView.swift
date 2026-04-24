@@ -24,11 +24,11 @@ struct MessageBubbleView: View {
                             bottomLeft: 16,
                             bottomRight: 16
                         )
+                        .fill(message.isUser ? colors.userBubble : colors.assistantBg)
                     )
-                    .background(message.isUser ? colors.userBubble : colors.assistantBg)
 
                 Text(message.timestamp)
-                    .font(.system(size: 11))
+                    .font(.system(size: 11, weight: .regular))
                     .foregroundColor(colors.textSecondary)
             }
 
@@ -54,7 +54,7 @@ struct BoldText: View {
                         .foregroundColor(textColor)
                 } else {
                     Text(segment.text)
-                        .font(.system(size: 15))
+                        .font(.system(size: 15, weight: .regular))
                         .foregroundColor(textColor)
                 }
             }

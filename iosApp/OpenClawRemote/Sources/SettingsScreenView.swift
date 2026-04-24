@@ -1,5 +1,7 @@
 import SwiftUI
 
+// MARK: - Connection Status Card
+
 struct ConnectionStatusCard: View {
     let connectionState: ConnectionState
     let pairingState: PairingState
@@ -7,14 +9,14 @@ struct ConnectionStatusCard: View {
     let colors: MochiColors
     let onUnpair: () -> Void
 
-    var statusColor: Color {
+    private var statusColor: Color {
         if pairingState == .paired { return colors.primary }
         if connectionState == .connected || connectionState == .registered { return colors.accent }
         if connectionState == .connecting { return colors.secondary }
-        return Color.red
+        return colors.recordingRed
     }
 
-    var statusText: String {
+    private var statusText: String {
         if pairingState == .paired {
             return "已配对" + (pairedBackendLabel.map { ": \($0)" } ?? "")
         }
@@ -33,19 +35,21 @@ struct ConnectionStatusCard: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 Text("连接状态")
-                    .font(.system(size: 12))
-                    .foregroundColor(Color.secondary)
+                    .font(.system(size: 12, weight: .regular))
+                    .foregroundColor(colors.textSecondary)
                 Text(statusText)
-                    .font(.system(size: 14))
+                    .font(.system(size: 14, weight: .medium))
                     .foregroundColor(statusColor)
             }
 
             Spacer()
 
             if pairingState == .paired {
-                Button("取消配对") { onUnpair() }
-                    .font(.system(size: 12))
-                    .foregroundColor(.red)
+                Button(action: onUnpair) {
+                    Text("取消配对")
+                        .font(.system(size: 12, weight: .regular))
+                        .foregroundColor(colors.recordingRed)
+                }
             }
         }
         .padding(16)
@@ -53,6 +57,82 @@ struct ConnectionStatusCard: View {
         .cornerRadius(12)
     }
 }
+
+// MARK: - Section Title
+
+struct SectionTitleView: View {
+    let text: String
+    let colors: MochiColors
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: 13, weight: .medium))
+            .foregroundColor(colors.primary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, 8)
+    }
+}
+
+// MARK: - Outlined TextField — matches Android's Material3 OutlinedTextField
+
+struct OutlinedTextField: View {
+    let label: String
+    let placeholder: String
+    @Binding var text: String
+    let colors: MochiColors
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label)
+                .font(.system(size: 12, weight: .regular))
+                .foregroundColor(colors.textSecondary)
+
+            TextField(placeholder, text: $text)
+                .font(.system(size: 15, weight: .regular))
+                .foregroundColor(colors.inputText)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+                .background(
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(colors.inputBg)
+                        RoundedRectangle(cornerRadius: 8)
+                            .strokeBorder(colors.inputBorder, lineWidth: 1)
+                    }
+                )
+        }
+    }
+}
+
+// MARK: - Help Card
+
+struct HelpCardView: View {
+    let colors: MochiColors
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("使用说明")
+                .font(.system(size: 14, weight: .medium))
+                .foregroundColor(colors.textPrimary)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("1. 在 OpenClaw 侧启动 Gateway Plugin")
+                Text("2. Plugin 会生成配对二维码")
+                Text("3. 点击「扫描二维码配对」")
+                Text("4. 扫描后自动连接并配对")
+                Text("5. 配对成功后即可开始对话")
+            }
+            .font(.system(size: 12, weight: .regular))
+            .foregroundColor(colors.textSecondary.opacity(0.7))
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(colors.surface.opacity(0.5))
+        .cornerRadius(12)
+    }
+}
+
+// MARK: - Settings Screen
 
 struct SettingsScreenView: View {
     @ObservedObject var wsManager: WebSocketManager
@@ -75,6 +155,7 @@ struct SettingsScreenView: View {
         NavigationView {
             ScrollView {
                 VStack(spacing: 16) {
+                    // Connection status
                     ConnectionStatusCard(
                         connectionState: wsManager.connectionState,
                         pairingState: wsManager.pairingState,
@@ -85,29 +166,45 @@ struct SettingsScreenView: View {
 
                     Divider()
 
-                    SectionTitleView(text: "扫码配对 OpenClaw")
+                    // QR scan pairing
+                    SectionTitleView(text: "扫码配对 OpenClaw", colors: colors)
                     Text("扫描 OpenClaw Gateway Plugin 生成的二维码，配对成功后即可开始对话")
-                        .font(.system(size: 12))
-                        .foregroundColor(.secondary)
+                        .font(.system(size: 12, weight: .regular))
+                        .foregroundColor(colors.textSecondary)
 
                     Button(action: onNavigateToQRScanner) {
                         HStack {
                             Image(systemName: "qrcode.viewfinder")
                             Text(settingsManager.config.pairedBackendId == nil ? "扫描二维码配对" : "重新扫码配对")
                         }
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundColor(colors.onPrimary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                        .background(colors.primary)
+                        .cornerRadius(8)
                     }
-                    .buttonStyle(.bordered)
-                    .frame(maxWidth: .infinity)
 
                     Divider()
 
-                    SectionTitleView(text: "手动配对")
+                    // Manual pairing
+                    SectionTitleView(text: "手动配对", colors: colors)
                     Text("输入 Gateway 地址和 Backend ID 进行配对")
-                        .font(.system(size: 12))
-                        .foregroundColor(.secondary)
+                        .font(.system(size: 12, weight: .regular))
+                        .foregroundColor(colors.textSecondary)
 
-                    OutlinedTextField(label: "Backend ID", placeholder: "agent backend ID", text: $manualBackendId)
-                    OutlinedTextField(label: "Token", placeholder: "配对 Token", text: $manualToken)
+                    OutlinedTextField(
+                        label: "Backend ID",
+                        placeholder: "agent backend ID",
+                        text: $manualBackendId,
+                        colors: colors
+                    )
+                    OutlinedTextField(
+                        label: "Token",
+                        placeholder: "配对 Token",
+                        text: $manualToken,
+                        colors: colors
+                    )
 
                     Button {
                         guard !gatewayUrl.isEmpty else { return }
@@ -127,17 +224,34 @@ struct SettingsScreenView: View {
                             Image(systemName: "link")
                             Text("配对")
                         }
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundColor(colors.onPrimary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                        .background(colors.primary)
+                        .cornerRadius(8)
                     }
-                    .frame(maxWidth: .infinity)
                     .disabled(wsManager.connectionState == .connecting)
 
                     Divider()
 
-                    SectionTitleView(text: "Gateway 地址")
-                    OutlinedTextField(label: "Gateway URL", placeholder: "ws://gateway.example.com:8765", text: $gatewayUrl)
+                    // Gateway address
+                    SectionTitleView(text: "Gateway 地址", colors: colors)
+                    OutlinedTextField(
+                        label: "Gateway URL",
+                        placeholder: "ws://gateway.example.com:8765",
+                        text: $gatewayUrl,
+                        colors: colors
+                    )
 
-                    SectionTitleView(text: "设备信息")
-                    OutlinedTextField(label: "设备名称", placeholder: "例如：我的手机", text: $deviceLabel)
+                    // Device info
+                    SectionTitleView(text: "设备信息", colors: colors)
+                    OutlinedTextField(
+                        label: "设备名称",
+                        placeholder: "例如：我的手机",
+                        text: $deviceLabel,
+                        colors: colors
+                    )
 
                     Button {
                         settingsManager.updateConfig(GatewayConfig(
@@ -152,12 +266,17 @@ struct SettingsScreenView: View {
                         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { showSaved = false }
                     } label: {
                         Text("保存")
+                            .font(.system(size: 15, weight: .medium))
+                            .foregroundColor(colors.onPrimary)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                            .background(colors.primary)
+                            .cornerRadius(8)
                     }
-                    .frame(maxWidth: .infinity)
 
                     if showSaved {
                         Text("设置已保存")
-                            .font(.system(size: 12))
+                            .font(.system(size: 12, weight: .regular))
                             .foregroundColor(colors.accent)
                     }
 
@@ -165,17 +284,20 @@ struct SettingsScreenView: View {
                 }
                 .padding(16)
             }
+            .background(colors.background)
             .navigationTitle("设置")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
                     Button(action: onBack) {
                         Image(systemName: "chevron.left")
+                            .foregroundColor(colors.icon)
                     }
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button(action: onToggleTheme) {
                         Image(systemName: isDark ? "sun.max.fill" : "moon.fill")
+                            .foregroundColor(colors.icon)
                     }
                 }
             }
@@ -186,59 +308,5 @@ struct SettingsScreenView: View {
             manualBackendId = settingsManager.config.pairedBackendId ?? ""
             manualToken = settingsManager.config.token
         }
-    }
-}
-
-struct SectionTitleView: View {
-    let text: String
-    var body: some View {
-        Text(text)
-            .font(.system(size: 13))
-            .foregroundColor(Color.accentColor)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.top, 8)
-    }
-}
-
-struct OutlinedTextField: View {
-    let label: String
-    let placeholder: String
-    @Binding var text: String
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(label)
-                .font(.system(size: 12))
-                .foregroundColor(.secondary)
-            TextField(placeholder, text: $text)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(size: 15))
-        }
-    }
-}
-
-struct HelpCardView: View {
-    let colors: MochiColors
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("使用说明")
-                .font(.system(size: 14))
-                .foregroundColor(.secondary)
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text("1. 在 OpenClaw 侧启动 Gateway Plugin")
-                Text("2. Plugin 会生成配对二维码")
-                Text("3. 点击「扫描二维码配对」")
-                Text("4. 扫描后自动连接并配对")
-                Text("5. 配对成功后即可开始对话")
-            }
-            .font(.system(size: 12))
-            .foregroundColor(.secondary.opacity(0.7))
-        }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(colors.surface.opacity(0.5))
-        .cornerRadius(12)
     }
 }

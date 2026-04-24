@@ -9,7 +9,7 @@ struct TopBarView: View {
     let onToggleTheme: () -> Void
     let onNavigateToSettings: () -> Void
 
-    var statusColor: Color {
+    private var statusColor: Color {
         if pairingState == .paired { return colors.onlineGreen }
         if connectionState == .registered || connectionState == .connected || connectionState == .connecting {
             return colors.accent
@@ -17,7 +17,7 @@ struct TopBarView: View {
         return colors.recordingRed
     }
 
-    var statusText: String {
+    private var statusText: String {
         if pairingState == .paired {
             return "已配对" + (pairedBackendLabel.map { " · \($0)" } ?? "")
         }
@@ -30,29 +30,37 @@ struct TopBarView: View {
 
     var body: some View {
         HStack(spacing: 8) {
+            // App title
             Text("OpenClaw Remote")
-                .font(.system(size: 13))
+                .font(.system(size: 13, weight: .regular))
                 .foregroundColor(colors.textSecondary)
 
+            // Status indicator
             Text("• \(statusText)")
-                .font(.system(size: 11))
+                .font(.system(size: 11, weight: .regular))
                 .foregroundColor(statusColor)
 
             Spacer()
 
+            // Theme toggle — matches Android's 32dp IconButton with CircleShape background
             Button(action: onToggleTheme) {
                 Image(systemName: isDark ? "sun.max.fill" : "moon.fill")
                     .font(.system(size: 20))
-                    .foregroundColor(isDark ? Color(hex: "E8A87C") : Color(hex: "B85C38"))
+                    .foregroundColor(isDark ? colors.accent : colors.primary)
+                    .frame(width: 32, height: 32)
+                    .background(
+                        Circle()
+                            .fill(isDark ? colors.secondary.opacity(0.3) : Color.clear)
+                    )
             }
-            .frame(width: 32, height: 32)
 
+            // Settings button — matches Android's IconButton with 32dp tap target
             Button(action: onNavigateToSettings) {
                 Image(systemName: "gearshape.fill")
                     .font(.system(size: 20))
                     .foregroundColor(colors.icon)
+                    .frame(width: 32, height: 32)
             }
-            .frame(width: 32, height: 32)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -103,12 +111,12 @@ struct MainScreenView: View {
                     if wsManager.pairingState != .paired {
                         VStack(spacing: 8) {
                             Text("请先扫码配对 OpenClaw")
-                                .font(.system(size: 16))
+                                .font(.system(size: 16, weight: .regular))
                                 .foregroundColor(colors.textSecondary)
                             Button("去设置") {
                                 onNavigateToSettings()
                             }
-                            .font(.system(size: 14))
+                            .font(.system(size: 14, weight: .medium))
                         }
                     }
                 }
@@ -145,11 +153,5 @@ struct MainScreenView: View {
             )
         }
         .background(colors.background)
-    }
-
-    private func timestamp() -> String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm"
-        return formatter.string(from: Date())
     }
 }

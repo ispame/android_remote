@@ -66,6 +66,8 @@ struct OpenClawRemoteApp: App {
             }
             .preferredColorScheme(isDark ? .dark : .light)
             .onAppear {
+                let isSystemDark = UITraitCollection.current.userInterfaceStyle == .dark
+                isDark = isSystemDark
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                     wsManager.connect(to: settingsManager.config.gatewayUrl)
                 }

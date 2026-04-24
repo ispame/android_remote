@@ -1,7 +1,6 @@
 plugins {
     id("com.android.library")
     id("org.jetbrains.kotlin.multiplatform")
-    id("org.jetbrains.kotlin.plugin.compose")
 }
 
 kotlin {
@@ -16,13 +15,6 @@ kotlin {
     sourceSets {
         val commonMain by getting {
             dependencies {
-                implementation("org.jetbrains.compose.runtime:runtime:1.6.0")
-                implementation("org.jetbrains.compose.foundation:foundation:1.6.0")
-                implementation("org.jetbrains.compose.material3:material3:1.2.0")
-                implementation("org.jetbrains.compose.material:material-icons-extended:1.6.0")
-                implementation("org.jetbrains.compose.ui:ui:1.6.0")
-                implementation("org.jetbrains.compose.ui:ui-graphics:1.6.0")
-                implementation("org.jetbrains.compose.components:components-resources:1.6.0")
                 implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.3")
                 implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.2")
                 implementation("io.ktor:ktor-client-core:2.3.7")

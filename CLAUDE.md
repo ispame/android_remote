@@ -8,27 +8,36 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Architecture
 
-**Kotlin Multiplatform (KMP) + Compose Multiplatform**
+**Android: Kotlin + Jetpack Compose | iOS: Swift + SwiftUI**
 
-- `shared/` - All shared business logic, UI, and platform abstractions
-- `androidApp/` - Android-specific implementation
-- `iosApp/` - iOS-specific implementation
-
-### Shared Module Structure
+Android and iOS maintain fully independent UI codebases. The KMP `shared/` module provides only **data models, network, audio, and domain logic** — no UI.
 
 ```
+androidApp/src/main/kotlin/com/openclaw/remote/
+├── MainActivity.kt
+└── ui/
+    ├── theme/           # MochiColors (warm cream / ink black)
+    └── screen/          # MainScreen, SettingsScreen, MessageBubble, QRScannerScreen
+
+iosApp/OpenClawRemote/Sources/
+├── OpenClawRemoteApp.swift
+├── MainScreenView.swift
+├── SettingsScreenView.swift
+├── MessageBubbleView.swift
+├── InputAreaView.swift
+├── QRScannerScreenView.swift
+├── MochiColors.swift
+└── ... (models, managers)
+
 shared/src/
 ├── commonMain/kotlin/com/openclaw/remote/
-│   ├── data/          # ChatMessage, GatewayConfig, SettingsManager (expect)
-│   ├── domain/        # ConnectionState, PairingState enums
-│   ├── network/       # WebSocketManager (Ktor-based)
-│   ├── viewmodel/      # ChatViewModel
-│   ├── audio/         # AudioRecorder (expect/actual)
-│   └── ui/
-│       ├── theme/     # MochiColors, Theme (warm cream/ink black)
-│       └── screen/    # MainScreen, MessageBubble, SettingsScreen, QRParse
-├── androidMain/       # Android-specific actual implementations
-└── iosMain/          # iOS-specific actual implementations
+│   ├── data/            # ChatMessage, GatewayConfig, SettingsManager (expect/actual)
+│   ├── domain/          # ConnectionState, PairingState enums
+│   ├── network/         # WebSocketManager (Ktor-based, expect/actual)
+│   ├── viewmodel/       # ChatViewModel
+│   └── audio/           # AudioRecorder (expect/actual)
+├── androidMain/         # Android-specific implementations (DataStore, Ktor-OKHttp)
+└── iosMain/            # iOS-specific implementations (NSUserDefaults, Ktor-Darwin)
 ```
 
 ## Build Commands
@@ -42,7 +51,7 @@ shared/src/
 ### iOS (requires macOS with Xcode)
 
 ```bash
-# Generate Xcode framework
+# Regenerate Xcode project after shared code changes
 ./gradlew :shared:embedAndSignAppleFrameworkForXcode
 
 # Open in Xcode and run
@@ -53,22 +62,37 @@ open OpenClawRemote.xcworkspace
 
 ## Key Technologies
 
-- **Kotlin 1.9.22** with KMP
-- **Compose Multiplatform 2.0.0** for UI
-- **Ktor Client 2.3.7** for WebSocket (cross-platform)
-- **Kotlinx Serialization** for JSON
-- **DataStore** (Android) / **NSUserDefaults** (iOS) for persistence
-
-## Platform-Specific Implementations
-
-| Component | Android | iOS |
-|-----------|---------|-----|
-| WebSocket | Ktor OKHttp | Ktor Darwin |
+| | Android | iOS |
+|---|---|---|
+| Language | Kotlin | Swift |
+| UI | Jetpack Compose | SwiftUI |
+| Network | Ktor OKHttp | Ktor Darwin |
 | Settings | DataStore | NSUserDefaults |
 | Audio | MediaRecorder | AVAudioRecorder |
 | QR Scanner | CameraX + ZXing | AVFoundation |
-| UI | Compose | Compose |
+| Serialization | Kotlinx Serialization | Codable (via shared model) |
 
-## Theme
+## Theme — MochiColors
 
-Warm cream (light) / Pure ink black (dark) - MochiColors system with陶土棕 (terracotta) accents.
+Warm cream (light) / Pure ink black (dark) — MochiColors system with terracotta accents.
+
+**Light:**
+- Background: `#FAF7F2` (warm cream)
+- Primary: `#B85C38` (terracotta)
+- Surface: `#FDFCF9`
+
+**Dark:**
+- Background: `#000000` (pure ink)
+- Primary: `#C9884A` (warm amber)
+- Surface: `#0D0D0D`
+
+## Shared Module
+
+The `shared/` module contains only platform-agnostic business logic:
+
+- `ChatMessage`, `GatewayConfig` — data models
+- `SettingsManager` — expect/actual for DataStore (Android) / NSUserDefaults (iOS)
+- `WebSocketManager` — expect/actual for Ktor clients
+- `AudioRecorder` — expect/actual for platform audio APIs
+- `ChatViewModel` — message/pairing state management
+- `ConnectionState`, `PairingState` — domain enums
