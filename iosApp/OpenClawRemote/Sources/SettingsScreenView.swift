@@ -134,6 +134,49 @@ struct HelpCardView: View {
 
 // MARK: - Settings Screen
 
+struct SettingsTopBarView: View {
+    let isDark: Bool
+    let colors: MochiColors
+    let onToggleTheme: () -> Void
+    let onBack: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Button(action: onBack) {
+                Image(systemName: "message.fill")
+                    .font(.system(size: 20))
+                    .foregroundColor(colors.icon)
+                    .frame(width: 32, height: 32)
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("设置")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundColor(colors.textPrimary)
+                Text("Gateway 与配对")
+                    .font(.system(size: 11, weight: .regular))
+                    .foregroundColor(colors.textSecondary)
+            }
+
+            Spacer()
+
+            Button(action: onToggleTheme) {
+                Image(systemName: isDark ? "sun.max.fill" : "moon.fill")
+                    .font(.system(size: 20))
+                    .foregroundColor(isDark ? colors.accent : colors.primary)
+                    .frame(width: 32, height: 32)
+                    .background(
+                        Circle()
+                            .fill(isDark ? colors.secondary.opacity(0.3) : Color.clear)
+                    )
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(colors.surface)
+    }
+}
+
 struct SettingsScreenView: View {
     @ObservedObject var wsManager: WebSocketManager
     @ObservedObject var settingsManager: SettingsManager
@@ -152,7 +195,16 @@ struct SettingsScreenView: View {
     @State private var showSaved = false
 
     var body: some View {
-        NavigationView {
+        VStack(spacing: 0) {
+            SettingsTopBarView(
+                isDark: isDark,
+                colors: colors,
+                onToggleTheme: onToggleTheme,
+                onBack: onBack
+            )
+
+            Divider().background(colors.divider)
+
             ScrollView {
                 VStack(spacing: 16) {
                     // Connection status
@@ -210,14 +262,18 @@ struct SettingsScreenView: View {
                         guard !gatewayUrl.isEmpty else { return }
                         guard !manualBackendId.isEmpty else { return }
 
-                        settingsManager.updateConfig(GatewayConfig(
+                        let config = GatewayConfig(
                             gatewayUrl: gatewayUrl,
                             deviceId: settingsManager.config.deviceId,
                             deviceLabel: deviceLabel.isEmpty ? "我的设备" : deviceLabel,
                             token: manualToken,
                             pairedBackendId: manualBackendId,
                             pairedBackendLabel: nil
-                        ))
+                        )
+                        settingsManager.updateConfig(config)
+                        wsManager.updateCredentials(deviceLabel: config.deviceLabel, token: config.token)
+                        wsManager.rememberBackendForPairing(manualBackendId)
+                        wsManager.reconnect(to: config.gatewayUrl)
                         onRequestPair(manualBackendId)
                     } label: {
                         HStack {
@@ -254,14 +310,22 @@ struct SettingsScreenView: View {
                     )
 
                     Button {
-                        settingsManager.updateConfig(GatewayConfig(
+                        let config = GatewayConfig(
                             gatewayUrl: gatewayUrl,
                             deviceId: settingsManager.config.deviceId,
                             deviceLabel: deviceLabel.isEmpty ? "我的设备" : deviceLabel,
                             token: manualToken,
                             pairedBackendId: manualBackendId.isEmpty ? nil : manualBackendId,
                             pairedBackendLabel: settingsManager.config.pairedBackendLabel
-                        ))
+                        )
+                        settingsManager.updateConfig(config)
+                        wsManager.applyConfiguration(
+                            gatewayUrl: config.gatewayUrl,
+                            deviceLabel: config.deviceLabel,
+                            token: config.token,
+                            pairedBackendId: config.pairedBackendId,
+                            pairedBackendLabel: config.pairedBackendLabel
+                        )
                         showSaved = true
                         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { showSaved = false }
                     } label: {
@@ -285,23 +349,8 @@ struct SettingsScreenView: View {
                 .padding(16)
             }
             .background(colors.background)
-            .navigationTitle("设置")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
-                    Button(action: onBack) {
-                        Image(systemName: "chevron.left")
-                            .foregroundColor(colors.icon)
-                    }
-                }
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button(action: onToggleTheme) {
-                        Image(systemName: isDark ? "sun.max.fill" : "moon.fill")
-                            .foregroundColor(colors.icon)
-                    }
-                }
-            }
         }
+        .background(colors.background)
         .onAppear {
             gatewayUrl = settingsManager.config.gatewayUrl
             deviceLabel = settingsManager.config.deviceLabel
