@@ -98,14 +98,6 @@ class ChatViewModel(
                         viewModelScope.launch {
                             settingsManager.updatePairedBackend(event.backendId, event.backendLabel)
                         }
-                        // Only show pairing message on first-time pairing, not on reconnect restoration
-                        if (!event.isRestoringPairing) {
-                            _messages.value = _messages.value + ChatMessage(
-                                "已成功配对 OpenClaw: ${event.backendLabel}",
-                                SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date()),
-                                "assistant"
-                            )
-                        }
                     }
                     is WsMessageEvent.NewMessage -> {
                         _messages.value = _messages.value + event.message

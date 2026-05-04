@@ -342,10 +342,6 @@ final class WebSocketManager: ObservableObject {
                     self.preferredBackendLabel = backendLabel
                     self.pairingState = .paired
                     self.messageSubject.send(WsMessageEvent.paired(backendId, backendLabel))
-                    // Only show pairing message on first-time pairing, not on reconnect restoration
-                    if !self.isRestoringPairing {
-                        self.addMessage("已成功配对 OpenClaw: \(backendLabel)", senderId: "assistant")
-                    }
                     self.isRestoringPairing = false
                 } else {
                     self.pairingState = .unpaired
