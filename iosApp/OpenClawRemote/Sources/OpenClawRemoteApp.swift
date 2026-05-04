@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 
 @main
 struct OpenClawRemoteApp: App {
@@ -8,6 +9,7 @@ struct OpenClawRemoteApp: App {
 
     @State private var isDark = false
     @State private var showSettings = false
+    @State private var showHistory = false
     @State private var showQRScanner = false
 
     init() {
@@ -35,6 +37,12 @@ struct OpenClawRemoteApp: App {
                         },
                         onClose: { showQRScanner = false }
                     )
+                } else if showHistory {
+                    HistoryScreenView(
+                        wsManager: wsManager,
+                        colors: colors,
+                        onBack: { showHistory = false }
+                    )
                 } else if showSettings {
                     SettingsScreenView(
                         wsManager: wsManager,
@@ -60,14 +68,24 @@ struct OpenClawRemoteApp: App {
                         isDark: isDark,
                         colors: colors,
                         onToggleTheme: { isDark.toggle() },
+                        onNavigateToHistory: { showHistory = true },
                         onNavigateToSettings: { showSettings = true }
                     )
                 }
             }
             .preferredColorScheme(isDark ? .dark : .light)
+            .onReceive(wsManager.messageChannel) { event in
+                handleWebSocketEvent(event)
+            }
             .onAppear {
                 let isSystemDark = UITraitCollection.current.userInterfaceStyle == .dark
                 isDark = isSystemDark
+                let label = settingsManager.config.deviceLabel.isEmpty ? "我的设备" : settingsManager.config.deviceLabel
+                wsManager.updateCredentials(deviceLabel: label, token: settingsManager.config.token)
+                wsManager.restorePairing(
+                    backendId: settingsManager.config.pairedBackendId,
+                    backendLabel: settingsManager.config.pairedBackendLabel
+                )
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                     wsManager.connect(to: settingsManager.config.gatewayUrl)
                 }
@@ -87,11 +105,30 @@ struct OpenClawRemoteApp: App {
                 pairedBackendId: nil,
                 pairedBackendLabel: nil
             ))
+            let label = settingsManager.config.deviceLabel.isEmpty ? "我的设备" : settingsManager.config.deviceLabel
+            wsManager.updateCredentials(deviceLabel: label, token: token)
+            wsManager.restorePairing(backendId: nil, backendLabel: nil)
+            wsManager.rememberBackendForPairing(backendId)
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
                 wsManager.connect(to: gatewayUrl)
                 wsManager.requestPair(backendId: backendId)
             }
         case .error:
+            break
+        }
+    }
+
+    private func handleWebSocketEvent(_ event: WsMessageEvent) {
+        switch event {
+        case .registered(_):
+            if let backendId = settingsManager.config.pairedBackendId {
+                wsManager.requestPair(backendId: backendId)
+            }
+        case .paired(let backendId, let backendLabel):
+            settingsManager.updatePairedBackend(backendId, backendLabel)
+        case .unpaired:
+            settingsManager.updatePairedBackend(nil, nil)
+        case .newMessage(_), .error(_, _):
             break
         }
     }

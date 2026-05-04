@@ -9,6 +9,10 @@ final class WebSocketManager: ObservableObject {
     @Published var connectionState: ConnectionState = .disconnected
     @Published var pairingState: PairingState = .unpaired
     @Published private(set) var messages: [ChatMessage] = []
+    @Published private(set) var historyMessages: [ChatMessage] = []
+    @Published private(set) var historyLoading = false
+    @Published private(set) var historyError: String?
+    @Published private(set) var historyHasMore = false
 
     private let messageSubject = PassthroughSubject<WsMessageEvent, Never>()
     var messageChannel: AnyPublisher<WsMessageEvent, Never> {
@@ -17,8 +21,22 @@ final class WebSocketManager: ObservableObject {
 
     private var registeredBackendId: String?
     private let deviceId: String
-    private let deviceLabel: String
-    private let token: String
+    private var deviceLabel: String
+    private var token: String
+    private var preferredBackendId: String?
+    private var preferredBackendLabel: String?
+    private var currentUrlString: String?
+    private var reconnectWorkItem: DispatchWorkItem?
+    private var reconnectAttempts = 0
+    private var intentionalDisconnect = false
+    private var socketGeneration = 0
+    private let reconnectBaseDelay: TimeInterval = 2
+    private let reconnectMaxDelay: TimeInterval = 30
+
+    /// Pending ack callbacks keyed by seq assigned by the Router.
+    private var pendingAcks: [Int: (MessageStatus) -> Void] = [:]
+    private var seqCounter = 0
+    private var receivedMessageSeqs = Set<Int>()
 
     init(deviceId: String, deviceLabel: String, token: String) {
         self.deviceId = deviceId
@@ -27,64 +45,86 @@ final class WebSocketManager: ObservableObject {
     }
 
     func connect(to urlString: String) {
-        guard connectionState == .disconnected else { return }
-        connectionState = .connecting
-
-        // Normalize URL: ensure ws/wss scheme, append /ws if needed
-        var urlStr = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
-        if urlStr.isEmpty {
-            connectionState = .disconnected
-            return
-        }
-        // Ensure scheme
-        if !urlStr.hasPrefix("ws://") && !urlStr.hasPrefix("wss://") {
-            urlStr = "wss://" + urlStr
-        }
-        // Append /ws path if not present
-        if !urlStr.hasSuffix("/ws") {
-            if urlStr.hasSuffix("/") {
-                urlStr = urlStr + "ws"
-            } else {
-                urlStr = urlStr + "/ws"
-            }
-        }
-
-        guard let url = URL(string: urlStr) else {
+        guard let normalizedUrl = normalizeGatewayUrl(urlString) else {
             connectionState = .disconnected
             return
         }
 
-        // Validate scheme (URLSession throws NSException for invalid schemes)
-        guard url.scheme == "ws" || url.scheme == "wss" else {
-            connectionState = .disconnected
+        if connectionState != .disconnected, currentUrlString == normalizedUrl {
             return
         }
 
-        // Note: webSocketTask throws NSException (not Swift Error) for invalid schemes.
-        // Scheme is validated above, so no try-catch needed here.
-        webSocketTask = session.webSocketTask(with: url)
-        webSocketTask?.resume()
-        connectionState = .connected
-        sendRegister()
-        receiveMessage()
+        intentionalDisconnect = false
+        reconnectAttempts = 0
+        cancelReconnect()
+        currentUrlString = normalizedUrl
+        if connectionState != .disconnected {
+            webSocketTask?.cancel(with: .goingAway, reason: nil)
+            webSocketTask = nil
+        }
+        openSocket(to: normalizedUrl)
     }
 
     func reconnect(to urlString: String) {
-        disconnect()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
-            self?.connect(to: urlString)
+        guard let normalizedUrl = normalizeGatewayUrl(urlString) else { return }
+        currentUrlString = normalizedUrl
+        intentionalDisconnect = false
+        cancelReconnect()
+        webSocketTask?.cancel(with: .goingAway, reason: nil)
+        webSocketTask = nil
+        openSocket(to: normalizedUrl)
+    }
+
+    func updateCredentials(deviceLabel: String, token: String) {
+        self.deviceLabel = deviceLabel
+        self.token = token
+    }
+
+    func restorePairing(backendId: String?, backendLabel: String?) {
+        preferredBackendId = backendId
+        preferredBackendLabel = backendLabel
+        registeredBackendId = backendId
+        pairingState = backendId == nil ? .unpaired : .paired
+    }
+
+    func rememberBackendForPairing(_ backendId: String) {
+        preferredBackendId = backendId
+        preferredBackendLabel = backendId
+        pairingState = .pending
+        if connectionState == .registered {
+            requestPair(backendId: backendId)
         }
     }
 
+    func applyConfiguration(
+        gatewayUrl: String,
+        deviceLabel: String,
+        token: String,
+        pairedBackendId: String?,
+        pairedBackendLabel: String?
+    ) {
+        updateCredentials(deviceLabel: deviceLabel, token: token)
+        restorePairing(backendId: pairedBackendId, backendLabel: pairedBackendLabel)
+        reconnect(to: gatewayUrl)
+    }
+
     func disconnect() {
+        intentionalDisconnect = true
+        cancelReconnect()
+        socketGeneration += 1
         webSocketTask?.cancel(with: .normalClosure, reason: nil)
         webSocketTask = nil
         connectionState = .disconnected
+        registeredBackendId = nil
+        preferredBackendId = nil
+        preferredBackendLabel = nil
         pairingState = .unpaired
     }
 
     func requestPair(backendId: String) {
         guard connectionState == .registered else { return }
+        preferredBackendId = backendId
+        preferredBackendLabel = backendId
         pairingState = .pending
         let frame: [String: Any] = [
             "type": "pair_request",
@@ -103,6 +143,29 @@ final class WebSocketManager: ObservableObject {
             "type": "message",
             "to": backendId,
             "content": text
+        ]
+        // Emit a "sending" placeholder so UI can show pending state
+        _ = addLocalMessageWithStatus(text, senderId: "user", status: .sending, seq: nil)
+        sendJson(frame)
+    }
+
+    func requestRecentHistory(rounds: Int = 10) {
+        guard pairingState == .paired else {
+            historyLoading = false
+            historyError = "请先配对 OpenClaw"
+            historyMessages = []
+            historyHasMore = false
+            return
+        }
+
+        historyLoading = true
+        historyError = nil
+        let limit = max(1, rounds * 2)
+        let frame: [String: Any] = [
+            "type": "history_request",
+            "app_id": deviceId,
+            "session_key": "current",
+            "limit": limit
         ]
         sendJson(frame)
     }
@@ -127,7 +190,70 @@ final class WebSocketManager: ObservableObject {
         ]
         sendJson(frame)
         registeredBackendId = nil
+        preferredBackendId = nil
+        preferredBackendLabel = nil
         pairingState = .unpaired
+        messageSubject.send(WsMessageEvent.unpaired)
+    }
+
+    private func normalizeGatewayUrl(_ urlString: String) -> String? {
+        var urlStr = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
+        if urlStr.isEmpty {
+            return nil
+        }
+        if !urlStr.hasPrefix("ws://") && !urlStr.hasPrefix("wss://") {
+            urlStr = "wss://" + urlStr
+        }
+        if !urlStr.hasSuffix("/ws") {
+            if urlStr.hasSuffix("/") {
+                urlStr = urlStr + "ws"
+            } else {
+                urlStr = urlStr + "/ws"
+            }
+        }
+        return URL(string: urlStr) == nil ? nil : urlStr
+    }
+
+    private func openSocket(to urlString: String) {
+        guard !intentionalDisconnect, let url = URL(string: urlString) else {
+            connectionState = .disconnected
+            return
+        }
+
+        socketGeneration += 1
+        let generation = socketGeneration
+        webSocketTask?.cancel(with: .goingAway, reason: nil)
+        webSocketTask = session.webSocketTask(with: url)
+        connectionState = .connecting
+        webSocketTask?.resume()
+        connectionState = .connected
+        sendRegister()
+        receiveMessage(generation: generation)
+    }
+
+    private func cancelReconnect() {
+        reconnectWorkItem?.cancel()
+        reconnectWorkItem = nil
+    }
+
+    private func handleTransientDisconnect() {
+        guard !intentionalDisconnect else { return }
+        webSocketTask = nil
+        connectionState = .connecting
+        scheduleReconnect()
+    }
+
+    private func scheduleReconnect() {
+        guard let urlString = currentUrlString, !intentionalDisconnect else { return }
+        cancelReconnect()
+
+        let delay = min(reconnectMaxDelay, reconnectBaseDelay * pow(2, Double(reconnectAttempts)))
+        reconnectAttempts += 1
+        let item = DispatchWorkItem { [weak self] in
+            self?.openSocket(to: urlString)
+        }
+        reconnectWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
     }
 
     private func sendRegister() {
@@ -149,25 +275,35 @@ final class WebSocketManager: ObservableObject {
         webSocketTask?.send(.string(text)) { _ in }
     }
 
-    private func receiveMessage() {
+    /// Send an ack frame in response to a received message.
+    private func sendAck(_ seq: Int) {
+        let frame: [String: Any] = [
+            "type": "ack",
+            "seq": seq
+        ]
+        sendJson(frame)
+    }
+
+    private func receiveMessage(generation: Int) {
         webSocketTask?.receive { [weak self] result in
+            guard let self = self, generation == self.socketGeneration else { return }
             switch result {
             case .success(let message):
                 switch message {
                 case .string(let text):
-                    self?.handleMessage(text)
+                    self.handleMessage(text)
                 case .data(let data):
                     if let text = String(data: data, encoding: .utf8) {
-                        self?.handleMessage(text)
+                        self.handleMessage(text)
                     }
                 @unknown default:
                     break
                 }
-                self?.receiveMessage()
+                self.receiveMessage(generation: generation)
             case .failure:
                 DispatchQueue.main.async {
-                    self?.connectionState = .disconnected
-                    self?.pairingState = .unpaired
+                    guard generation == self.socketGeneration else { return }
+                    self.handleTransientDisconnect()
                 }
             }
         }
@@ -186,7 +322,12 @@ final class WebSocketManager: ObservableObject {
                 let success = json["success"] as? Bool ?? false
                 if success {
                     self.connectionState = .registered
+                    self.reconnectAttempts = 0
+                    self.cancelReconnect()
                     self.messageSubject.send(WsMessageEvent.registered(self.deviceId))
+                    if let backendId = self.preferredBackendId ?? self.registeredBackendId {
+                        self.requestPair(backendId: backendId)
+                    }
                 }
 
             case "pair_response":
@@ -195,6 +336,8 @@ final class WebSocketManager: ObservableObject {
                 let backendLabel = json["backend_label"] as? String ?? backendId
                 if approve {
                     self.registeredBackendId = backendId
+                    self.preferredBackendId = backendId
+                    self.preferredBackendLabel = backendLabel
                     self.pairingState = .paired
                     self.messageSubject.send(WsMessageEvent.paired(backendId, backendLabel))
                     self.addMessage("已成功配对 OpenClaw: \(backendLabel)", senderId: "assistant")
@@ -205,7 +348,34 @@ final class WebSocketManager: ObservableObject {
 
             case "message":
                 let content = json["content"] as? String ?? ""
+                let seq = json["seq"] as? Int
+                // Immediately ack so the sender (plugin) gets delivery confirmation
+                if let seq = seq {
+                    self.sendAck(seq)
+                    if self.receivedMessageSeqs.contains(seq) {
+                        return
+                    }
+                    self.rememberReceivedSeq(seq)
+                }
                 self.addMessage(content, senderId: "assistant")
+
+            case "history_response":
+                self.handleHistoryResponse(json)
+
+            case "ack":
+                // Router forwarded ack from plugin — we don't track per-message state at app level
+                break
+
+            case "delivery_failed":
+                let seq = json["seq"] as? Int
+                let reason = json["reason"] as? String ?? "unknown"
+                if let seq = seq {
+                    self.pendingAcks.removeValue(forKey: seq)
+                }
+                self.addMessage("消息发送失败: \(reason)", senderId: "assistant")
+
+            case "ping":
+                self.sendJson(["type": "pong"])
 
             case "pong":
                 break
@@ -214,6 +384,8 @@ final class WebSocketManager: ObservableObject {
                 let targetId = json["target_id"] as? String ?? ""
                 if targetId == self.registeredBackendId {
                     self.registeredBackendId = nil
+                    self.preferredBackendId = nil
+                    self.preferredBackendLabel = nil
                     self.pairingState = .unpaired
                     self.messageSubject.send(WsMessageEvent.unpaired)
                     self.addMessage("已解除配对", senderId: "assistant")
@@ -230,15 +402,52 @@ final class WebSocketManager: ObservableObject {
         }
     }
 
+    private func rememberReceivedSeq(_ seq: Int) {
+        receivedMessageSeqs.insert(seq)
+        if receivedMessageSeqs.count > 500 {
+            receivedMessageSeqs.remove(receivedMessageSeqs.min() ?? seq)
+        }
+    }
+
+    private func handleHistoryResponse(_ json: [String: Any]) {
+        historyLoading = false
+        let error = json["error"] as? String
+        if let error = error, !error.isEmpty {
+            historyError = error
+            historyMessages = []
+            historyHasMore = false
+            return
+        }
+
+        let items = json["messages"] as? [[String: Any]] ?? []
+        let parsed = items.compactMap { item -> ChatMessage? in
+            guard let content = item["content"] as? String else { return nil }
+            let role = item["role"] as? String ?? "assistant"
+            let timestamp = item["timestamp"] as? String ?? self.timestamp()
+            return HistoryMessagePayload(content: content, role: role, timestamp: timestamp).chatMessage
+        }
+        historyMessages = parsed
+        historyHasMore = json["has_more"] as? Bool ?? false
+        historyError = nil
+    }
+
+    @discardableResult
+    private func addLocalMessageWithStatus(_ content: String, senderId: String, status: MessageStatus, seq: Int?) -> ChatMessage {
+        let ts = timestamp()
+        let msg = ChatMessage(content: content, timestamp: ts, senderId: senderId, status: status, seq: seq)
+        messages.append(msg)
+        return msg
+    }
+
     func addLocalMessage(_ content: String, senderId: String) {
         let ts = timestamp()
-        let msg = ChatMessage(content: content, timestamp: ts, senderId: senderId)
+        let msg = ChatMessage(content: content, timestamp: ts, senderId: senderId, status: nil, seq: nil)
         messages.append(msg)
     }
 
     private func addMessage(_ content: String, senderId: String) {
         let ts = timestamp()
-        let msg = ChatMessage(content: content, timestamp: ts, senderId: senderId)
+        let msg = ChatMessage(content: content, timestamp: ts, senderId: senderId, status: nil, seq: nil)
         messages.append(msg)
     }
 

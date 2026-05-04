@@ -15,12 +15,51 @@ enum PairingState {
 }
 
 struct ChatMessage: Identifiable {
-    let id = UUID()
+    let id: UUID
     let content: String
     let timestamp: String
     let senderId: String
+    let status: MessageStatus?
+    let seq: Int?
 
     var isUser: Bool { senderId == "user" }
+
+    init(id: UUID = UUID(), content: String, timestamp: String, senderId: String, status: MessageStatus? = nil, seq: Int? = nil) {
+        self.id = id
+        self.content = content
+        self.timestamp = timestamp
+        self.senderId = senderId
+        self.status = status
+        self.seq = seq
+    }
+}
+
+enum MessageStatus: String, Codable {
+    case sending = "SENDING"
+    case delivered = "DELIVERED"
+    case failed = "FAILED"
+}
+
+struct HistoryMessagePayload {
+    let content: String
+    let role: String
+    let timestamp: String
+
+    var chatMessage: ChatMessage {
+        let normalized = role.lowercased()
+        let senderId = normalized == "user" || normalized == "human" ? "user" : "assistant"
+        return ChatMessage(content: content, timestamp: Self.displayTimestamp(timestamp), senderId: senderId)
+    }
+
+    private static func displayTimestamp(_ raw: String) -> String {
+        let iso = ISO8601DateFormatter()
+        if let date = iso.date(from: raw) {
+            let formatter = DateFormatter()
+            formatter.dateFormat = "HH:mm"
+            return formatter.string(from: date)
+        }
+        return raw
+    }
 }
 
 struct GatewayConfig {

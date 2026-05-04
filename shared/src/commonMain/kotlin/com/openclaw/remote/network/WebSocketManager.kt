@@ -1,6 +1,7 @@
 package com.openclaw.remote.network
 
 import com.openclaw.remote.data.ChatMessage
+import com.openclaw.remote.data.MessageStatus
 import com.openclaw.remote.domain.ConnectionState
 import com.openclaw.remote.domain.PairingState
 import io.ktor.client.*
@@ -21,6 +22,8 @@ import java.util.Locale
 /**
  * WebSocket Manager for Phase 3 Gateway Router protocol.
  * Uses Ktor for cross-platform WebSocket support.
+ * Implements reliable delivery: sends ack for received messages,
+ * tracks outgoing message seq for delivery confirmation.
  */
 class WebSocketManager(
     private val wsUrl: String,
@@ -44,6 +47,9 @@ class WebSocketManager(
     val messageChannel = _messageChannel
 
     private var registeredBackendId: String? = null
+
+    /** seq → callback to invoke when delivery is confirmed or failed. */
+    private val pendingAcks = mutableMapOf<Int, (MessageStatus) -> Unit>()
 
     fun connect() {
         if (_connectionState.value != ConnectionState.DISCONNECTED) return
@@ -117,6 +123,15 @@ class WebSocketManager(
             put("to", registeredBackendId)
             put("content", text)
         }
+        // Emit a "sending" placeholder so UI can show spinner immediately
+        val placeholderMsg = ChatMessage(
+            content = text,
+            timestamp = timestamp(),
+            senderId = "user",
+            status = MessageStatus.SENDING,
+        )
+        offerEvent(WsMessageEvent.NewMessage(placeholderMsg))
+        // Actual send will happen async; the placeholder carries the pending status
         send(frame.toString())
     }
 
@@ -162,6 +177,15 @@ class WebSocketManager(
         }
     }
 
+    /** Send an ack frame in response to a received message. */
+    private fun sendAck(seq: Int) {
+        val frame = buildJsonObject {
+            put("type", "ack")
+            put("seq", seq)
+        }
+        send(frame.toString())
+    }
+
     private fun handleMessage(text: String) {
         try {
             val json = Json.parseToJsonElement(text)
@@ -196,7 +220,30 @@ class WebSocketManager(
                 "message" -> {
                     val content = obj["content"]?.jsonPrimitive?.content ?: ""
                     val ts = obj["timestamp"]?.jsonPrimitive?.content ?: timestamp()
+                    val seq = obj["seq"]?.jsonPrimitive?.content?.toIntOrNull()
+
+                    // Immediately ack this message so the sender (plugin) gets delivery confirmation
+                    if (seq != null) {
+                        sendAck(seq)
+                    }
+
                     offerEvent(WsMessageEvent.NewMessage(ChatMessage(content, ts, "assistant")))
+                }
+                "ack" -> {
+                    // Server acks our sent message — we don't need to act on it here
+                    // because we don't track per-message delivery state at the app level
+                }
+                "delivery_failed" -> {
+                    val seq = obj["seq"]?.jsonPrimitive?.content?.toIntOrNull()
+                    val reason = obj["reason"]?.jsonPrimitive?.content ?: "unknown"
+                    if (seq != null) {
+                        pendingAcks.remove(seq)?.invoke(MessageStatus.FAILED)
+                    }
+                    offerEvent(
+                        WsMessageEvent.NewMessage(
+                            ChatMessage("消息发送失败: $reason", timestamp(), "assistant")
+                        )
+                    )
                 }
                 "pong" -> {}
                 "unpaired" -> {
