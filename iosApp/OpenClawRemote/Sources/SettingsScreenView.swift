@@ -142,13 +142,6 @@ struct SettingsTopBarView: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Button(action: onBack) {
-                Image(systemName: "message.fill")
-                    .font(.system(size: 20))
-                    .foregroundColor(colors.icon)
-                    .frame(width: 32, height: 32)
-            }
-
             VStack(alignment: .leading, spacing: 2) {
                 Text("设置")
                     .font(.system(size: 16, weight: .semibold))
@@ -169,6 +162,13 @@ struct SettingsTopBarView: View {
                         Circle()
                             .fill(isDark ? colors.secondary.opacity(0.3) : Color.clear)
                     )
+            }
+
+            Button(action: onBack) {
+                Image(systemName: "message.fill")
+                    .font(.system(size: 20))
+                    .foregroundColor(colors.icon)
+                    .frame(width: 32, height: 32)
             }
         }
         .padding(.horizontal, 12)

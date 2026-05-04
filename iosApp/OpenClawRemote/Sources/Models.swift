@@ -18,16 +18,18 @@ struct ChatMessage: Identifiable {
     let id: UUID
     let content: String
     let timestamp: String
+    let rawTimestamp: String?
     let senderId: String
     let status: MessageStatus?
     let seq: Int?
 
     var isUser: Bool { senderId == "user" }
 
-    init(id: UUID = UUID(), content: String, timestamp: String, senderId: String, status: MessageStatus? = nil, seq: Int? = nil) {
+    init(id: UUID = UUID(), content: String, timestamp: String, rawTimestamp: String? = nil, senderId: String, status: MessageStatus? = nil, seq: Int? = nil) {
         self.id = id
         self.content = content
         self.timestamp = timestamp
+        self.rawTimestamp = rawTimestamp
         self.senderId = senderId
         self.status = status
         self.seq = seq
@@ -48,7 +50,7 @@ struct HistoryMessagePayload {
     var chatMessage: ChatMessage {
         let normalized = role.lowercased()
         let senderId = normalized == "user" || normalized == "human" ? "user" : "assistant"
-        return ChatMessage(content: content, timestamp: Self.displayTimestamp(timestamp), senderId: senderId)
+        return ChatMessage(content: content, timestamp: Self.displayTimestamp(timestamp), rawTimestamp: timestamp, senderId: senderId)
     }
 
     private static func displayTimestamp(_ raw: String) -> String {

@@ -13,7 +13,7 @@ struct MessageBubbleView: View {
             }
 
             VStack(alignment: message.isUser ? .trailing : .leading, spacing: 3) {
-                MarkdownMessageBody(
+                CollapsibleMessageContent(
                     text: message.content,
                     textColor: message.isUser ? colors.userBubbleFg : colors.assistantFg,
                     colors: colors
@@ -44,6 +44,131 @@ struct MessageBubbleView: View {
         }
         .frame(maxWidth: .infinity)
     }
+}
+
+struct CollapsibleMessageContent: View {
+    let text: String
+    let textColor: Color
+    let colors: MochiColors
+
+    @State private var isExpanded = false
+
+    private var analysis: MessageContentAnalysis {
+        analyzeMessageContent(text)
+    }
+
+    private var shouldShowToggle: Bool {
+        analysis.kind != .normal
+    }
+
+    private var displayText: String {
+        if isExpanded { return text }
+        switch analysis.kind {
+        case .normal:
+            return text
+        case .longText:
+            return analysis.preview
+        case .denseEncoded:
+            return "疑似文件、音频或二进制内容，已折叠显示。"
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            MarkdownMessageBody(
+                text: displayText,
+                textColor: textColor,
+                colors: colors
+            )
+
+            if shouldShowToggle {
+                Button(action: {
+                    withAnimation(.easeInOut(duration: 0.16)) {
+                        isExpanded.toggle()
+                    }
+                }) {
+                    HStack(spacing: 4) {
+                        Text(isExpanded ? "收起" : toggleTitle)
+                            .font(.system(size: 12, weight: .medium))
+                        Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                            .font(.system(size: 11, weight: .semibold))
+                    }
+                    .foregroundColor(textColor.opacity(0.78))
+                    .padding(.top, 2)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(isExpanded ? "收起消息" : "展开全文")
+            }
+        }
+    }
+
+    private var toggleTitle: String {
+        switch analysis.kind {
+        case .denseEncoded:
+            return "查看内容"
+        case .longText:
+            return "展开全文"
+        case .normal:
+            return ""
+        }
+    }
+}
+
+enum MessageContentKind {
+    case normal
+    case longText
+    case denseEncoded
+}
+
+struct MessageContentAnalysis {
+    let kind: MessageContentKind
+    let preview: String
+}
+
+private let collapsedLineLimit = 8
+private let collapsedCharacterLimit = 650
+private let denseContinuousCharacterLimit = 900
+
+func analyzeMessageContent(_ text: String) -> MessageContentAnalysis {
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    if looksLikeDenseEncodedContent(trimmed) {
+        return MessageContentAnalysis(kind: .denseEncoded, preview: "")
+    }
+
+    let lines = text.components(separatedBy: .newlines)
+    if lines.count > collapsedLineLimit || text.count > collapsedCharacterLimit {
+        return MessageContentAnalysis(kind: .longText, preview: collapsedPreview(for: text))
+    }
+
+    return MessageContentAnalysis(kind: .normal, preview: text)
+}
+
+func collapsedPreview(for text: String) -> String {
+    let lines = text.components(separatedBy: .newlines)
+    var preview = lines.prefix(collapsedLineLimit).joined(separator: "\n")
+
+    if preview.count > collapsedCharacterLimit {
+        let endIndex = preview.index(preview.startIndex, offsetBy: collapsedCharacterLimit)
+        preview = String(preview[..<endIndex])
+    }
+
+    return preview.trimmingCharacters(in: .whitespacesAndNewlines) + "\n..."
+}
+
+func looksLikeDenseEncodedContent(_ text: String) -> Bool {
+    guard text.count >= denseContinuousCharacterLimit else { return false }
+
+    let compact = text.filter { !$0.isWhitespace && !$0.isNewline }
+    guard compact.count >= denseContinuousCharacterLimit else { return false }
+
+    let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=_-")
+    let encodedCount = compact.unicodeScalars.filter { allowed.contains($0) }.count
+    let ratio = Double(encodedCount) / Double(compact.count)
+    let hasLongUnbrokenRun = text
+        .components(separatedBy: .whitespacesAndNewlines)
+        .contains { $0.count >= denseContinuousCharacterLimit }
+
+    return ratio > 0.94 && hasLongUnbrokenRun
 }
 
 struct MarkdownMessageBody: View {

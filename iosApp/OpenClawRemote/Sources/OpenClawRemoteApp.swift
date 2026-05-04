@@ -9,7 +9,6 @@ struct OpenClawRemoteApp: App {
 
     @State private var isDark = false
     @State private var showSettings = false
-    @State private var showHistory = false
     @State private var showQRScanner = false
 
     init() {
@@ -37,12 +36,6 @@ struct OpenClawRemoteApp: App {
                         },
                         onClose: { showQRScanner = false }
                     )
-                } else if showHistory {
-                    HistoryScreenView(
-                        wsManager: wsManager,
-                        colors: colors,
-                        onBack: { showHistory = false }
-                    )
                 } else if showSettings {
                     SettingsScreenView(
                         wsManager: wsManager,
@@ -68,7 +61,6 @@ struct OpenClawRemoteApp: App {
                         isDark: isDark,
                         colors: colors,
                         onToggleTheme: { isDark.toggle() },
-                        onNavigateToHistory: { showHistory = true },
                         onNavigateToSettings: { showSettings = true }
                     )
                 }

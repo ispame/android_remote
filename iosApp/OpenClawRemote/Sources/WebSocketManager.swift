@@ -9,10 +9,10 @@ final class WebSocketManager: ObservableObject {
     @Published var connectionState: ConnectionState = .disconnected
     @Published var pairingState: PairingState = .unpaired
     @Published private(set) var messages: [ChatMessage] = []
-    @Published private(set) var historyMessages: [ChatMessage] = []
     @Published private(set) var historyLoading = false
     @Published private(set) var historyError: String?
     @Published private(set) var historyHasMore = false
+    @Published private(set) var historyLoaded = false
 
     private let messageSubject = PassthroughSubject<WsMessageEvent, Never>()
     var messageChannel: AnyPublisher<WsMessageEvent, Never> {
@@ -38,6 +38,8 @@ final class WebSocketManager: ObservableObject {
     private var pendingAcks: [Int: (MessageStatus) -> Void] = [:]
     private var seqCounter = 0
     private var receivedMessageSeqs = Set<Int>()
+    private var loadedHistoryKeys = Set<String>()
+    private var oldestHistoryTimestamp: String?
 
     init(deviceId: String, deviceLabel: String, token: String) {
         self.deviceId = deviceId
@@ -150,24 +152,27 @@ final class WebSocketManager: ObservableObject {
         sendJson(frame)
     }
 
-    func requestRecentHistory(rounds: Int = 10) {
+    func requestRecentHistory(limit: Int = 10) {
+        if historyLoading { return }
+        if historyLoaded && !historyHasMore { return }
         guard pairingState == .paired else {
             historyLoading = false
             historyError = "请先配对 OpenClaw"
-            historyMessages = []
             historyHasMore = false
             return
         }
 
         historyLoading = true
         historyError = nil
-        let limit = max(1, rounds * 2)
-        let frame: [String: Any] = [
+        var frame: [String: Any] = [
             "type": "history_request",
             "app_id": deviceId,
             "session_key": "current",
-            "limit": limit
+            "limit": max(1, limit)
         ]
+        if let oldestHistoryTimestamp {
+            frame["before_timestamp"] = oldestHistoryTimestamp
+        }
         sendJson(frame)
     }
 
@@ -416,7 +421,6 @@ final class WebSocketManager: ObservableObject {
         let error = json["error"] as? String
         if let error = error, !error.isEmpty {
             historyError = error
-            historyMessages = []
             historyHasMore = false
             return
         }
@@ -428,9 +432,37 @@ final class WebSocketManager: ObservableObject {
             let timestamp = item["timestamp"] as? String ?? self.timestamp()
             return HistoryMessagePayload(content: content, role: role, timestamp: timestamp).chatMessage
         }
-        historyMessages = parsed
+
+        if parsed.isEmpty {
+            historyError = historyLoaded ? "已显示全部历史对话" : "还没有可读取的历史"
+            historyHasMore = false
+            historyLoaded = true
+            return
+        }
+
+        let existingKeys = Set(messages.map(messageHistoryKey))
+        let newMessages = parsed.filter { message in
+            let key = messageHistoryKey(message)
+            return !existingKeys.contains(key) && !loadedHistoryKeys.contains(key)
+        }
+        loadedHistoryKeys.formUnion(parsed.map(messageHistoryKey))
+        oldestHistoryTimestamp = (messages + parsed)
+            .compactMap { $0.rawTimestamp }
+            .min { lhs, rhs in
+                let lhsTime = ISO8601DateFormatter().date(from: lhs)?.timeIntervalSince1970 ?? 0
+                let rhsTime = ISO8601DateFormatter().date(from: rhs)?.timeIntervalSince1970 ?? 0
+                return lhsTime < rhsTime
+            }
+        if !newMessages.isEmpty {
+            messages.insert(contentsOf: newMessages, at: 0)
+        }
         historyHasMore = json["has_more"] as? Bool ?? false
+        historyLoaded = true
         historyError = nil
+    }
+
+    private func messageHistoryKey(_ message: ChatMessage) -> String {
+        "\(message.senderId)|\(message.rawTimestamp ?? message.timestamp)|\(message.content)"
     }
 
     @discardableResult
