@@ -48,6 +48,9 @@ class WebSocketManager(
 
     private var registeredBackendId: String? = null
 
+    /** True when reconnecting with a previously paired backend (suppresses pairing message). */
+    private var isRestoringPairing = false
+
     /** seq → callback to invoke when delivery is confirmed or failed. */
     private val pendingAcks = mutableMapOf<Int, (MessageStatus) -> Unit>()
 
@@ -198,6 +201,12 @@ class WebSocketManager(
                     if (success) {
                         _connectionState.value = ConnectionState.REGISTERED
                         offerEvent(WsMessageEvent.Registered(deviceId))
+                        // Restore pairing silently on reconnect if we had a paired backend
+                        val preferredBackendId = registeredBackendId
+                        if (preferredBackendId != null) {
+                            isRestoringPairing = true
+                            requestPair(preferredBackendId)
+                        }
                     }
                 }
                 "pair_response" -> {
@@ -207,7 +216,8 @@ class WebSocketManager(
                     if (approve) {
                         registeredBackendId = backendId
                         _pairingState.value = PairingState.PAIRED
-                        offerEvent(WsMessageEvent.Paired(backendId, backendLabel))
+                        offerEvent(WsMessageEvent.Paired(backendId, backendLabel, isRestoringPairing))
+                        isRestoringPairing = false
                     } else {
                         _pairingState.value = PairingState.UNPAIRED
                         offerEvent(

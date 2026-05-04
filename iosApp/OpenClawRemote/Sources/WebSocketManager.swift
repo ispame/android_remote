@@ -30,6 +30,7 @@ final class WebSocketManager: ObservableObject {
     private var reconnectAttempts = 0
     private var intentionalDisconnect = false
     private var socketGeneration = 0
+    private var isRestoringPairing = false
     private let reconnectBaseDelay: TimeInterval = 2
     private let reconnectMaxDelay: TimeInterval = 30
 
@@ -326,6 +327,7 @@ final class WebSocketManager: ObservableObject {
                     self.cancelReconnect()
                     self.messageSubject.send(WsMessageEvent.registered(self.deviceId))
                     if let backendId = self.preferredBackendId ?? self.registeredBackendId {
+                        self.isRestoringPairing = true
                         self.requestPair(backendId: backendId)
                     }
                 }
@@ -340,7 +342,11 @@ final class WebSocketManager: ObservableObject {
                     self.preferredBackendLabel = backendLabel
                     self.pairingState = .paired
                     self.messageSubject.send(WsMessageEvent.paired(backendId, backendLabel))
-                    self.addMessage("已成功配对 OpenClaw: \(backendLabel)", senderId: "assistant")
+                    // Only show pairing message on first-time pairing, not on reconnect restoration
+                    if !self.isRestoringPairing {
+                        self.addMessage("已成功配对 OpenClaw: \(backendLabel)", senderId: "assistant")
+                    }
+                    self.isRestoringPairing = false
                 } else {
                     self.pairingState = .unpaired
                     self.addMessage("配对请求被拒绝", senderId: "assistant")

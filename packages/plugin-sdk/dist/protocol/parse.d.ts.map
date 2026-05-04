@@ -1,0 +1,1 @@
+{"version":3,"file":"parse.d.ts","sourceRoot":"","sources":["../../src/protocol/parse.ts"],"names":[],"mappings":"AAAA;;GAEG;AAEH,OAAO,KAAK,EACV,aAAa,EAYd,MAAM,YAAY,CAAC;AAEpB;;GAEG;AACH,qBAAa,eAAgB,SAAQ,KAAK;gBAC5B,OAAO,EAAE,MAAM;CAI5B;AAED;;;GAGG;AACH,wBAAgB,UAAU,CAAC,GAAG,EAAE,MAAM,GAAG,aAAa,CA4CrD;AAED;;GAEG;AACH,wBAAgB,cAAc,CAAC,GAAG,EAAE,MAAM,GAAG,aAAa,GAAG,IAAI,CAMhE"}
