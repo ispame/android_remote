@@ -152,7 +152,7 @@ final class WebSocketManager: ObservableObject {
         sendJson(frame)
     }
 
-    func requestRecentHistory(limit: Int = 10) {
+    func requestRecentHistory(rounds: Int = 15) {
         if historyLoading { return }
         if historyLoaded && !historyHasMore { return }
         guard pairingState == .paired else {
@@ -168,7 +168,7 @@ final class WebSocketManager: ObservableObject {
             "type": "history_request",
             "app_id": deviceId,
             "session_key": "current",
-            "limit": max(1, limit)
+            "limit": max(1, rounds) * 2
         ]
         if let oldestHistoryTimestamp {
             frame["before_timestamp"] = oldestHistoryTimestamp

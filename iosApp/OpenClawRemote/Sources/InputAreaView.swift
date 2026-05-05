@@ -2,6 +2,20 @@ import SwiftUI
 
 enum InputMode { case voice, text }
 
+enum VoiceRecordingState {
+    case idle
+    case recordingSend
+    case recordingCancel
+
+    var isRecording: Bool {
+        self != .idle
+    }
+
+    var isCancelled: Bool {
+        self == .recordingCancel
+    }
+}
+
 struct InputAreaView: View {
     @Binding var inputMode: InputMode
     let isRecording: Bool
@@ -10,13 +24,35 @@ struct InputAreaView: View {
     let onSendText: (String) -> Void
     let onMicPress: () -> Void
     let onMicRelease: (Bool) -> Void
-    let audioRecorder: AudioRecorder
+    @ObservedObject var audioRecorder: AudioRecorder
 
     @State private var textFieldValue = ""
-    @State private var dragOffsetY: CGFloat = 0
-    @State private var isDragging = false
+    @State private var touchLocationY: CGFloat = UIScreen.main.bounds.height
+    @State private var isMicGestureActive = false
 
-    private var isCancelled: Bool { dragOffsetY < -80 && isDragging }
+    private var recordingPanelHeight: CGFloat {
+        UIScreen.main.bounds.height * 0.26
+    }
+
+    private var recordingPanelTopY: CGFloat {
+        UIScreen.main.bounds.height - recordingPanelHeight
+    }
+
+    private var bottomSafeAreaInset: CGFloat {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap { $0.windows }
+            .first { $0.isKeyWindow }?
+            .safeAreaInsets.bottom ?? 0
+    }
+
+    private var recordingState: VoiceRecordingState {
+        guard isRecording else { return .idle }
+        if isMicGestureActive && touchLocationY < recordingPanelTopY {
+            return .recordingCancel
+        }
+        return .recordingSend
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -35,25 +71,44 @@ struct InputAreaView: View {
             } else {
                 VoiceInputRowView(
                     isRecording: isRecording,
-                    isCancelled: isCancelled,
-                    isDragging: isDragging,
-                    dragOffsetY: dragOffsetY,
+                    recordingState: recordingState,
                     theme: colors,
-                    onMicPress: onMicPress,
-                    onMicRelease: { cancelled in
-                        dragOffsetY = 0
-                        isDragging = false
+                    onMicPress: {
+                        touchLocationY = UIScreen.main.bounds.height
+                        isMicGestureActive = true
+                        onMicPress()
+                    },
+                    onMicRelease: { finalLocationY in
+                        touchLocationY = finalLocationY
+                        let cancelled = finalLocationY < recordingPanelTopY
+                        isMicGestureActive = false
+                        touchLocationY = UIScreen.main.bounds.height
                         onMicRelease(cancelled)
                     },
-                    onDrag: { delta in
-                        dragOffsetY += delta
-                        isDragging = dragOffsetY < -30
+                    onMicDrag: { locationY in
+                        touchLocationY = locationY
+                        isMicGestureActive = true
                     },
                     onSwitchToText: { inputMode = .text }
                 )
             }
         }
         .background(colors.surface)
+        .overlay(alignment: .bottom) {
+            if isRecording {
+                RecordingOverlayView(
+                    state: recordingState,
+                    audioLevel: audioRecorder.audioLevel,
+                    panelHeight: recordingPanelHeight,
+                    theme: colors
+                )
+                .offset(y: bottomSafeAreaInset)
+                .allowsHitTesting(false)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .animation(.easeInOut(duration: 0.16), value: recordingState.isCancelled)
+        .animation(.easeOut(duration: 0.18), value: isRecording)
         .onChange(of: inputMode) { newValue in
             if newValue == .text {
                 textFieldValue = ""
@@ -129,50 +184,35 @@ struct TextInputRowView: View {
 
 struct VoiceInputRowView: View {
     let isRecording: Bool
-    let isCancelled: Bool
-    let isDragging: Bool
-    let dragOffsetY: CGFloat
+    let recordingState: VoiceRecordingState
     let theme: MochiColors
     let onMicPress: () -> Void
-    let onMicRelease: (Bool) -> Void
-    let onDrag: (CGFloat) -> Void
+    let onMicRelease: (CGFloat) -> Void
+    let onMicDrag: (CGFloat) -> Void
     let onSwitchToText: () -> Void
 
     var body: some View {
-        VStack(spacing: 8) {
-            HStack {
-                Button(action: onSwitchToText) {
-                    Image(systemName: "keyboard")
-                        .font(.system(size: 22))
-                        .foregroundColor(theme.icon)
-                }
-                .frame(width: 44, height: 44)
-
-                Spacer()
-
-                VoiceMicButtonView(
-                    isRecording: isRecording,
-                    isCancelled: isCancelled,
-                    isDragging: isDragging,
-                    dragOffsetY: dragOffsetY,
-                    theme: theme,
-                    onPress: onMicPress,
-                    onRelease: onMicRelease,
-                    onDrag: onDrag
-                )
-
-                Spacer()
-                Spacer().frame(width: 44, height: 44)
+        HStack {
+            Button(action: onSwitchToText) {
+                Image(systemName: "keyboard")
+                    .font(.system(size: 22))
+                    .foregroundColor(theme.icon)
             }
+            .frame(width: 44, height: 44)
 
-            if isRecording {
-                CancelProgressView(
-                    isDragging: isDragging,
-                    isCancelled: isCancelled,
-                    dragOffsetY: dragOffsetY,
-                    theme: theme
-                )
-            }
+            Spacer()
+
+            VoiceMicButtonView(
+                isRecording: isRecording,
+                recordingState: recordingState,
+                theme: theme,
+                onPress: onMicPress,
+                onRelease: onMicRelease,
+                onDrag: onMicDrag
+            )
+
+            Spacer()
+            Spacer().frame(width: 44, height: 44)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
@@ -181,17 +221,17 @@ struct VoiceInputRowView: View {
 
 struct VoiceMicButtonView: View {
     let isRecording: Bool
-    let isCancelled: Bool
-    let isDragging: Bool
-    let dragOffsetY: CGFloat
+    let recordingState: VoiceRecordingState
     let theme: MochiColors
     let onPress: () -> Void
-    let onRelease: (Bool) -> Void
+    let onRelease: (CGFloat) -> Void
     let onDrag: (CGFloat) -> Void
 
+    @State private var hasStartedGesture = false
+
     private var backgroundColor: Color {
-        if isCancelled { return theme.recordingRed.opacity(0.8) }
-        if isRecording { return theme.recordingRed }
+        if recordingState.isCancelled { return theme.recordingRed.opacity(0.92) }
+        if isRecording { return Color(hex: "1E9BFF") }
         return theme.secondary
     }
 
@@ -199,61 +239,146 @@ struct VoiceMicButtonView: View {
         Image(systemName: "mic.fill")
             .font(.system(size: 24))
             .foregroundColor(isRecording ? .white : theme.onSecondary)
-            .rotationEffect(.degrees(isCancelled ? 45 : 0))
+            .rotationEffect(.degrees(recordingState.isCancelled ? 45 : 0))
             .frame(width: 56, height: 56)
             .background(backgroundColor)
             .clipShape(Circle())
             .gesture(
-                DragGesture(minimumDistance: 0)
+                DragGesture(minimumDistance: 0, coordinateSpace: .global)
                     .onChanged { value in
-                        if !isRecording {
+                        if !hasStartedGesture {
+                            hasStartedGesture = true
                             onPress()
                         }
-                        onDrag(value.translation.height)
+                        onDrag(value.location.y)
                     }
                     .onEnded { value in
-                        let cancelled = value.translation.height < -80
-                        onRelease(cancelled)
+                        hasStartedGesture = false
+                        onRelease(value.location.y)
                     }
             )
     }
 }
 
-struct CancelProgressView: View {
-    let isDragging: Bool
-    let isCancelled: Bool
-    let dragOffsetY: CGFloat
+struct RecordingOverlayView: View {
+    let state: VoiceRecordingState
+    let audioLevel: CGFloat
+    let panelHeight: CGFloat
     let theme: MochiColors
 
-    private var cancelProgress: CGFloat {
-        (-dragOffsetY / 80).clamp(0, 1)
+    @State private var glowPulse: CGFloat = 0
+
+    private var promptText: String {
+        state.isCancelled ? "松手取消" : "松手发送，上移取消"
+    }
+
+    private var promptColor: Color {
+        state.isCancelled ? theme.recordingRed : .white
+    }
+
+    private var backgroundGradient: LinearGradient {
+        if state.isCancelled {
+            return LinearGradient(
+                colors: [
+                    Color.black.opacity(0),
+                    theme.recordingRed.opacity(0.28),
+                    Color(hex: "2B0606").opacity(0.95)
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        }
+
+        return LinearGradient(
+            colors: [
+                Color(hex: "0D7FFF").opacity(0),
+                Color(hex: "1597FF").opacity(0.56),
+                Color(hex: "238CFF").opacity(0.98)
+            ],
+            startPoint: .top,
+            endPoint: .bottom
+        )
     }
 
     var body: some View {
-        if isDragging {
-            VStack(spacing: 4) {
-                GeometryReader { _ in
-                    ZStack(alignment: .leading) {
-                        RoundedRectangle(cornerRadius: 2)
-                            .fill(theme.inputBorder)
-                            .frame(width: 120, height: 3)
+        VStack(spacing: 22) {
+            Spacer(minLength: 18)
 
-                        RoundedRectangle(cornerRadius: 2)
-                            .fill(theme.recordingRed)
-                            .frame(width: 120 * cancelProgress, height: 3)
-                    }
-                }
-                .frame(width: 120, height: 3)
+            Text(promptText)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundColor(promptColor.opacity(state.isCancelled ? 0.95 : 0.82))
+                .shadow(color: .black.opacity(0.18), radius: 8, x: 0, y: 2)
 
-                Text(isCancelled ? "松开取消" : "上划取消")
-                    .font(.system(size: 12, weight: .regular))
-                    .foregroundColor(isCancelled ? theme.recordingRed : theme.textSecondary)
-            }
-        } else {
-            Text("松手发送，上滑取消")
-                .font(.system(size: 12, weight: .regular))
-                .foregroundColor(theme.textSecondary)
+            VoiceWaveformView(
+                audioLevel: audioLevel,
+                isCancelled: state.isCancelled,
+                theme: theme
+            )
+            .frame(height: 52)
+            .padding(.horizontal, 42)
+            .padding(.bottom, 30)
         }
+        .frame(maxWidth: .infinity)
+        .frame(height: panelHeight)
+        .background(backgroundGradient)
+        .overlay(alignment: .bottom) {
+            Circle()
+                .fill((state.isCancelled ? theme.recordingRed : Color(hex: "4FB7FF")).opacity(0.2 + glowPulse * 0.1))
+                .blur(radius: 46)
+                .frame(width: 320, height: 120)
+                .offset(y: 42)
+        }
+        .ignoresSafeArea(edges: .bottom)
+        .onAppear {
+            withAnimation(.easeInOut(duration: 1.15).repeatForever(autoreverses: true)) {
+                glowPulse = 1
+            }
+        }
+    }
+}
+
+struct VoiceWaveformView: View {
+    let audioLevel: CGFloat
+    let isCancelled: Bool
+    let theme: MochiColors
+
+    @State private var phase: CGFloat = 0
+
+    private let barCount = 54
+
+    var body: some View {
+        GeometryReader { geometry in
+            HStack(alignment: .center, spacing: 3) {
+                ForEach(0..<barCount, id: \.self) { index in
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(isCancelled ? theme.recordingRed : .white)
+                        .frame(width: 3, height: barHeight(index: index, maxHeight: geometry.size.height))
+                        .opacity(isCancelled ? 0.9 : 0.94)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+        }
+        .onAppear {
+            phase = 0
+            withAnimation(.linear(duration: 0.85).repeatForever(autoreverses: false)) {
+                phase = .pi * 2
+            }
+        }
+    }
+
+    private func barHeight(index: Int, maxHeight: CGFloat) -> CGFloat {
+        let position = CGFloat(index) / CGFloat(barCount - 1)
+        let distanceFromCenter = abs(position - 0.5) * 2
+        let centerBias = (1 - distanceFromCenter).clamp(0.12, 1)
+        let voiceEnergy = max(audioLevel.clamp(0, 1), 0.08)
+        let primaryWave = (sin(CGFloat(index) * 0.48 + phase) + 1) / 2
+        let secondaryWave = (sin(CGFloat(index) * 1.13 + phase * 1.7) + 1) / 2
+
+        let idleMotion = 2 + 5 * primaryWave
+        let liveMotion = maxHeight * 0.72 * voiceEnergy * centerBias * (0.42 + 0.58 * primaryWave)
+        let detailMotion = maxHeight * 0.16 * voiceEnergy * secondaryWave
+
+        return (idleMotion + liveMotion + detailMotion).clamp(5, maxHeight)
     }
 }
 

@@ -110,7 +110,7 @@ struct MainScreenView: View {
                         .padding(.vertical, 16)
                     }
                     .refreshable {
-                        wsManager.requestRecentHistory(limit: 10)
+                        wsManager.requestRecentHistory()
                     }
 
                     if wsManager.pairingState != .paired {
