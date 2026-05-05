@@ -22,10 +22,11 @@ struct ChatMessage: Identifiable {
     let senderId: String
     let status: MessageStatus?
     let seq: Int?
+    let clientMessageId: String?
 
     var isUser: Bool { senderId == "user" }
 
-    init(id: UUID = UUID(), content: String, timestamp: String, rawTimestamp: String? = nil, senderId: String, status: MessageStatus? = nil, seq: Int? = nil) {
+    init(id: UUID = UUID(), content: String, timestamp: String, rawTimestamp: String? = nil, senderId: String, status: MessageStatus? = nil, seq: Int? = nil, clientMessageId: String? = nil) {
         self.id = id
         self.content = content
         self.timestamp = timestamp
@@ -33,6 +34,7 @@ struct ChatMessage: Identifiable {
         self.senderId = senderId
         self.status = status
         self.seq = seq
+        self.clientMessageId = clientMessageId
     }
 }
 
@@ -71,6 +73,8 @@ struct GatewayConfig {
     var token: String
     var pairedBackendId: String?
     var pairedBackendLabel: String?
+    var asrMode: String
+    var asrProfileId: String
 
     init(
         gatewayUrl: String = "wss://boson-tech.top/ws",
@@ -78,7 +82,9 @@ struct GatewayConfig {
         deviceLabel: String = "",
         token: String = "",
         pairedBackendId: String? = nil,
-        pairedBackendLabel: String? = nil
+        pairedBackendLabel: String? = nil,
+        asrMode: String = "router",
+        asrProfileId: String = ""
     ) {
         self.gatewayUrl = gatewayUrl
         self.deviceId = deviceId
@@ -86,7 +92,17 @@ struct GatewayConfig {
         self.token = token
         self.pairedBackendId = pairedBackendId
         self.pairedBackendLabel = pairedBackendLabel
+        self.asrMode = asrMode
+        self.asrProfileId = asrProfileId
     }
+}
+
+struct AsrProviderProfile: Identifiable, Equatable {
+    let id: String
+    let provider: String
+    let providerLabel: String
+    let model: String
+    let modelLabel: String
 }
 
 enum QRParseResult {

@@ -26,7 +26,9 @@ final class SettingsManager: ObservableObject {
             deviceLabel: defaults.string(forKey: "device_label") ?? "",
             token: defaults.string(forKey: "token") ?? "",
             pairedBackendId: defaults.string(forKey: "paired_backend_id"),
-            pairedBackendLabel: defaults.string(forKey: "paired_backend_label")
+            pairedBackendLabel: defaults.string(forKey: "paired_backend_label"),
+            asrMode: defaults.string(forKey: "asr_mode") ?? "router",
+            asrProfileId: defaults.string(forKey: "asr_profile_id") ?? ""
         )
     }
 
@@ -35,6 +37,8 @@ final class SettingsManager: ObservableObject {
         defaults.set(config.deviceId, forKey: "device_id")
         defaults.set(config.deviceLabel, forKey: "device_label")
         defaults.set(config.token, forKey: "token")
+        defaults.set(config.asrMode, forKey: "asr_mode")
+        defaults.set(config.asrProfileId, forKey: "asr_profile_id")
         if let pairedId = config.pairedBackendId {
             defaults.set(pairedId, forKey: "paired_backend_id")
         } else {

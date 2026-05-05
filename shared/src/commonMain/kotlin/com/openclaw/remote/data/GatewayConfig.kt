@@ -10,4 +10,6 @@ data class GatewayConfig(
     val token: String = "",
     val pairedBackendId: String? = null,
     val pairedBackendLabel: String? = null,
+    val asrMode: String = "router",
+    val asrProfileId: String = "",
 )

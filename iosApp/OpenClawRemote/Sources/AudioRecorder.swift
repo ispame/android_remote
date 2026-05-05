@@ -19,13 +19,15 @@ final class AudioRecorder: ObservableObject {
         try? recordingSession?.setActive(true)
 
         let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        tempFile = documentsPath.appendingPathComponent("temp_recording.m4a")
+        tempFile = documentsPath.appendingPathComponent("temp_recording.wav")
 
         let settings: [String: Any] = [
-            AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
+            AVFormatIDKey: Int(kAudioFormatLinearPCM),
             AVSampleRateKey: 16000,
             AVNumberOfChannelsKey: 1,
-            AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
+            AVLinearPCMBitDepthKey: 16,
+            AVLinearPCMIsFloatKey: false,
+            AVLinearPCMIsBigEndianKey: false
         ]
 
         guard let tempFile = tempFile else { return }

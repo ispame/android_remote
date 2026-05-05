@@ -1,7 +1,9 @@
 package com.openclaw.remote.network
 
-actual fun Base64.encode(data: ByteArray): String {
-    return platform.Foundation.NSData(data.toNSData()).base64EncodedString()
+actual object Base64 {
+    actual fun encode(data: ByteArray): String {
+        return platform.Foundation.NSData(data.toNSData()).base64EncodedString()
+    }
 }
 
 private fun ByteArray.toNSData(): platform.Foundation.NSData {

@@ -2,6 +2,7 @@ package com.openclaw.remote.viewmodel
 
 import com.openclaw.remote.data.ChatMessage
 import com.openclaw.remote.data.GatewayConfig
+import com.openclaw.remote.data.MessageStatus
 import com.openclaw.remote.data.SettingsManager
 import com.openclaw.remote.domain.ConnectionState
 import com.openclaw.remote.domain.PairingState
@@ -70,6 +71,8 @@ class ChatViewModel(
             deviceId = deviceId,
             deviceLabel = config.deviceLabel.ifEmpty { "我的设备" },
             token = config.token,
+            asrMode = config.asrMode,
+            asrProfileId = config.asrProfileId,
         )
 
         viewModelScope.launch {
@@ -101,6 +104,18 @@ class ChatViewModel(
                     }
                     is WsMessageEvent.NewMessage -> {
                         _messages.value = _messages.value + event.message
+                    }
+                    is WsMessageEvent.AsrResult -> {
+                        _messages.value = _messages.value.map { message ->
+                            if (event.clientMessageId != null && message.clientMessageId == event.clientMessageId) {
+                                message.copy(
+                                    content = if (event.success) event.text.orEmpty() else "语音识别失败: ${event.error ?: "unknown"}",
+                                    status = if (event.success) MessageStatus.DELIVERED else MessageStatus.FAILED,
+                                )
+                            } else {
+                                message
+                            }
+                        }
                     }
                     is WsMessageEvent.Unpaired -> {
                         _pairedBackendLabel.value = null
@@ -154,8 +169,6 @@ class ChatViewModel(
 
     fun sendAudio(audioData: ByteArray) {
         if (_pairingState.value != PairingState.PAIRED) return
-        val ts = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date())
-        _messages.value = _messages.value + ChatMessage("发送语音...", ts, "user")
         wsManager?.sendAudio(audioData)
     }
 

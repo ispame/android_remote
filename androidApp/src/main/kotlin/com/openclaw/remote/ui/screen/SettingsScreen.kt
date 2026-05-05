@@ -26,6 +26,10 @@ import com.openclaw.remote.data.SettingsManager
 import com.openclaw.remote.domain.ConnectionState
 import com.openclaw.remote.domain.PairingState
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import org.json.JSONObject
+import java.net.URL
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -48,6 +52,10 @@ fun SettingsScreen(
     var deviceLabel by remember(config) { mutableStateOf(config.deviceLabel) }
     var manualBackendId by remember(config) { mutableStateOf(config.pairedBackendId ?: "") }
     var manualToken by remember(config) { mutableStateOf(config.token) }
+    var asrMode by remember(config) { mutableStateOf(config.asrMode.ifEmpty { "router" }) }
+    var asrProfileId by remember(config) { mutableStateOf(config.asrProfileId) }
+    var asrProfiles by remember { mutableStateOf<List<AsrProviderProfile>>(emptyList()) }
+    var asrProfileMenuExpanded by remember { mutableStateOf(false) }
     var showSavedSnackbar by remember { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -55,6 +63,14 @@ fun SettingsScreen(
         if (showSavedSnackbar) {
             snackbarHostState.showSnackbar("设置已保存")
             showSavedSnackbar = false
+        }
+    }
+
+    LaunchedEffect(gatewayUrl) {
+        val (defaultProfileId, profiles) = fetchAsrProfiles(gatewayUrl)
+        asrProfiles = profiles
+        if (asrProfileId.isBlank()) {
+            asrProfileId = defaultProfileId ?: profiles.firstOrNull()?.id ?: ""
         }
     }
 
@@ -84,7 +100,9 @@ fun SettingsScreen(
                                         deviceLabel = deviceLabel.ifEmpty { "我的设备" },
                                         token = manualToken,
                                         pairedBackendId = config.pairedBackendId,
-                                        pairedBackendLabel = config.pairedBackendLabel
+                                        pairedBackendLabel = config.pairedBackendLabel,
+                                        asrMode = asrMode,
+                                        asrProfileId = asrProfileId,
                                     )
                                 )
                                 showSavedSnackbar = true
@@ -185,7 +203,9 @@ fun SettingsScreen(
                                 deviceLabel = deviceLabel.ifEmpty { "我的设备" },
                                 token = manualToken,
                                 pairedBackendId = manualBackendId,
-                                pairedBackendLabel = null
+                                pairedBackendLabel = null,
+                                asrMode = asrMode,
+                                asrProfileId = asrProfileId,
                             )
                         )
                         snackbarHostState.showSnackbar("正在连接并配对...")
@@ -217,6 +237,65 @@ fun SettingsScreen(
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri)
             )
 
+            HorizontalDivider()
+
+            SectionTitle("语音识别")
+            Text(
+                text = "Router 识别使用公网托管配置；OpenClaw 后端识别使用 openclaw.json 中的 ASR 配置",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                RadioButton(
+                    selected = asrMode != "backend",
+                    onClick = { asrMode = "router" }
+                )
+                Text("Router 识别", modifier = Modifier.weight(1f))
+                RadioButton(
+                    selected = asrMode == "backend",
+                    onClick = { asrMode = "backend" }
+                )
+                Text("OpenClaw 后端识别")
+            }
+            if (asrMode != "backend") {
+                if (asrProfiles.isEmpty()) {
+                    OutlinedTextField(
+                        value = asrProfileId,
+                        onValueChange = { asrProfileId = it },
+                        label = { Text("Provider / Model Profile") },
+                        placeholder = { Text("默认 profile 或 volcengine-bigmodel") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+                } else {
+                    Box(modifier = Modifier.fillMaxWidth()) {
+                        OutlinedButton(
+                            onClick = { asrProfileMenuExpanded = true },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            val selected = asrProfiles.firstOrNull { it.id == asrProfileId }
+                            Text(selected?.let { "${it.providerLabel} · ${it.modelLabel}" } ?: "选择 Provider / Model")
+                        }
+                        DropdownMenu(
+                            expanded = asrProfileMenuExpanded,
+                            onDismissRequest = { asrProfileMenuExpanded = false }
+                        ) {
+                            asrProfiles.forEach { profile ->
+                                DropdownMenuItem(
+                                    text = { Text("${profile.providerLabel} · ${profile.modelLabel}") },
+                                    onClick = {
+                                        asrProfileId = profile.id
+                                        asrProfileMenuExpanded = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            HorizontalDivider()
+
             SectionTitle("设备信息")
             OutlinedTextField(
                 value = deviceLabel,
@@ -237,7 +316,9 @@ fun SettingsScreen(
                                 deviceLabel = deviceLabel.ifEmpty { "我的设备" },
                                 token = manualToken,
                                 pairedBackendId = manualBackendId.ifEmpty { null },
-                                pairedBackendLabel = config.pairedBackendLabel
+                                pairedBackendLabel = config.pairedBackendLabel,
+                                asrMode = asrMode,
+                                asrProfileId = asrProfileId,
                             )
                         )
                         showSavedSnackbar = true
@@ -366,4 +447,56 @@ private fun HelpCard() {
             )
         }
     }
+}
+
+private data class AsrProviderProfile(
+    val id: String,
+    val providerLabel: String,
+    val modelLabel: String,
+)
+
+private suspend fun fetchAsrProfiles(gatewayUrl: String): Pair<String?, List<AsrProviderProfile>> {
+    return withContext(Dispatchers.IO) {
+        try {
+            val url = URL(asrProvidersUrl(gatewayUrl))
+            val body = url.readText()
+            val json = JSONObject(body)
+            val defaultProfileId = json.optString("defaultProfileId").ifEmpty { null }
+            val profilesJson = json.optJSONArray("profiles")
+            val profiles = buildList {
+                if (profilesJson != null) {
+                    for (i in 0 until profilesJson.length()) {
+                        val item = profilesJson.optJSONObject(i) ?: continue
+                        val id = item.optString("id")
+                        if (id.isBlank()) continue
+                        val provider = item.optString("provider")
+                        val model = item.optString("model")
+                        add(
+                            AsrProviderProfile(
+                                id = id,
+                                providerLabel = item.optString("providerLabel").ifEmpty { provider },
+                                modelLabel = item.optString("modelLabel").ifEmpty { model },
+                            )
+                        )
+                    }
+                }
+            }
+            defaultProfileId to profiles
+        } catch (_: Exception) {
+            null to emptyList()
+        }
+    }
+}
+
+private fun asrProvidersUrl(gatewayUrl: String): String {
+    var value = gatewayUrl.trim()
+    value = when {
+        value.startsWith("wss://") -> "https://" + value.removePrefix("wss://")
+        value.startsWith("ws://") -> "http://" + value.removePrefix("ws://")
+        else -> "https://$value"
+    }
+    if (value.endsWith("/ws")) {
+        value = value.removeSuffix("/ws")
+    }
+    return value.trimEnd('/') + "/api/asr/providers"
 }

@@ -8,21 +8,21 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import java.io.ByteArrayOutputStream
 
-actual class AudioRecorder(private val context: Context) {
+class AudioRecorderAndroid(private val context: Context) : AudioRecorder {
     private var audioRecord: AudioRecord? = null
     private var recordingThread: Thread? = null
     private var isRecordingInternal = false
     private val audioBuffer = ByteArrayOutputStream()
 
     private val _isRecording = MutableStateFlow(false)
-    actual val isRecording: StateFlow<Boolean> = _isRecording
+    override val isRecording: StateFlow<Boolean> = _isRecording
 
     private val sampleRate = 16000
     private val channelConfig = AudioFormat.CHANNEL_IN_MONO
     private val audioFormat = AudioFormat.ENCODING_PCM_16BIT
     private val bufferSize = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat)
 
-    actual fun startRecording() {
+    override fun startRecording() {
         audioBuffer.reset()
         audioRecord = AudioRecord(
             MediaRecorder.AudioSource.MIC,
@@ -48,7 +48,7 @@ actual class AudioRecorder(private val context: Context) {
         recordingThread?.start()
     }
 
-    actual fun stopRecording(onComplete: (ByteArray) -> Unit) {
+    override fun stopRecording(onComplete: (ByteArray) -> Unit) {
         isRecordingInternal = false
         _isRecording.value = false
 

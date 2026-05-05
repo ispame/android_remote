@@ -1,4 +1,5 @@
 import SwiftUI
+import Foundation
 
 // MARK: - Connection Status Card
 
@@ -192,6 +193,9 @@ struct SettingsScreenView: View {
     @State private var deviceLabel: String = ""
     @State private var manualBackendId: String = ""
     @State private var manualToken: String = ""
+    @State private var asrMode: String = "router"
+    @State private var asrProfileId: String = ""
+    @State private var asrProfiles: [AsrProviderProfile] = []
     @State private var showSaved = false
 
     var body: some View {
@@ -268,10 +272,13 @@ struct SettingsScreenView: View {
                             deviceLabel: deviceLabel.isEmpty ? "我的设备" : deviceLabel,
                             token: manualToken,
                             pairedBackendId: manualBackendId,
-                            pairedBackendLabel: nil
+                            pairedBackendLabel: nil,
+                            asrMode: asrMode,
+                            asrProfileId: asrProfileId
                         )
                         settingsManager.updateConfig(config)
                         wsManager.updateCredentials(deviceLabel: config.deviceLabel, token: config.token)
+                        wsManager.updateAsrConfiguration(mode: config.asrMode, profileId: config.asrProfileId)
                         wsManager.rememberBackendForPairing(manualBackendId)
                         wsManager.reconnect(to: config.gatewayUrl)
                         onRequestPair(manualBackendId)
@@ -300,6 +307,38 @@ struct SettingsScreenView: View {
                         colors: colors
                     )
 
+                    Divider()
+
+                    SectionTitleView(text: "语音识别", colors: colors)
+                    Picker("语音识别", selection: $asrMode) {
+                        Text("Router 识别").tag("router")
+                        Text("OpenClaw 后端识别").tag("backend")
+                    }
+                    .pickerStyle(.segmented)
+
+                    if asrMode == "router" {
+                        if asrProfiles.isEmpty {
+                            OutlinedTextField(
+                                label: "Provider / Model Profile",
+                                placeholder: "默认 profile 或 volcengine-bigmodel",
+                                text: $asrProfileId,
+                                colors: colors
+                            )
+                        } else {
+                            Picker("Provider / Model", selection: $asrProfileId) {
+                                ForEach(asrProfiles) { profile in
+                                    Text("\(profile.providerLabel) · \(profile.modelLabel)").tag(profile.id)
+                                }
+                            }
+                            .pickerStyle(.menu)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 10)
+                            .background(colors.inputBg)
+                            .cornerRadius(8)
+                        }
+                    }
+
                     // Device info
                     SectionTitleView(text: "设备信息", colors: colors)
                     OutlinedTextField(
@@ -316,7 +355,9 @@ struct SettingsScreenView: View {
                             deviceLabel: deviceLabel.isEmpty ? "我的设备" : deviceLabel,
                             token: manualToken,
                             pairedBackendId: manualBackendId.isEmpty ? nil : manualBackendId,
-                            pairedBackendLabel: settingsManager.config.pairedBackendLabel
+                            pairedBackendLabel: settingsManager.config.pairedBackendLabel,
+                            asrMode: asrMode,
+                            asrProfileId: asrProfileId
                         )
                         settingsManager.updateConfig(config)
                         wsManager.applyConfiguration(
@@ -324,7 +365,9 @@ struct SettingsScreenView: View {
                             deviceLabel: config.deviceLabel,
                             token: config.token,
                             pairedBackendId: config.pairedBackendId,
-                            pairedBackendLabel: config.pairedBackendLabel
+                            pairedBackendLabel: config.pairedBackendLabel,
+                            asrMode: config.asrMode,
+                            asrProfileId: config.asrProfileId
                         )
                         showSaved = true
                         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { showSaved = false }
@@ -356,6 +399,53 @@ struct SettingsScreenView: View {
             deviceLabel = settingsManager.config.deviceLabel
             manualBackendId = settingsManager.config.pairedBackendId ?? ""
             manualToken = settingsManager.config.token
+            asrMode = settingsManager.config.asrMode.isEmpty ? "router" : settingsManager.config.asrMode
+            asrProfileId = settingsManager.config.asrProfileId
+            loadAsrProfiles()
         }
+    }
+
+    private func loadAsrProfiles() {
+        guard let url = asrProvidersUrl(from: gatewayUrl) else { return }
+        URLSession.shared.dataTask(with: url) { data, _, _ in
+            guard let data,
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+            let defaultProfileId = json["defaultProfileId"] as? String
+            let rawProfiles = json["profiles"] as? [[String: Any]] ?? []
+            let profiles = rawProfiles.compactMap { item -> AsrProviderProfile? in
+                guard let id = item["id"] as? String,
+                      let provider = item["provider"] as? String,
+                      let model = item["model"] as? String else { return nil }
+                return AsrProviderProfile(
+                    id: id,
+                    provider: provider,
+                    providerLabel: item["providerLabel"] as? String ?? provider,
+                    model: model,
+                    modelLabel: item["modelLabel"] as? String ?? model
+                )
+            }
+            DispatchQueue.main.async {
+                asrProfiles = profiles
+                if asrProfileId.isEmpty {
+                    asrProfileId = defaultProfileId ?? profiles.first?.id ?? ""
+                }
+            }
+        }.resume()
+    }
+
+    private func asrProvidersUrl(from gatewayUrl: String) -> URL? {
+        var value = gatewayUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+        if value.hasPrefix("wss://") {
+            value = "https://" + String(value.dropFirst("wss://".count))
+        } else if value.hasPrefix("ws://") {
+            value = "http://" + String(value.dropFirst("ws://".count))
+        }
+        if value.hasSuffix("/ws") {
+            value.removeLast(3)
+        }
+        if value.hasSuffix("/") {
+            value.removeLast()
+        }
+        return URL(string: "\(value)/api/asr/providers")
     }
 }

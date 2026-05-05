@@ -4,15 +4,15 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import platform.AVFoundation.*
 
-actual class AudioRecorder {
+class AudioRecorderIOS : AudioRecorder {
     private var audioRecorder: AVAudioRecorder? = null
     private var recordingSession: AVAudioSession? = null
     private var tempFile: String? = null
 
     private val _isRecording = MutableStateFlow(false)
-    actual val isRecording: StateFlow<Boolean> = _isRecording
+    override val isRecording: StateFlow<Boolean> = _isRecording
 
-    actual fun startRecording() {
+    override fun startRecording() {
         recordingSession = AVAudioSession.sharedInstance()
         recordingSession?.setCategory(AVAudioSession.CategoryPlayAndRecord)
         recordingSession?.setActive(true)
@@ -22,13 +22,15 @@ actual class AudioRecorder {
             NSSearchPathDomainMask.UserDomainMask,
             true
         )[0] as String
-        tempFile = "$documentsPath/temp_recording.m4a"
+        tempFile = "$documentsPath/temp_recording.wav"
 
         val settings = mapOf(
-            AVFormatIDKey to kAudioFormatMPEG4AAC,
+            AVFormatIDKey to kAudioFormatLinearPCM,
             AVSampleRateKey to 16000,
             AVNumberOfChannelsKey to 1,
-            AVEncoderAudioQualityKey to AVAudioQuality.High.rawValue
+            AVLinearPCMBitDepthKey to 16,
+            AVLinearPCMIsFloatKey to false,
+            AVLinearPCMIsBigEndianKey to false
         )
 
         audioRecorder = AVAudioRecorder(
@@ -39,7 +41,7 @@ actual class AudioRecorder {
         _isRecording.value = true
     }
 
-    actual fun stopRecording(onComplete: (ByteArray) -> Unit) {
+    override fun stopRecording(onComplete: (ByteArray) -> Unit) {
         audioRecorder?.stop()
         audioRecorder = null
         _isRecording.value = false

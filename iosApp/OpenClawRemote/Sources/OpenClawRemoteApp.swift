@@ -14,11 +14,13 @@ struct OpenClawRemoteApp: App {
     init() {
         let settings = SettingsManager()
         let deviceId = getOrCreateDeviceId(settingsManager: settings)
-        _wsManager = StateObject(wrappedValue: WebSocketManager(
+        let manager = WebSocketManager(
             deviceId: deviceId,
             deviceLabel: settings.config.deviceLabel.isEmpty ? "我的设备" : settings.config.deviceLabel,
             token: settings.config.token
-        ))
+        )
+        manager.updateAsrConfiguration(mode: settings.config.asrMode, profileId: settings.config.asrProfileId)
+        _wsManager = StateObject(wrappedValue: manager)
     }
 
     private var colors: MochiColors {
@@ -74,6 +76,7 @@ struct OpenClawRemoteApp: App {
                 isDark = isSystemDark
                 let label = settingsManager.config.deviceLabel.isEmpty ? "我的设备" : settingsManager.config.deviceLabel
                 wsManager.updateCredentials(deviceLabel: label, token: settingsManager.config.token)
+                wsManager.updateAsrConfiguration(mode: settingsManager.config.asrMode, profileId: settingsManager.config.asrProfileId)
                 wsManager.restorePairing(
                     backendId: settingsManager.config.pairedBackendId,
                     backendLabel: settingsManager.config.pairedBackendLabel
@@ -95,10 +98,13 @@ struct OpenClawRemoteApp: App {
                 deviceLabel: settingsManager.config.deviceLabel.isEmpty ? "我的设备" : settingsManager.config.deviceLabel,
                 token: token,
                 pairedBackendId: nil,
-                pairedBackendLabel: nil
+                pairedBackendLabel: nil,
+                asrMode: settingsManager.config.asrMode,
+                asrProfileId: settingsManager.config.asrProfileId
             ))
             let label = settingsManager.config.deviceLabel.isEmpty ? "我的设备" : settingsManager.config.deviceLabel
             wsManager.updateCredentials(deviceLabel: label, token: token)
+            wsManager.updateAsrConfiguration(mode: settingsManager.config.asrMode, profileId: settingsManager.config.asrProfileId)
             wsManager.restorePairing(backendId: nil, backendLabel: nil)
             wsManager.rememberBackendForPairing(backendId)
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) {

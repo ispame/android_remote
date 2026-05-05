@@ -9,7 +9,7 @@ import kotlinx.coroutines.flow.map
 
 private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "settings")
 
-actual class SettingsManager(private val context: Context) {
+class SettingsManagerAndroid(private val context: Context) : SettingsManager {
 
     companion object {
         private val GATEWAY_URL = stringPreferencesKey("gateway_url")
@@ -18,9 +18,11 @@ actual class SettingsManager(private val context: Context) {
         private val TOKEN = stringPreferencesKey("token")
         private val PAIRED_BACKEND_ID = stringPreferencesKey("paired_backend_id")
         private val PAIRED_BACKEND_LABEL = stringPreferencesKey("paired_backend_label")
+        private val ASR_MODE = stringPreferencesKey("asr_mode")
+        private val ASR_PROFILE_ID = stringPreferencesKey("asr_profile_id")
     }
 
-    val configFlow: Flow<GatewayConfig> = context.dataStore.data.map { prefs ->
+    override val configFlow: Flow<GatewayConfig> = context.dataStore.data.map { prefs ->
         GatewayConfig(
             gatewayUrl = prefs[GATEWAY_URL] ?: "ws://192.168.1.14:8765",
             deviceId = prefs[DEVICE_ID] ?: "",
@@ -28,15 +30,19 @@ actual class SettingsManager(private val context: Context) {
             token = prefs[TOKEN] ?: "",
             pairedBackendId = prefs[PAIRED_BACKEND_ID],
             pairedBackendLabel = prefs[PAIRED_BACKEND_LABEL],
+            asrMode = prefs[ASR_MODE] ?: "router",
+            asrProfileId = prefs[ASR_PROFILE_ID] ?: "",
         )
     }
 
-    actual suspend fun updateConfig(config: GatewayConfig) {
+    override suspend fun updateConfig(config: GatewayConfig) {
         context.dataStore.edit { prefs ->
             prefs[GATEWAY_URL] = config.gatewayUrl
             prefs[DEVICE_ID] = config.deviceId
             prefs[DEVICE_LABEL] = config.deviceLabel
             prefs[TOKEN] = config.token
+            prefs[ASR_MODE] = config.asrMode
+            prefs[ASR_PROFILE_ID] = config.asrProfileId
             if (config.pairedBackendId != null) {
                 prefs[PAIRED_BACKEND_ID] = config.pairedBackendId
             } else {
@@ -50,25 +56,25 @@ actual class SettingsManager(private val context: Context) {
         }
     }
 
-    actual suspend fun updateDeviceId(id: String) {
+    override suspend fun updateDeviceId(id: String) {
         context.dataStore.edit { prefs ->
             prefs[DEVICE_ID] = id
         }
     }
 
-    actual suspend fun updateDeviceLabel(label: String) {
+    override suspend fun updateDeviceLabel(label: String) {
         context.dataStore.edit { prefs ->
             prefs[DEVICE_LABEL] = label
         }
     }
 
-    actual suspend fun updateGatewayUrl(url: String) {
+    override suspend fun updateGatewayUrl(url: String) {
         context.dataStore.edit { prefs ->
             prefs[GATEWAY_URL] = url
         }
     }
 
-    actual suspend fun updatePairedBackend(backendId: String?, backendLabel: String?) {
+    override suspend fun updatePairedBackend(backendId: String?, backendLabel: String?) {
         context.dataStore.edit { prefs ->
             if (backendId != null) {
                 prefs[PAIRED_BACKEND_ID] = backendId
@@ -83,7 +89,7 @@ actual class SettingsManager(private val context: Context) {
         }
     }
 
-    actual suspend fun clearConfig() {
+    override suspend fun clearConfig() {
         context.dataStore.edit { it.clear() }
     }
 }

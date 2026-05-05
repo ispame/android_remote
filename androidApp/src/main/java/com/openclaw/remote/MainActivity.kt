@@ -77,7 +77,9 @@ class MainActivity : ComponentActivity() {
                                                     deviceLabel = "我的手机",
                                                     token = result.token,
                                                     pairedBackendId = null,
-                                                    pairedBackendLabel = null
+                                                    pairedBackendLabel = null,
+                                                    asrMode = "router",
+                                                    asrProfileId = ""
                                                 )
                                             )
                                             delay(1000)
@@ -150,7 +152,9 @@ class MainActivity : ComponentActivity() {
                                     deviceLabel = "我的手机",
                                     token = result.token,
                                     pairedBackendId = null,
-                                    pairedBackendLabel = null
+                                    pairedBackendLabel = null,
+                                    asrMode = "router",
+                                    asrProfileId = ""
                                 )
                             )
                             delay(1000)

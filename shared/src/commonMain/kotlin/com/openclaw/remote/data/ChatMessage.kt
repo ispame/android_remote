@@ -7,6 +7,7 @@ package com.openclaw.remote.data
  * @param senderId Sender identifier: "user" | "assistant"
  * @param status Delivery status for outgoing user messages (null for incoming)
  * @param seq Router-assigned sequence number for reliable delivery tracking (null for incoming)
+ * @param clientMessageId Client-generated ID for correlating ASR results
  */
 data class ChatMessage(
     val content: String,
@@ -14,6 +15,7 @@ data class ChatMessage(
     val senderId: String = "assistant",
     val status: MessageStatus? = null,
     val seq: Int? = null,
+    val clientMessageId: String? = null,
 )
 
 /**

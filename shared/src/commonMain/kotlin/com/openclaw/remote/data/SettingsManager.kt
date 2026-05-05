@@ -5,7 +5,7 @@ import kotlinx.coroutines.flow.Flow
 /**
  * Settings Manager - cross-platform abstraction for persistent settings.
  */
-expect class SettingsManager() {
+interface SettingsManager {
     val configFlow: Flow<GatewayConfig>
     suspend fun updateConfig(config: GatewayConfig)
     suspend fun updateDeviceId(id: String)

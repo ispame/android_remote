@@ -24,6 +24,7 @@ kotlin {
             }
         }
         val androidMain by getting {
+            kotlin.exclude("**/ui/screen/QRScannerScreenAndroid.kt")
             dependencies {
                 implementation("androidx.core:core-ktx:1.12.0")
                 implementation("androidx.activity:activity-compose:1.8.2")
@@ -38,4 +39,9 @@ kotlin {
 android {
     namespace = "com.openclaw.remote.shared"
     compileSdk = 34
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
 }

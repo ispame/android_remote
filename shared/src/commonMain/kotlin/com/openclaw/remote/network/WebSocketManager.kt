@@ -14,10 +14,12 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.UUID
 
 /**
  * WebSocket Manager for Phase 3 Gateway Router protocol.
@@ -30,10 +32,12 @@ class WebSocketManager(
     private val deviceId: String,
     private val deviceLabel: String,
     private val token: String = "",
+    private val asrMode: String = "router",
+    private val asrProfileId: String = "",
 ) {
     private var webSocketSession: WebSocketSession? = null
     private val client = HttpClient {
-        install(WebSocket)
+        install(WebSockets)
     }
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
@@ -141,12 +145,37 @@ class WebSocketManager(
     fun sendAudio(audioData: ByteArray) {
         if (_pairingState.value != PairingState.PAIRED || registeredBackendId == null) return
         val base64Audio = Base64.encode(audioData)
+        val clientMessageId = UUID.randomUUID().toString()
         val frame = buildJsonObject {
             put("type", "message")
             put("to", registeredBackendId)
+            put("client_message_id", clientMessageId)
             put("content", base64Audio)
             put("content_type", "audio")
+            putJsonObject("audio") {
+                put("format", "wav")
+                put("codec", "pcm_s16le")
+                put("sample_rate", 16000)
+                put("channels", 1)
+            }
+            putJsonObject("asr") {
+                put("mode", if (asrMode == "backend") "backend" else "router")
+                if (asrProfileId.isNotEmpty()) {
+                    put("profile_id", asrProfileId)
+                }
+            }
         }
+        offerEvent(
+            WsMessageEvent.NewMessage(
+                ChatMessage(
+                    content = "正在识别...",
+                    timestamp = timestamp(),
+                    senderId = "user",
+                    status = MessageStatus.SENDING,
+                    clientMessageId = clientMessageId,
+                )
+            )
+        )
         send(frame.toString())
     }
 
@@ -239,6 +268,13 @@ class WebSocketManager(
 
                     offerEvent(WsMessageEvent.NewMessage(ChatMessage(content, ts, "assistant")))
                 }
+                "asr_result" -> {
+                    val clientMessageId = obj["client_message_id"]?.jsonPrimitive?.content
+                    val success = obj["success"]?.jsonPrimitive?.content?.toBoolean() ?: false
+                    val transcript = obj["text"]?.jsonPrimitive?.content
+                    val error = obj["error"]?.jsonPrimitive?.content
+                    offerEvent(WsMessageEvent.AsrResult(clientMessageId, success, transcript, error))
+                }
                 "ack" -> {
                     // Server acks our sent message — we don't need to act on it here
                     // because we don't track per-message delivery state at the app level
@@ -293,4 +329,6 @@ class WebSocketManager(
 /**
  * Platform-specific Base64 encoding
  */
-expect fun Base64.encode(data: ByteArray): String
+expect object Base64 {
+    fun encode(data: ByteArray): String
+}

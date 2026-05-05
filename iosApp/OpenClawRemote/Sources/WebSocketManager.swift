@@ -23,6 +23,8 @@ final class WebSocketManager: ObservableObject {
     private let deviceId: String
     private var deviceLabel: String
     private var token: String
+    private var asrMode = "router"
+    private var asrProfileId = ""
     private var preferredBackendId: String?
     private var preferredBackendLabel: String?
     private var currentUrlString: String?
@@ -104,11 +106,19 @@ final class WebSocketManager: ObservableObject {
         deviceLabel: String,
         token: String,
         pairedBackendId: String?,
-        pairedBackendLabel: String?
+        pairedBackendLabel: String?,
+        asrMode: String = "router",
+        asrProfileId: String = ""
     ) {
         updateCredentials(deviceLabel: deviceLabel, token: token)
+        updateAsrConfiguration(mode: asrMode, profileId: asrProfileId)
         restorePairing(backendId: pairedBackendId, backendLabel: pairedBackendLabel)
         reconnect(to: gatewayUrl)
+    }
+
+    func updateAsrConfiguration(mode: String, profileId: String) {
+        self.asrMode = mode == "backend" ? "backend" : "router"
+        self.asrProfileId = profileId
     }
 
     func disconnect() {
@@ -179,12 +189,25 @@ final class WebSocketManager: ObservableObject {
     func sendAudio(_ data: Data) {
         guard pairingState == .paired, let backendId = registeredBackendId else { return }
         let base64 = data.base64EncodedString()
+        let clientMessageId = UUID().uuidString
         let frame: [String: Any] = [
             "type": "message",
             "to": backendId,
+            "client_message_id": clientMessageId,
             "content": base64,
-            "content_type": "audio"
+            "content_type": "audio",
+            "audio": [
+                "format": "wav",
+                "codec": "pcm_s16le",
+                "sample_rate": 16000,
+                "channels": 1
+            ],
+            "asr": [
+                "mode": asrMode,
+                "profile_id": asrProfileId
+            ]
         ]
+        _ = addLocalMessageWithStatus("正在识别...", senderId: "user", status: .sending, seq: nil, clientMessageId: clientMessageId)
         sendJson(frame)
     }
 
@@ -366,6 +389,9 @@ final class WebSocketManager: ObservableObject {
                 }
                 self.addMessage(content, senderId: "assistant")
 
+            case "asr_result":
+                self.handleAsrResult(json)
+
             case "history_response":
                 self.handleHistoryResponse(json)
 
@@ -454,11 +480,33 @@ final class WebSocketManager: ObservableObject {
                 return lhsTime < rhsTime
             }
         if !newMessages.isEmpty {
-            messages.insert(contentsOf: newMessages, at: 0)
+            messages = newMessages + messages
         }
         historyHasMore = json["has_more"] as? Bool ?? false
         historyLoaded = true
         historyError = nil
+    }
+
+    private func handleAsrResult(_ json: [String: Any]) {
+        let clientMessageId = json["client_message_id"] as? String
+        let success = json["success"] as? Bool ?? false
+        let text = json["text"] as? String
+        let error = json["error"] as? String
+        guard let clientMessageId else { return }
+        guard let idx = messages.firstIndex(where: { $0.clientMessageId == clientMessageId }) else { return }
+        let old = messages[idx]
+        var updatedMessages = messages
+        updatedMessages[idx] = ChatMessage(
+            id: old.id,
+            content: success ? (text ?? "") : "语音识别失败: \(error ?? "unknown")",
+            timestamp: old.timestamp,
+            rawTimestamp: old.rawTimestamp,
+            senderId: old.senderId,
+            status: success ? .delivered : .failed,
+            seq: old.seq,
+            clientMessageId: old.clientMessageId
+        )
+        messages = updatedMessages
     }
 
     private func messageHistoryKey(_ message: ChatMessage) -> String {
@@ -466,23 +514,23 @@ final class WebSocketManager: ObservableObject {
     }
 
     @discardableResult
-    private func addLocalMessageWithStatus(_ content: String, senderId: String, status: MessageStatus, seq: Int?) -> ChatMessage {
+    private func addLocalMessageWithStatus(_ content: String, senderId: String, status: MessageStatus, seq: Int?, clientMessageId: String? = nil) -> ChatMessage {
         let ts = timestamp()
-        let msg = ChatMessage(content: content, timestamp: ts, senderId: senderId, status: status, seq: seq)
-        messages.append(msg)
+        let msg = ChatMessage(content: content, timestamp: ts, senderId: senderId, status: status, seq: seq, clientMessageId: clientMessageId)
+        messages = messages + [msg]
         return msg
     }
 
     func addLocalMessage(_ content: String, senderId: String) {
         let ts = timestamp()
         let msg = ChatMessage(content: content, timestamp: ts, senderId: senderId, status: nil, seq: nil)
-        messages.append(msg)
+        messages = messages + [msg]
     }
 
     private func addMessage(_ content: String, senderId: String) {
         let ts = timestamp()
         let msg = ChatMessage(content: content, timestamp: ts, senderId: senderId, status: nil, seq: nil)
-        messages.append(msg)
+        messages = messages + [msg]
     }
 
     private func timestamp() -> String {
