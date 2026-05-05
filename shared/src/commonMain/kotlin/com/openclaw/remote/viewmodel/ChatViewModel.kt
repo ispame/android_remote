@@ -40,6 +40,7 @@ class ChatViewModel(
 
     private var wsManager: WebSocketManager? = null
     private val viewModelScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+    private var lastAutoHistoryRequestAt = 0L
 
     init {
         viewModelScope.launch {
@@ -101,11 +102,34 @@ class ChatViewModel(
                         viewModelScope.launch {
                             settingsManager.updatePairedBackend(event.backendId, event.backendLabel)
                         }
+                        requestAutoHistorySync()
                     }
                     is WsMessageEvent.NewMessage -> {
-                        _messages.value = _messages.value + event.message
+                        val displayMessage = event.message.sanitizedForDisplay() ?: return@collect
+                        _messages.value = _messages.value + displayMessage
+                    }
+                    is WsMessageEvent.HistoryResponse -> {
+                        _isLoadingHistory.value = false
+                        if (!event.error.isNullOrBlank()) {
+                            _hasMoreHistory.value = false
+                            return@collect
+                        }
+                        val existingKeys = _messages.value.map(::messageHistoryKey).toSet()
+                        val historyMessages = event.messages
+                            .mapNotNull { it.sanitizedForDisplay() }
+                            .filterNot { messageHistoryKey(it) in existingKeys }
+                        if (historyMessages.isNotEmpty()) {
+                            _messages.value = historyMessages + _messages.value
+                        }
+                        _hasMoreHistory.value = event.hasMore
                     }
                     is WsMessageEvent.AsrResult -> {
+                        if (!event.success && event.clientMessageId != null && event.error in hiddenAsrErrors) {
+                            _messages.value = _messages.value.filter { message ->
+                                message.clientMessageId != event.clientMessageId
+                            }
+                            return@collect
+                        }
                         _messages.value = _messages.value.map { message ->
                             if (event.clientMessageId != null && message.clientMessageId == event.clientMessageId) {
                                 message.copy(
@@ -156,7 +180,7 @@ class ChatViewModel(
     fun sendText(text: String) {
         if (_pairingState.value != PairingState.PAIRED) {
             _messages.value = _messages.value + ChatMessage(
-                "请先配对 OpenClaw",
+                "请先配对后端 Agent",
                 SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date()),
                 "assistant"
             )
@@ -174,6 +198,7 @@ class ChatViewModel(
 
     fun loadMoreHistory() {
         _isLoadingHistory.value = true
+        wsManager?.requestRecentHistory()
     }
 
     fun unpair() {
@@ -186,5 +211,60 @@ class ChatViewModel(
 
     fun onCleared() {
         viewModelScope.cancel()
+    }
+
+    private fun requestAutoHistorySync() {
+        val now = System.currentTimeMillis()
+        if (now - lastAutoHistoryRequestAt < 3000) return
+        lastAutoHistoryRequestAt = now
+        wsManager?.requestRecentHistory()
+    }
+
+    private fun ChatMessage.sanitizedForDisplay(): ChatMessage? {
+        if (senderId == "user") {
+            return if (shouldHideSystemNoise(content)) null else this
+        }
+        val sanitized = sanitizeAssistantContent(content)
+        if (shouldHideSystemNoise(sanitized)) return null
+        return copy(content = sanitized)
+    }
+
+    private fun sanitizeAssistantContent(content: String): String {
+        val marker = "[[reply_to_current]]"
+        return if (content.startsWith(marker)) {
+            content.removePrefix(marker).trim()
+        } else {
+            content
+        }
+    }
+
+    private fun shouldHideSystemNoise(content: String): Boolean {
+        val trimmed = content.trim()
+        if (trimmed == "HEARTBEAT_OK") return true
+        if (trimmed.startsWith("System (untrusted):")) return true
+
+        val containsHeartbeatPrompt = listOf(
+            "Read HEARTBEAT.md if it exists",
+            "reply HEARTBEAT_OK",
+            "HEARTBEAT.md",
+            "Do not infer or repeat oldtasks",
+        ).any { trimmed.contains(it, ignoreCase = true) }
+        if (containsHeartbeatPrompt && (
+            trimmed.startsWith("Read HEARTBEAT.md")
+                || trimmed.startsWith("Exec failed")
+                || trimmed.contains("workspace/HEARTBEAT.md", ignoreCase = true)
+                || trimmed.contains("Current time:", ignoreCase = true)
+        )) {
+            return true
+        }
+        return false
+    }
+
+    private fun messageHistoryKey(message: ChatMessage): String {
+        return "${message.senderId}|${message.timestamp}|${message.content}"
+    }
+
+    private companion object {
+        val hiddenAsrErrors = setOf("ASR_AUDIO_EMPTY", "ASR_EMPTY_TRANSCRIPT")
     }
 }

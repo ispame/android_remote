@@ -3,9 +3,22 @@ import SwiftUI
 struct MessageBubbleView: View {
     let message: ChatMessage
     let colors: MochiColors
+    let isSelectionMode: Bool
+    let isSelected: Bool
+    let onTap: () -> Void
+    let onCopy: () -> Void
+    let onQuote: () -> Void
+    let onSelect: () -> Void
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
+            if isSelectionMode {
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundColor(isSelected ? colors.primary : colors.textSecondary)
+                    .frame(width: 28)
+            }
+
             if !message.isUser {
                 AvatarChip(label: "M", bgColor: colors.secondary, textColor: colors.onSecondary)
             } else {
@@ -43,6 +56,19 @@ struct MessageBubbleView: View {
             }
         }
         .frame(maxWidth: .infinity)
+        .contentShape(Rectangle())
+        .onTapGesture(perform: onTap)
+        .contextMenu {
+            Button(action: onCopy) {
+                Label("复制", systemImage: "doc.on.doc")
+            }
+            Button(action: onQuote) {
+                Label("引用", systemImage: "quote.bubble")
+            }
+            Button(action: onSelect) {
+                Label("选择", systemImage: "checkmark.circle")
+            }
+        }
     }
 }
 

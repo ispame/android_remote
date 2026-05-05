@@ -22,6 +22,7 @@ import com.openclaw.remote.ui.screen.parseQRPack
 import com.openclaw.remote.ui.theme.MochiTheme
 import com.openclaw.remote.viewmodel.ChatViewModel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -67,29 +68,7 @@ class MainActivity : ComponentActivity() {
                         onQRCodeScanned = { scannedText ->
                             showQRScanner = false
                             parseQRPack(scannedText) { result ->
-                                when (result) {
-                                    is QRParseResult.Success -> {
-                                        scope.launch {
-                                            settingsManager.updateConfig(
-                                                GatewayConfig(
-                                                    gatewayUrl = result.gatewayUrl,
-                                                    deviceId = "",
-                                                    deviceLabel = "我的手机",
-                                                    token = result.token,
-                                                    pairedBackendId = null,
-                                                    pairedBackendLabel = null,
-                                                    asrMode = "router",
-                                                    asrProfileId = ""
-                                                )
-                                            )
-                                            delay(1000)
-                                            viewModel.requestPair(result.backendId)
-                                        }
-                                    }
-                                    is QRParseResult.Error -> {
-                                        // Handle error
-                                    }
-                                }
+                                handleQRParseResult(result)
                             }
                         },
                         onClose = { showQRScanner = false }
@@ -142,29 +121,34 @@ class MainActivity : ComponentActivity() {
         val uriString = uri.toString()
         if (uriString.startsWith("openclaw://connect")) {
             parseQRPack(uriString) { result ->
-                when (result) {
-                    is QRParseResult.Success -> {
-                        scope.launch {
-                            settingsManager.updateConfig(
-                                GatewayConfig(
-                                    gatewayUrl = result.gatewayUrl,
-                                    deviceId = "",
-                                    deviceLabel = "我的手机",
-                                    token = result.token,
-                                    pairedBackendId = null,
-                                    pairedBackendLabel = null,
-                                    asrMode = "router",
-                                    asrProfileId = ""
-                                )
-                            )
-                            delay(1000)
-                            viewModel.requestPair(result.backendId)
-                        }
-                    }
-                    is QRParseResult.Error -> {
-                        // Handle error
-                    }
+                handleQRParseResult(result)
+            }
+        }
+    }
+
+    private fun handleQRParseResult(result: QRParseResult) {
+        when (result) {
+            is QRParseResult.Success -> {
+                scope.launch {
+                    val current = settingsManager.configFlow.first()
+                    settingsManager.updateConfig(
+                        GatewayConfig(
+                            gatewayUrl = result.gatewayUrl,
+                            deviceId = current.deviceId,
+                            deviceLabel = current.deviceLabel.ifEmpty { "我的手机" },
+                            token = result.token,
+                            pairedBackendId = result.backendId,
+                            pairedBackendLabel = result.backendId,
+                            asrMode = current.asrMode,
+                            asrProfileId = current.asrProfileId,
+                        )
+                    )
+                    delay(1000)
+                    viewModel.requestPair(result.backendId)
                 }
+            }
+            is QRParseResult.Error -> {
+                // Handle error
             }
         }
     }

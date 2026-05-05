@@ -12,7 +12,10 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -179,6 +182,17 @@ class WebSocketManager(
         send(frame.toString())
     }
 
+    fun requestRecentHistory(rounds: Int = 15) {
+        if (_pairingState.value != PairingState.PAIRED) return
+        val frame = buildJsonObject {
+            put("type", "history_request")
+            put("app_id", deviceId)
+            put("session_key", "current")
+            put("limit", maxOf(1, rounds) * 2)
+        }
+        send(frame.toString())
+    }
+
     fun unpair() {
         if (registeredBackendId == null) return
         val frame = buildJsonObject {
@@ -267,6 +281,22 @@ class WebSocketManager(
                     }
 
                     offerEvent(WsMessageEvent.NewMessage(ChatMessage(content, ts, "assistant")))
+                }
+                "history_response" -> {
+                    val messages = obj["messages"]?.jsonArray?.mapNotNull { element ->
+                        val item = element as? JsonObject ?: return@mapNotNull null
+                        val content = item["content"]?.jsonPrimitive?.content ?: return@mapNotNull null
+                        val role = item["role"]?.jsonPrimitive?.content ?: "assistant"
+                        val ts = item["timestamp"]?.jsonPrimitive?.content ?: timestamp()
+                        val senderId = when (role.lowercase(Locale.getDefault())) {
+                            "user", "human" -> "user"
+                            else -> "assistant"
+                        }
+                        ChatMessage(content, ts, senderId)
+                    }.orEmpty()
+                    val hasMore = obj["has_more"]?.jsonPrimitive?.content?.toBoolean() ?: false
+                    val error = obj["error"]?.jsonPrimitive?.contentOrNull
+                    offerEvent(WsMessageEvent.HistoryResponse(messages, hasMore, error))
                 }
                 "asr_result" -> {
                     val clientMessageId = obj["client_message_id"]?.jsonPrimitive?.content

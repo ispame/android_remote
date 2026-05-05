@@ -31,7 +31,7 @@ struct TopBarView: View {
     var body: some View {
         HStack(spacing: 8) {
             // App title
-            Text("OpenClaw Remote")
+            Text("Boson Relay")
                 .font(.system(size: 13, weight: .regular))
                 .foregroundColor(colors.textSecondary)
 
@@ -78,6 +78,15 @@ struct MainScreenView: View {
     let onNavigateToSettings: () -> Void
 
     @State private var inputMode: InputMode = .voice
+    @State private var isNearChatBottom = true
+    @State private var isSelectingMessages = false
+    @State private var selectedMessageIds = Set<UUID>()
+    @State private var quoteDraft: String?
+    private let bottomAnchorId = "chat-bottom-anchor"
+
+    private var selectedMessages: [ChatMessage] {
+        wsManager.messages.filter { selectedMessageIds.contains($0.id) }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -95,27 +104,70 @@ struct MainScreenView: View {
 
             GeometryReader { geometry in
                 ZStack {
-                    ScrollView {
-                        LazyVStack(spacing: 16) {
-                            HistoryInlineStatusView(wsManager: wsManager, colors: colors)
+                    ScrollViewReader { proxy in
+                        ScrollView {
+                            LazyVStack(spacing: 16) {
+                                HistoryInlineStatusView(wsManager: wsManager, colors: colors)
 
-                            ForEach(wsManager.messages) { message in
-                                MessageBubbleView(
-                                    message: message,
-                                    colors: colors
-                                )
+                                ForEach(wsManager.messages) { message in
+                                    MessageBubbleView(
+                                        message: message,
+                                        colors: colors,
+                                        isSelectionMode: isSelectingMessages,
+                                        isSelected: selectedMessageIds.contains(message.id),
+                                        onTap: {
+                                            if isSelectingMessages {
+                                                toggleMessageSelection(message)
+                                            }
+                                        },
+                                        onCopy: {
+                                            copyMessages([message])
+                                        },
+                                        onQuote: {
+                                            quoteDraft = quoteDraftText(for: message)
+                                        },
+                                        onSelect: {
+                                            isSelectingMessages = true
+                                            selectedMessageIds = [message.id]
+                                        }
+                                    )
+                                }
+
+                                Color.clear
+                                    .frame(height: 1)
+                                    .id(bottomAnchorId)
+                                    .background(
+                                        GeometryReader { bottomGeometry in
+                                            Color.clear.preference(
+                                                key: ChatBottomPositionPreferenceKey.self,
+                                                value: bottomGeometry.frame(in: .named("chatScroll")).maxY
+                                            )
+                                        }
+                                    )
+                            }
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 16)
+                        }
+                        .coordinateSpace(name: "chatScroll")
+                        .onPreferenceChange(ChatBottomPositionPreferenceKey.self) { bottomY in
+                            isNearChatBottom = bottomY - geometry.size.height <= 120
+                        }
+                        .onChange(of: wsManager.messages.last?.id) { _ in
+                            guard let lastMessage = wsManager.messages.last else { return }
+                            if isNearChatBottom || lastMessage.isUser {
+                                withAnimation(.easeOut(duration: 0.2)) {
+                                    proxy.scrollTo(bottomAnchorId, anchor: .bottom)
+                                }
                             }
                         }
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 16)
-                    }
-                    .refreshable {
-                        wsManager.requestRecentHistory()
+                        .refreshable {
+                            wsManager.requestRecentHistory()
+                        }
                     }
 
                     if wsManager.pairingState != .paired {
                         VStack(spacing: 8) {
-                            Text("请先扫码配对 OpenClaw")
+                            Text("请先扫码配对后端 Agent")
                                 .font(.system(size: 16, weight: .regular))
                                 .foregroundColor(colors.textSecondary)
                             Button("去设置") {
@@ -127,17 +179,33 @@ struct MainScreenView: View {
                 }
             }
 
+            if isSelectingMessages {
+                MessageSelectionToolbar(
+                    selectedCount: selectedMessageIds.count,
+                    colors: colors,
+                    onCopy: {
+                        copyMessages(selectedMessages)
+                        clearMessageSelection()
+                    },
+                    onCancel: clearMessageSelection
+                )
+            }
+
             InputAreaView(
                 inputMode: $inputMode,
                 isRecording: audioRecorder.isRecording,
                 isPaired: wsManager.pairingState == .paired,
                 colors: colors,
+                quoteDraft: quoteDraft,
                 onSendText: { text in
                     if wsManager.pairingState != .paired {
-                        wsManager.addLocalMessage("请先配对 OpenClaw", senderId: "assistant")
+                        wsManager.addLocalMessage("请先配对后端 Agent", senderId: "assistant")
                         return
                     }
                     wsManager.sendText(text)
+                },
+                onQuoteDraftConsumed: {
+                    quoteDraft = nil
                 },
                 onMicPress: {
                     if !audioRecorder.isRecording {
@@ -157,6 +225,84 @@ struct MainScreenView: View {
             )
         }
         .background(colors.background)
+    }
+
+    private func toggleMessageSelection(_ message: ChatMessage) {
+        if selectedMessageIds.contains(message.id) {
+            selectedMessageIds.remove(message.id)
+        } else {
+            selectedMessageIds.insert(message.id)
+        }
+        if selectedMessageIds.isEmpty {
+            isSelectingMessages = false
+        }
+    }
+
+    private func clearMessageSelection() {
+        isSelectingMessages = false
+        selectedMessageIds.removeAll()
+    }
+
+    private func copyMessages(_ messages: [ChatMessage]) {
+        UIPasteboard.general.string = messages
+            .map { $0.content }
+            .joined(separator: "\n\n")
+    }
+
+    private func quoteDraftText(for message: ChatMessage) -> String {
+        "> \(quoteSummary(for: message.content))\n\n"
+    }
+
+    private func quoteSummary(for content: String) -> String {
+        let compact = content
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        if compact.count <= 300 {
+            return compact
+        }
+        let endIndex = compact.index(compact.startIndex, offsetBy: 300)
+        return String(compact[..<endIndex]) + "..."
+    }
+}
+
+private struct ChatBottomPositionPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+struct MessageSelectionToolbar: View {
+    let selectedCount: Int
+    let colors: MochiColors
+    let onCopy: () -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Text("已选 \(selectedCount) 条")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(colors.textSecondary)
+
+            Spacer()
+
+            Button(action: onCopy) {
+                Label("复制", systemImage: "doc.on.doc")
+                    .font(.system(size: 14, weight: .medium))
+            }
+            .disabled(selectedCount == 0)
+
+            Button(action: onCancel) {
+                Label("取消", systemImage: "xmark")
+                    .font(.system(size: 14, weight: .medium))
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(colors.surface)
+        .overlay(Divider().background(colors.divider), alignment: .top)
     }
 }
 

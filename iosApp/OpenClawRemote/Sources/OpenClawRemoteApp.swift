@@ -92,20 +92,21 @@ struct OpenClawRemoteApp: App {
         let result = parseQRPack(scannedText)
         switch result {
         case .success(let gatewayUrl, let backendId, let token):
+            let current = settingsManager.config
+            let deviceLabel = current.deviceLabel.isEmpty ? "我的设备" : current.deviceLabel
             settingsManager.updateConfig(GatewayConfig(
                 gatewayUrl: gatewayUrl,
-                deviceId: settingsManager.config.deviceId,
-                deviceLabel: settingsManager.config.deviceLabel.isEmpty ? "我的设备" : settingsManager.config.deviceLabel,
+                deviceId: current.deviceId,
+                deviceLabel: deviceLabel,
                 token: token,
-                pairedBackendId: nil,
-                pairedBackendLabel: nil,
-                asrMode: settingsManager.config.asrMode,
-                asrProfileId: settingsManager.config.asrProfileId
+                pairedBackendId: backendId,
+                pairedBackendLabel: backendId,
+                asrMode: current.asrMode,
+                asrProfileId: current.asrProfileId
             ))
-            let label = settingsManager.config.deviceLabel.isEmpty ? "我的设备" : settingsManager.config.deviceLabel
-            wsManager.updateCredentials(deviceLabel: label, token: token)
-            wsManager.updateAsrConfiguration(mode: settingsManager.config.asrMode, profileId: settingsManager.config.asrProfileId)
-            wsManager.restorePairing(backendId: nil, backendLabel: nil)
+            wsManager.updateCredentials(deviceLabel: deviceLabel, token: token)
+            wsManager.updateAsrConfiguration(mode: current.asrMode, profileId: current.asrProfileId)
+            wsManager.restorePairing(backendId: backendId, backendLabel: backendId)
             wsManager.rememberBackendForPairing(backendId)
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
                 wsManager.connect(to: gatewayUrl)

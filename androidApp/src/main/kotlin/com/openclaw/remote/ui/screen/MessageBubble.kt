@@ -1,11 +1,19 @@
 package com.openclaw.remote.ui.screen
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -19,26 +27,49 @@ import androidx.compose.ui.unit.sp
 import com.openclaw.remote.data.ChatMessage
 import com.openclaw.remote.ui.theme.MochiTheme
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun MessageBubble(
     message: ChatMessage,
     isUser: Boolean,
+    isSelectionMode: Boolean = false,
+    isSelected: Boolean = false,
+    onClick: () -> Unit = {},
+    onCopy: () -> Unit = {},
+    onQuote: () -> Unit = {},
+    onSelect: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val colors = MochiTheme.colors
+    var menuExpanded by remember { mutableStateOf(false) }
 
     Row(
-        modifier = modifier.fillMaxWidth(),
+        modifier = modifier
+            .fillMaxWidth()
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = { menuExpanded = true },
+            ),
         horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
         verticalAlignment = Alignment.Bottom,
     ) {
+        if (isSelectionMode) {
+            Text(
+                text = if (isSelected) "●" else "○",
+                fontSize = 22.sp,
+                color = if (isSelected) colors.primary else colors.textSecondary,
+                modifier = Modifier.width(28.dp),
+            )
+            Spacer(modifier = Modifier.width(4.dp))
+        }
+
         if (!isUser) {
             AvatarChip(label = "M", bgColor = colors.secondary, textColor = colors.onSecondary)
             Spacer(modifier = Modifier.width(8.dp))
         }
 
         Column(
-            horizontalAlignment = if (isUser) Alignment.End else Arrangement.Start,
+            horizontalAlignment = if (isUser) Alignment.End else Alignment.Start,
             modifier = Modifier.widthIn(max = 280.dp)
         ) {
             Box(
@@ -77,6 +108,33 @@ fun MessageBubble(
                 fontSize = 11.sp,
                 color = colors.textSecondary,
             )
+
+            DropdownMenu(
+                expanded = menuExpanded,
+                onDismissRequest = { menuExpanded = false },
+            ) {
+                DropdownMenuItem(
+                    text = { Text("复制") },
+                    onClick = {
+                        menuExpanded = false
+                        onCopy()
+                    },
+                )
+                DropdownMenuItem(
+                    text = { Text("引用") },
+                    onClick = {
+                        menuExpanded = false
+                        onQuote()
+                    },
+                )
+                DropdownMenuItem(
+                    text = { Text("选择") },
+                    onClick = {
+                        menuExpanded = false
+                        onSelect()
+                    },
+                )
+            }
         }
 
         if (isUser) {

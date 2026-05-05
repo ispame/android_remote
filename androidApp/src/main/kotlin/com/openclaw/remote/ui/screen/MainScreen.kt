@@ -12,7 +12,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -35,6 +35,8 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.IntOffset
@@ -44,6 +46,7 @@ import com.openclaw.remote.audio.AudioRecorder
 import com.openclaw.remote.data.ChatMessage
 import com.openclaw.remote.domain.ConnectionState
 import com.openclaw.remote.domain.PairingState
+import com.openclaw.remote.ui.theme.MochiColors
 import com.openclaw.remote.ui.theme.MochiTheme
 import com.openclaw.remote.viewmodel.ChatViewModel
 import kotlin.math.roundToInt
@@ -64,15 +67,38 @@ fun MainScreen(
     onNavigateToSettings: () -> Unit = {},
 ) {
     val colors = MochiTheme.colors
+    val clipboardManager = LocalClipboardManager.current
     val listState = rememberLazyListState()
+    var isNearBottom by remember { mutableStateOf(true) }
+    var isSelectingMessages by remember { mutableStateOf(false) }
+    var selectedMessageKeys by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var quoteDraft by remember { mutableStateOf<String?>(null) }
+    val lastMessageKey = messages.lastOrNull()?.let { message ->
+        message.clientMessageId ?: "${message.senderId}|${message.timestamp}|${message.content}"
+    }
+    val selectedMessages = messages.filterIndexed { index, message ->
+        selectedMessageKeys.contains(messageSelectionKey(index, message))
+    }
 
     LaunchedEffect(Unit) {
         viewModel.connect()
     }
 
-    LaunchedEffect(messages.size) {
-        if (messages.isNotEmpty()) {
-            listState.animateScrollToItem(messages.size - 1)
+    LaunchedEffect(listState) {
+        snapshotFlow {
+            val layoutInfo = listState.layoutInfo
+            val lastVisibleIndex = layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+            lastVisibleIndex to layoutInfo.totalItemsCount
+        }.collect { (lastVisibleIndex, totalItemsCount) ->
+            isNearBottom = totalItemsCount == 0 || lastVisibleIndex >= totalItemsCount - 3
+        }
+    }
+
+    LaunchedEffect(lastMessageKey) {
+        val lastMessage = messages.lastOrNull() ?: return@LaunchedEffect
+        if (isNearBottom || lastMessage.senderId == "user") {
+            val messageOffset = if (hasMoreHistory) 1 else 0
+            listState.animateScrollToItem(messages.lastIndex + messageOffset)
         }
     }
 
@@ -129,11 +155,32 @@ fun MainScreen(
                     }
                 }
 
-                items(messages) { msg ->
+                itemsIndexed(messages) { index, msg ->
                     val isUser = msg.senderId == "user"
+                    val messageKey = messageSelectionKey(index, msg)
                     MessageBubble(
-                        message = ChatMessage(msg.content, msg.timestamp, msg.senderId),
+                        message = msg,
                         isUser = isUser,
+                        isSelectionMode = isSelectingMessages,
+                        isSelected = selectedMessageKeys.contains(messageKey),
+                        onClick = {
+                            if (isSelectingMessages) {
+                                selectedMessageKeys = toggleSelectedMessage(selectedMessageKeys, messageKey)
+                                if (selectedMessageKeys.isEmpty()) {
+                                    isSelectingMessages = false
+                                }
+                            }
+                        },
+                        onCopy = {
+                            clipboardManager.setText(AnnotatedString(msg.content))
+                        },
+                        onQuote = {
+                            quoteDraft = quoteDraftText(msg.content)
+                        },
+                        onSelect = {
+                            isSelectingMessages = true
+                            selectedMessageKeys = setOf(messageKey)
+                        },
                     )
                 }
             }
@@ -147,7 +194,7 @@ fun MainScreen(
                 ) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Text(
-                            text = "请先扫码配对 OpenClaw",
+                            text = "请先扫码配对后端 Agent",
                             fontSize = 16.sp,
                             color = colors.textSecondary,
                         )
@@ -160,13 +207,82 @@ fun MainScreen(
             }
         }
 
+        if (isSelectingMessages) {
+            MessageSelectionToolbar(
+                selectedCount = selectedMessageKeys.size,
+                colors = colors,
+                onCopy = {
+                    clipboardManager.setText(
+                        AnnotatedString(selectedMessages.joinToString(separator = "\n\n") { it.content })
+                    )
+                    selectedMessageKeys = emptySet()
+                    isSelectingMessages = false
+                },
+                onCancel = {
+                    selectedMessageKeys = emptySet()
+                    isSelectingMessages = false
+                },
+            )
+        }
+
         InputArea(
             isRecording = isRecording,
             colors = colors,
             viewModel = viewModel,
             audioRecorder = audioRecorder,
             pairingState = pairingState,
+            quoteDraft = quoteDraft,
+            onQuoteDraftConsumed = { quoteDraft = null },
         )
+    }
+}
+
+private fun messageSelectionKey(index: Int, message: ChatMessage): String {
+    return message.clientMessageId ?: "$index|${message.senderId}|${message.timestamp}|${message.content}"
+}
+
+private fun toggleSelectedMessage(selected: Set<String>, key: String): Set<String> {
+    return if (selected.contains(key)) selected - key else selected + key
+}
+
+private fun quoteDraftText(content: String): String {
+    return "> ${quoteSummary(content)}\n\n"
+}
+
+private fun quoteSummary(content: String): String {
+    val compact = content.split(Regex("\\s+")).filter { it.isNotEmpty() }.joinToString(" ")
+    return if (compact.length <= 300) compact else compact.take(300) + "..."
+}
+
+@Composable
+private fun MessageSelectionToolbar(
+    selectedCount: Int,
+    colors: MochiColors,
+    onCopy: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(colors.surface)
+            .border(width = 0.5.dp, color = colors.divider)
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = "已选 $selectedCount 条",
+            fontSize = 13.sp,
+            color = colors.textSecondary,
+        )
+
+        Spacer(modifier = Modifier.weight(1f))
+
+        TextButton(onClick = onCopy, enabled = selectedCount > 0) {
+            Text("复制")
+        }
+        TextButton(onClick = onCancel) {
+            Text("取消")
+        }
     }
 }
 
@@ -188,7 +304,7 @@ private fun TopBar(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
-            text = "OpenClaw Remote",
+            text = "Boson Relay",
             fontSize = 13.sp,
             color = colors.textSecondary,
         )
@@ -248,8 +364,16 @@ private fun InputArea(
     viewModel: ChatViewModel,
     audioRecorder: AudioRecorder,
     pairingState: PairingState = PairingState.UNPAIRED,
+    quoteDraft: String? = null,
+    onQuoteDraftConsumed: () -> Unit = {},
 ) {
     var inputMode by rememberSaveable { mutableStateOf(InputMode.VOICE) }
+
+    LaunchedEffect(quoteDraft) {
+        if (quoteDraft != null) {
+            inputMode = InputMode.TEXT
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -261,9 +385,11 @@ private fun InputArea(
         if (inputMode == InputMode.TEXT) {
             TextInputRow(
                 inputMode = inputMode,
+                quoteDraft = quoteDraft,
                 onSend = { text ->
                     viewModel.sendText(text)
                 },
+                onQuoteDraftConsumed = onQuoteDraftConsumed,
                 onSwitchToVoice = { inputMode = InputMode.VOICE },
                 colors = colors,
             )
@@ -296,14 +422,25 @@ private fun InputArea(
 @Composable
 private fun TextInputRow(
     inputMode: InputMode,
+    quoteDraft: String?,
     onSend: (String) -> Unit,
+    onQuoteDraftConsumed: () -> Unit,
     onSwitchToVoice: () -> Unit,
     colors: MochiColors,
 ) {
     var textFieldValue by remember { mutableStateOf(TextFieldValue()) }
 
     LaunchedEffect(inputMode) {
-        textFieldValue = TextFieldValue()
+        if (quoteDraft == null) {
+            textFieldValue = TextFieldValue()
+        }
+    }
+
+    LaunchedEffect(quoteDraft) {
+        if (quoteDraft != null) {
+            textFieldValue = TextFieldValue(quoteDraft)
+            onQuoteDraftConsumed()
+        }
     }
 
     Row(

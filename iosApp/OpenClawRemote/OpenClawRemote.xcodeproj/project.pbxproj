@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		0E4A9F45D80D4B2FAF81B35A /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 6D6D6E8EB4D1475E8B9D99A0 /* Assets.xcassets */; };
 		1B5B33DFF38C672BE1947434 /* InputAreaView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2DD481DC8CD7C44EB62100B1 /* InputAreaView.swift */; };
 		3F714AF4F704E166FDC5DC8A /* QRScannerScreenView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A609FE540C0EE0FA6D377651 /* QRScannerScreenView.swift */; };
 		4E1E63A428CD678307FFACF9 /* SettingsScreenView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A602978B2C24D4294DF971F /* SettingsScreenView.swift */; };
@@ -29,6 +30,7 @@
 		3A602978B2C24D4294DF971F /* SettingsScreenView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsScreenView.swift; sourceTree = "<group>"; };
 		4CE1DF8496D56DC00F4FE1A9 /* LaunchScreen.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = LaunchScreen.storyboard; sourceTree = "<group>"; };
 		54F44A7556003A94BF41818D /* OpenClawRemote.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OpenClawRemote.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		6D6D6E8EB4D1475E8B9D99A0 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		588828949ADF26913AD9F483 /* SettingsManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsManager.swift; sourceTree = "<group>"; };
 		7373BB88261A2851504B020F /* MessageBubbleView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageBubbleView.swift; sourceTree = "<group>"; };
 		7A4955135A9774CBE701184A /* OpenClawRemoteApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenClawRemoteApp.swift; sourceTree = "<group>"; };
@@ -51,6 +53,7 @@
 		4F380096E56571C95D3C0373 = {
 			isa = PBXGroup;
 			children = (
+				6D6D6E8EB4D1475E8B9D99A0 /* Assets.xcassets */,
 				4CE1DF8496D56DC00F4FE1A9 /* LaunchScreen.storyboard */,
 				893917C58E04C23AC21F869F /* Sources */,
 				0638353D6639E542F59D0912 /* Products */,
@@ -135,6 +138,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				0E4A9F45D80D4B2FAF81B35A /* Assets.xcassets in Resources */,
 				916447AB25FB0B3836E6DCBE /* LaunchScreen.storyboard in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

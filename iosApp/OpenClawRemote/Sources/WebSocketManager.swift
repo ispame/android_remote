@@ -42,6 +42,8 @@ final class WebSocketManager: ObservableObject {
     private var receivedMessageSeqs = Set<Int>()
     private var loadedHistoryKeys = Set<String>()
     private var oldestHistoryTimestamp: String?
+    private var lastAutoHistoryRequestAt: Date?
+    private let hiddenAsrErrors: Set<String> = ["ASR_AUDIO_EMPTY", "ASR_EMPTY_TRANSCRIPT"]
 
     init(deviceId: String, deviceLabel: String, token: String) {
         self.deviceId = deviceId
@@ -162,9 +164,9 @@ final class WebSocketManager: ObservableObject {
         sendJson(frame)
     }
 
-    func requestRecentHistory(rounds: Int = 15) {
+    func requestRecentHistory(rounds: Int = 15, force: Bool = false) {
         if historyLoading { return }
-        if historyLoaded && !historyHasMore { return }
+        if !force && historyLoaded && !historyHasMore { return }
         guard pairingState == .paired else {
             historyLoading = false
             historyError = "请先配对 OpenClaw"
@@ -180,10 +182,20 @@ final class WebSocketManager: ObservableObject {
             "session_key": "current",
             "limit": max(1, rounds) * 2
         ]
-        if let oldestHistoryTimestamp {
+        if !force, let oldestHistoryTimestamp {
             frame["before_timestamp"] = oldestHistoryTimestamp
         }
         sendJson(frame)
+    }
+
+    private func requestAutoHistorySync() {
+        guard pairingState == .paired else { return }
+        let now = Date()
+        if let lastAutoHistoryRequestAt, now.timeIntervalSince(lastAutoHistoryRequestAt) < 3 {
+            return
+        }
+        lastAutoHistoryRequestAt = now
+        requestRecentHistory(rounds: 15, force: true)
     }
 
     func sendAudio(_ data: Data) {
@@ -371,13 +383,14 @@ final class WebSocketManager: ObservableObject {
                     self.pairingState = .paired
                     self.messageSubject.send(WsMessageEvent.paired(backendId, backendLabel))
                     self.isRestoringPairing = false
+                    self.requestAutoHistorySync()
                 } else {
                     self.pairingState = .unpaired
                     self.addMessage("配对请求被拒绝", senderId: "assistant")
                 }
 
             case "message":
-                let content = json["content"] as? String ?? ""
+                guard let content = self.displayableBackendContent(json["content"] as? String ?? "") else { return }
                 let seq = json["seq"] as? Int
                 // Immediately ack so the sender (plugin) gets delivery confirmation
                 if let seq = seq {
@@ -456,7 +469,16 @@ final class WebSocketManager: ObservableObject {
             guard let content = item["content"] as? String else { return nil }
             let role = item["role"] as? String ?? "assistant"
             let timestamp = item["timestamp"] as? String ?? self.timestamp()
-            return HistoryMessagePayload(content: content, role: role, timestamp: timestamp).chatMessage
+            let normalizedRole = role.lowercased()
+            let displayContent: String
+            if normalizedRole == "user" || normalizedRole == "human" {
+                guard !self.shouldHideSystemNoise(content) else { return nil }
+                displayContent = content
+            } else {
+                guard let sanitized = self.displayableBackendContent(content) else { return nil }
+                displayContent = sanitized
+            }
+            return HistoryMessagePayload(content: displayContent, role: role, timestamp: timestamp).chatMessage
         }
 
         if parsed.isEmpty {
@@ -494,6 +516,10 @@ final class WebSocketManager: ObservableObject {
         let error = json["error"] as? String
         guard let clientMessageId else { return }
         guard let idx = messages.firstIndex(where: { $0.clientMessageId == clientMessageId }) else { return }
+        if !success, let error, hiddenAsrErrors.contains(error) {
+            messages = messages.filter { $0.clientMessageId != clientMessageId }
+            return
+        }
         let old = messages[idx]
         var updatedMessages = messages
         updatedMessages[idx] = ChatMessage(
@@ -507,6 +533,41 @@ final class WebSocketManager: ObservableObject {
             clientMessageId: old.clientMessageId
         )
         messages = updatedMessages
+    }
+
+    private func sanitizeAssistantContent(_ content: String) -> String {
+        let marker = "[[reply_to_current]]"
+        guard content.hasPrefix(marker) else { return content }
+        let start = content.index(content.startIndex, offsetBy: marker.count)
+        return String(content[start...]).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func displayableBackendContent(_ content: String) -> String? {
+        let sanitized = sanitizeAssistantContent(content)
+        return shouldHideSystemNoise(sanitized) ? nil : sanitized
+    }
+
+    private func shouldHideSystemNoise(_ content: String) -> Bool {
+        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed == "HEARTBEAT_OK" { return true }
+        if trimmed.hasPrefix("System (untrusted):") { return true }
+
+        let heartbeatPrompts = [
+            "Read HEARTBEAT.md if it exists",
+            "reply HEARTBEAT_OK",
+            "HEARTBEAT.md",
+            "Do not infer or repeat oldtasks"
+        ]
+        let containsHeartbeatPrompt = heartbeatPrompts.contains { trimmed.localizedCaseInsensitiveContains($0) }
+        if containsHeartbeatPrompt && (
+            trimmed.hasPrefix("Read HEARTBEAT.md")
+                || trimmed.hasPrefix("Exec failed")
+                || trimmed.localizedCaseInsensitiveContains("workspace/HEARTBEAT.md")
+                || trimmed.localizedCaseInsensitiveContains("Current time:")
+        ) {
+            return true
+        }
+        return false
     }
 
     private func messageHistoryKey(_ message: ChatMessage) -> String {

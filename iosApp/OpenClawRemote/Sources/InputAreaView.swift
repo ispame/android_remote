@@ -21,7 +21,9 @@ struct InputAreaView: View {
     let isRecording: Bool
     let isPaired: Bool
     let colors: MochiColors
+    let quoteDraft: String?
     let onSendText: (String) -> Void
+    let onQuoteDraftConsumed: () -> Void
     let onMicPress: () -> Void
     let onMicRelease: (Bool) -> Void
     @ObservedObject var audioRecorder: AudioRecorder
@@ -110,9 +112,15 @@ struct InputAreaView: View {
         .animation(.easeInOut(duration: 0.16), value: recordingState.isCancelled)
         .animation(.easeOut(duration: 0.18), value: isRecording)
         .onChange(of: inputMode) { newValue in
-            if newValue == .text {
+            if newValue == .text && quoteDraft == nil {
                 textFieldValue = ""
             }
+        }
+        .onChange(of: quoteDraft) { draft in
+            guard let draft else { return }
+            inputMode = .text
+            textFieldValue = draft
+            onQuoteDraftConsumed()
         }
     }
 }
