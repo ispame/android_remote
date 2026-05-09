@@ -134,6 +134,15 @@ private struct ApprovalActionsView: View {
                 )
 
                 ApprovalCommandButton(
+                    title: "永久",
+                    systemImage: "checkmark.seal",
+                    foreground: colors.textPrimary,
+                    background: colors.inputBg,
+                    command: "/approve always",
+                    onCommand: onCommand
+                )
+
+                ApprovalCommandButton(
                     title: "拒绝",
                     systemImage: "xmark",
                     foreground: colors.recordingRed,
