@@ -42,6 +42,9 @@ fun MessageBubble(
 ) {
     val colors = MochiTheme.colors
     var menuExpanded by remember { mutableStateOf(false) }
+    val usesWideLayout = !isUser && message.content.prefersWideMessageLayout()
+    val quotedMessage = remember(message.content) { parseLeadingQuotedMessage(message.content) }
+    val displayContent = quotedMessage?.body ?: message.content
 
     Row(
         modifier = modifier
@@ -63,14 +66,13 @@ fun MessageBubble(
             Spacer(modifier = Modifier.width(4.dp))
         }
 
-        if (!isUser) {
-            AvatarChip(label = "M", bgColor = colors.secondary, textColor = colors.onSecondary)
-            Spacer(modifier = Modifier.width(8.dp))
-        }
-
         Column(
             horizontalAlignment = if (isUser) Alignment.End else Alignment.Start,
-            modifier = Modifier.widthIn(max = 280.dp)
+            modifier = if (usesWideLayout) {
+                Modifier.fillMaxWidth(0.96f)
+            } else {
+                Modifier.widthIn(max = 320.dp)
+            }
         ) {
             Box(
                 modifier = Modifier
@@ -93,12 +95,21 @@ fun MessageBubble(
                     .background(if (isUser) colors.userBubble else colors.assistantBg)
                     .padding(horizontal = 14.dp, vertical = 10.dp)
             ) {
-                Text(
-                    text = parseBoldMarkdown(message.content),
-                    fontSize = 15.sp,
-                    lineHeight = 22.sp,
-                    color = if (isUser) colors.userBubbleFg else colors.assistantFg,
-                )
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (quotedMessage != null) {
+                        EmbeddedQuote(
+                            summary = quotedMessage.quote,
+                            isUser = isUser,
+                        )
+                    }
+
+                    Text(
+                        text = parseBoldMarkdown(displayContent),
+                        fontSize = 15.sp,
+                        lineHeight = 22.sp,
+                        color = if (isUser) colors.userBubbleFg else colors.assistantFg,
+                    )
+                }
             }
 
             Spacer(modifier = Modifier.height(3.dp))
@@ -137,9 +148,89 @@ fun MessageBubble(
             }
         }
 
-        if (isUser) {
-            Spacer(modifier = Modifier.width(8.dp))
-            AvatarChip(label = "你", bgColor = colors.primary, textColor = colors.onPrimary)
+    }
+}
+
+private data class ParsedQuotedMessage(
+    val quote: String,
+    val body: String,
+)
+
+private fun parseLeadingQuotedMessage(text: String): ParsedQuotedMessage? {
+    val lines = text.lines()
+    if (lines.firstOrNull()?.trimStart()?.startsWith(">") != true) return null
+
+    val quoteLines = mutableListOf<String>()
+    var index = 0
+    while (index < lines.size) {
+        val trimmed = lines[index].trimStart()
+        if (!trimmed.startsWith(">")) break
+        quoteLines += trimmed.removePrefix(">").trim()
+        index += 1
+    }
+
+    while (index < lines.size && lines[index].isBlank()) {
+        index += 1
+    }
+
+    val quote = quoteLines.joinToString("\n").trim()
+    val body = lines.drop(index).joinToString("\n").trim()
+    if (quote.isBlank() || body.isBlank()) return null
+    return ParsedQuotedMessage(quote, body)
+}
+
+@Composable
+private fun EmbeddedQuote(
+    summary: String,
+    isUser: Boolean,
+) {
+    val colors = MochiTheme.colors
+    val contentColor = if (isUser) colors.userBubbleFg else colors.assistantFg
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .background(colors.surface.copy(alpha = 0.28f))
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.Top,
+    ) {
+        Box(
+            modifier = Modifier
+                .width(3.dp)
+                .height(38.dp)
+                .clip(RoundedCornerShape(2.dp))
+                .background(contentColor.copy(alpha = 0.45f))
+        )
+
+        Spacer(modifier = Modifier.width(8.dp))
+
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = "引用",
+                fontSize = 11.sp,
+                color = contentColor.copy(alpha = 0.68f),
+                fontWeight = FontWeight.Medium,
+            )
+            Text(
+                text = summary,
+                fontSize = 12.sp,
+                lineHeight = 17.sp,
+                color = contentColor.copy(alpha = 0.74f),
+                maxLines = 3,
+            )
+        }
+    }
+}
+
+private fun String.prefersWideMessageLayout(): Boolean {
+    if (contains("```")) return true
+    val lines = lines()
+    return lines.windowed(size = 2, step = 1).any { pair ->
+        val header = pair[0].split("|").map { it.trim() }.filter { it.isNotEmpty() }
+        val separator = pair[1].split("|").map { it.trim() }.filter { it.isNotEmpty() }
+        header.size >= 2 && separator.size >= 2 && separator.all { cell ->
+            cell.trim(':').length >= 3 && cell.trim(':').all { it == '-' }
         }
     }
 }

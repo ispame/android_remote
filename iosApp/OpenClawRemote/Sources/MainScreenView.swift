@@ -2,43 +2,71 @@ import SwiftUI
 
 struct TopBarView: View {
     let connectionState: ConnectionState
-    let pairingState: PairingState
-    let pairedBackendLabel: String?
+    let selectedProfile: AgentProfile
+    let profiles: [AgentProfile]
+    let profileStatuses: [String: AgentAvailabilityStatus]
+    let unreadCounts: [String: Int]
     let isDark: Bool
     let colors: MochiColors
     let onToggleTheme: () -> Void
     let onNavigateToSettings: () -> Void
+    let onSelectProfile: (String) -> Void
 
-    private var statusColor: Color {
-        if pairingState == .paired { return colors.onlineGreen }
-        if connectionState == .registered || connectionState == .connected || connectionState == .connecting {
-            return colors.accent
-        }
-        return colors.recordingRed
+    private func status(for profile: AgentProfile) -> AgentAvailabilityStatus {
+        profileStatuses[profile.id] ?? .unpaired
     }
 
-    private var statusText: String {
-        if pairingState == .paired {
-            return "已配对" + (pairedBackendLabel.map { " · \($0)" } ?? "")
-        }
-        switch connectionState {
-        case .registered: return "已连接，请扫码"
-        case .connected, .connecting: return "连接中..."
-        default: return "未连接"
+    private func statusColor(_ status: AgentAvailabilityStatus) -> Color {
+        switch status {
+        case .available: return colors.onlineGreen
+        case .pairing, .connecting: return colors.accent
+        case .unconfigured, .unpaired: return colors.textSecondary
+        case .offline: return colors.recordingRed
         }
     }
 
     var body: some View {
         HStack(spacing: 8) {
-            // App title
-            Text("Boson Relay")
-                .font(.system(size: 13, weight: .regular))
-                .foregroundColor(colors.textSecondary)
-
-            // Status indicator
-            Text("• \(statusText)")
-                .font(.system(size: 11, weight: .regular))
-                .foregroundColor(statusColor)
+            if profiles.count >= 2 {
+                HStack(spacing: 4) {
+                    ForEach(Array(profiles.prefix(SettingsManager.maxAgentProfiles))) { profile in
+                        let itemStatus = status(for: profile)
+                        Button {
+                            onSelectProfile(profile.id)
+                        } label: {
+                            HStack(spacing: 4) {
+                                Text("\(profile.resolvedDisplayName)(\(itemStatus.label))")
+                                    .font(.system(size: 11, weight: profile.id == selectedProfile.id ? .semibold : .regular))
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.72)
+                                if profile.id != selectedProfile.id && (unreadCounts[profile.id] ?? 0) > 0 {
+                                    Circle()
+                                        .fill(colors.recordingRed)
+                                        .frame(width: 6, height: 6)
+                                }
+                            }
+                            .foregroundColor(profile.id == selectedProfile.id ? colors.onPrimary : statusColor(itemStatus))
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 6)
+                            .background(profile.id == selectedProfile.id ? colors.primary : colors.inputBg)
+                            .cornerRadius(8)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .layoutPriority(1)
+            } else {
+                let itemStatus = status(for: selectedProfile)
+                HStack(spacing: 5) {
+                    Image(systemName: selectedProfile.platform.iconName)
+                        .font(.system(size: 12, weight: .medium))
+                    Text("\(selectedProfile.resolvedDisplayName)(\(itemStatus.label))")
+                        .font(.system(size: 13, weight: .regular))
+                        .lineLimit(1)
+                }
+                .foregroundColor(statusColor(itemStatus))
+                .layoutPriority(1)
+            }
 
             Spacer()
 
@@ -76,28 +104,40 @@ struct MainScreenView: View {
     let colors: MochiColors
     let onToggleTheme: () -> Void
     let onNavigateToSettings: () -> Void
+    let onSelectProfile: (String) -> Void
 
     @State private var inputMode: InputMode = .voice
     @State private var isNearChatBottom = true
     @State private var isSelectingMessages = false
     @State private var selectedMessageIds = Set<UUID>()
-    @State private var quoteDraft: String?
+    @State private var quotedMessageSummary: String?
     private let bottomAnchorId = "chat-bottom-anchor"
 
     private var selectedMessages: [ChatMessage] {
         wsManager.messages.filter { selectedMessageIds.contains($0.id) }
     }
 
+    private var selectedProfile: AgentProfile {
+        settingsManager.selectedProfile
+    }
+
+    private var isAudioEnabled: Bool {
+        selectedProfile.platform.supportsAudio
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             TopBarView(
                 connectionState: wsManager.connectionState,
-                pairingState: wsManager.pairingState,
-                pairedBackendLabel: settingsManager.config.pairedBackendLabel,
+                selectedProfile: selectedProfile,
+                profiles: settingsManager.profiles,
+                profileStatuses: Dictionary(uniqueKeysWithValues: settingsManager.profiles.map { ($0.id, wsManager.availabilityStatus(for: $0)) }),
+                unreadCounts: wsManager.unreadCounts,
                 isDark: isDark,
                 colors: colors,
                 onToggleTheme: onToggleTheme,
-                onNavigateToSettings: onNavigateToSettings
+                onNavigateToSettings: onNavigateToSettings,
+                onSelectProfile: onSelectProfile
             )
 
             Divider().background(colors.divider)
@@ -124,11 +164,15 @@ struct MainScreenView: View {
                                             copyMessages([message])
                                         },
                                         onQuote: {
-                                            quoteDraft = quoteDraftText(for: message)
+                                            quotedMessageSummary = quoteSummary(for: message.content)
+                                            inputMode = .text
                                         },
                                         onSelect: {
                                             isSelectingMessages = true
                                             selectedMessageIds = [message.id]
+                                        },
+                                        onApprovalCommand: { command in
+                                            sendApprovalCommand(command)
                                         }
                                     )
                                 }
@@ -167,7 +211,7 @@ struct MainScreenView: View {
 
                     if wsManager.pairingState != .paired {
                         VStack(spacing: 8) {
-                            Text("请先扫码配对后端 Agent")
+                            Text("请先扫码配对 \(selectedProfile.platform.label)")
                                 .font(.system(size: 16, weight: .regular))
                                 .foregroundColor(colors.textSecondary)
                             Button("去设置") {
@@ -195,17 +239,20 @@ struct MainScreenView: View {
                 inputMode: $inputMode,
                 isRecording: audioRecorder.isRecording,
                 isPaired: wsManager.pairingState == .paired,
+                isAudioEnabled: isAudioEnabled,
                 colors: colors,
-                quoteDraft: quoteDraft,
+                quotedMessageSummary: quotedMessageSummary,
                 onSendText: { text in
                     if wsManager.pairingState != .paired {
-                        wsManager.addLocalMessage("请先配对后端 Agent", senderId: "assistant")
+                        wsManager.addLocalMessage("请先配对 \(selectedProfile.platform.label)", senderId: "assistant")
                         return
                     }
-                    wsManager.sendText(text)
+                    let outgoingText = quotedMessageSummary.map { "> \($0)\n\n\(text)" } ?? text
+                    wsManager.sendText(outgoingText)
+                    quotedMessageSummary = nil
                 },
-                onQuoteDraftConsumed: {
-                    quoteDraft = nil
+                onCancelQuote: {
+                    quotedMessageSummary = nil
                 },
                 onMicPress: {
                     if !audioRecorder.isRecording {
@@ -225,6 +272,13 @@ struct MainScreenView: View {
             )
         }
         .background(colors.background)
+        .onChange(of: settingsManager.selectedProfileId) { _ in
+            clearMessageSelection()
+            quotedMessageSummary = nil
+            if !settingsManager.selectedProfile.platform.supportsAudio {
+                inputMode = .text
+            }
+        }
     }
 
     private func toggleMessageSelection(_ message: ChatMessage) {
@@ -249,8 +303,12 @@ struct MainScreenView: View {
             .joined(separator: "\n\n")
     }
 
-    private func quoteDraftText(for message: ChatMessage) -> String {
-        "> \(quoteSummary(for: message.content))\n\n"
+    private func sendApprovalCommand(_ command: String) {
+        guard wsManager.pairingState == .paired else {
+            wsManager.addLocalMessage("请先配对 \(selectedProfile.platform.label)", senderId: "assistant")
+            return
+        }
+        wsManager.sendText(command)
     }
 
     private func quoteSummary(for content: String) -> String {

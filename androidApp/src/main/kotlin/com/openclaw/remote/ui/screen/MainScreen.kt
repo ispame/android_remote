@@ -19,6 +19,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material.icons.filled.LightMode
@@ -72,7 +73,7 @@ fun MainScreen(
     var isNearBottom by remember { mutableStateOf(true) }
     var isSelectingMessages by remember { mutableStateOf(false) }
     var selectedMessageKeys by remember { mutableStateOf<Set<String>>(emptySet()) }
-    var quoteDraft by remember { mutableStateOf<String?>(null) }
+    var quotedMessageSummary by remember { mutableStateOf<String?>(null) }
     val lastMessageKey = messages.lastOrNull()?.let { message ->
         message.clientMessageId ?: "${message.senderId}|${message.timestamp}|${message.content}"
     }
@@ -175,7 +176,7 @@ fun MainScreen(
                             clipboardManager.setText(AnnotatedString(msg.content))
                         },
                         onQuote = {
-                            quoteDraft = quoteDraftText(msg.content)
+                            quotedMessageSummary = quoteSummary(msg.content)
                         },
                         onSelect = {
                             isSelectingMessages = true
@@ -231,8 +232,13 @@ fun MainScreen(
             viewModel = viewModel,
             audioRecorder = audioRecorder,
             pairingState = pairingState,
-            quoteDraft = quoteDraft,
-            onQuoteDraftConsumed = { quoteDraft = null },
+            quotedMessageSummary = quotedMessageSummary,
+            onCancelQuote = { quotedMessageSummary = null },
+            onSendText = { text ->
+                val outgoingText = quotedMessageSummary?.let { "> $it\n\n$text" } ?: text
+                viewModel.sendText(outgoingText)
+                quotedMessageSummary = null
+            },
         )
     }
 }
@@ -243,10 +249,6 @@ private fun messageSelectionKey(index: Int, message: ChatMessage): String {
 
 private fun toggleSelectedMessage(selected: Set<String>, key: String): Set<String> {
     return if (selected.contains(key)) selected - key else selected + key
-}
-
-private fun quoteDraftText(content: String): String {
-    return "> ${quoteSummary(content)}\n\n"
 }
 
 private fun quoteSummary(content: String): String {
@@ -364,13 +366,14 @@ private fun InputArea(
     viewModel: ChatViewModel,
     audioRecorder: AudioRecorder,
     pairingState: PairingState = PairingState.UNPAIRED,
-    quoteDraft: String? = null,
-    onQuoteDraftConsumed: () -> Unit = {},
+    quotedMessageSummary: String? = null,
+    onCancelQuote: () -> Unit = {},
+    onSendText: (String) -> Unit = { viewModel.sendText(it) },
 ) {
     var inputMode by rememberSaveable { mutableStateOf(InputMode.VOICE) }
 
-    LaunchedEffect(quoteDraft) {
-        if (quoteDraft != null) {
+    LaunchedEffect(quotedMessageSummary) {
+        if (quotedMessageSummary != null) {
             inputMode = InputMode.TEXT
         }
     }
@@ -382,14 +385,18 @@ private fun InputArea(
     ) {
         HorizontalDivider(color = colors.divider, thickness = 0.5.dp)
 
+        if (quotedMessageSummary != null) {
+            QuotePreviewBar(
+                summary = quotedMessageSummary,
+                colors = colors,
+                onCancel = onCancelQuote,
+            )
+        }
+
         if (inputMode == InputMode.TEXT) {
             TextInputRow(
                 inputMode = inputMode,
-                quoteDraft = quoteDraft,
-                onSend = { text ->
-                    viewModel.sendText(text)
-                },
-                onQuoteDraftConsumed = onQuoteDraftConsumed,
+                onSend = onSendText,
                 onSwitchToVoice = { inputMode = InputMode.VOICE },
                 colors = colors,
             )
@@ -420,27 +427,66 @@ private fun InputArea(
 }
 
 @Composable
+private fun QuotePreviewBar(
+    summary: String,
+    colors: MochiColors,
+    onCancel: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 16.dp, top = 10.dp, end = 16.dp, bottom = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            modifier = Modifier
+                .width(3.dp)
+                .height(34.dp)
+                .clip(RoundedCornerShape(2.dp))
+                .background(colors.primary)
+        )
+
+        Spacer(modifier = Modifier.width(10.dp))
+
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = "引用",
+                fontSize = 12.sp,
+                color = colors.textSecondary,
+            )
+            Text(
+                text = summary,
+                fontSize = 13.sp,
+                color = colors.textSecondary,
+                maxLines = 2,
+            )
+        }
+
+        IconButton(
+            onClick = onCancel,
+            modifier = Modifier.size(28.dp),
+        ) {
+            Icon(
+                imageVector = Icons.Filled.Close,
+                contentDescription = "取消引用",
+                tint = colors.textSecondary,
+                modifier = Modifier.size(16.dp),
+            )
+        }
+    }
+}
+
+@Composable
 private fun TextInputRow(
     inputMode: InputMode,
-    quoteDraft: String?,
     onSend: (String) -> Unit,
-    onQuoteDraftConsumed: () -> Unit,
     onSwitchToVoice: () -> Unit,
     colors: MochiColors,
 ) {
     var textFieldValue by remember { mutableStateOf(TextFieldValue()) }
 
     LaunchedEffect(inputMode) {
-        if (quoteDraft == null) {
-            textFieldValue = TextFieldValue()
-        }
-    }
-
-    LaunchedEffect(quoteDraft) {
-        if (quoteDraft != null) {
-            textFieldValue = TextFieldValue(quoteDraft)
-            onQuoteDraftConsumed()
-        }
+        textFieldValue = TextFieldValue()
     }
 
     Row(

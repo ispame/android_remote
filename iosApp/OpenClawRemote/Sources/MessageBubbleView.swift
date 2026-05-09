@@ -9,6 +9,15 @@ struct MessageBubbleView: View {
     let onCopy: () -> Void
     let onQuote: () -> Void
     let onSelect: () -> Void
+    let onApprovalCommand: (String) -> Void
+
+    private var usesWideLayout: Bool {
+        !message.isUser && message.content.prefersWideMessageLayout
+    }
+
+    private var approvalRequest: ApprovalRequest? {
+        message.isUser ? nil : ApprovalRequest.detect(in: message.content)
+    }
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
@@ -19,10 +28,8 @@ struct MessageBubbleView: View {
                     .frame(width: 28)
             }
 
-            if !message.isUser {
-                AvatarChip(label: "M", bgColor: colors.secondary, textColor: colors.onSecondary)
-            } else {
-                Spacer(minLength: 44)
+            if message.isUser {
+                Spacer(minLength: 0)
             }
 
             VStack(alignment: message.isUser ? .trailing : .leading, spacing: 3) {
@@ -42,17 +49,27 @@ struct MessageBubbleView: View {
                         )
                         .fill(message.isUser ? colors.userBubble : colors.assistantBg)
                     )
-                    .frame(maxWidth: UIScreen.main.bounds.width * 0.74, alignment: message.isUser ? .trailing : .leading)
+                    .frame(
+                        maxWidth: UIScreen.main.bounds.width * (usesWideLayout ? 0.94 : 0.82),
+                        alignment: message.isUser ? .trailing : .leading
+                    )
 
                 Text(message.timestamp)
                     .font(.system(size: 11, weight: .regular))
                     .foregroundColor(colors.textSecondary)
+
+                if let approvalRequest {
+                    ApprovalActionsView(
+                        request: approvalRequest,
+                        colors: colors,
+                        onCommand: onApprovalCommand
+                    )
+                    .frame(maxWidth: UIScreen.main.bounds.width * 0.82, alignment: .leading)
+                }
             }
 
-            if message.isUser {
-                AvatarChip(label: "你", bgColor: colors.primary, textColor: colors.onPrimary)
-            } else {
-                Spacer(minLength: 44)
+            if !message.isUser {
+                Spacer(minLength: 0)
             }
         }
         .frame(maxWidth: .infinity)
@@ -72,6 +89,105 @@ struct MessageBubbleView: View {
     }
 }
 
+struct ApprovalRequest: Equatable {
+    let title: String
+
+    static func detect(in content: String) -> ApprovalRequest? {
+        let lowercased = content.lowercased()
+        guard lowercased.contains("dangerous command requires approval"),
+              lowercased.contains("/approve"),
+              lowercased.contains("/deny") else {
+            return nil
+        }
+        return ApprovalRequest(title: "危险命令审批")
+    }
+}
+
+private struct ApprovalActionsView: View {
+    let request: ApprovalRequest
+    let colors: MochiColors
+    let onCommand: (String) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(request.title)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundColor(colors.textSecondary)
+
+            HStack(spacing: 8) {
+                ApprovalCommandButton(
+                    title: "批准",
+                    systemImage: "checkmark",
+                    foreground: colors.onPrimary,
+                    background: colors.primary,
+                    command: "/approve",
+                    onCommand: onCommand
+                )
+
+                ApprovalCommandButton(
+                    title: "本会话",
+                    systemImage: "checkmark.shield",
+                    foreground: colors.textPrimary,
+                    background: colors.inputBg,
+                    command: "/approve session",
+                    onCommand: onCommand
+                )
+
+                ApprovalCommandButton(
+                    title: "拒绝",
+                    systemImage: "xmark",
+                    foreground: colors.recordingRed,
+                    background: colors.recordingRed.opacity(0.12),
+                    command: "/deny",
+                    onCommand: onCommand
+                )
+            }
+        }
+        .padding(10)
+        .background(colors.surface)
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(colors.divider, lineWidth: 1)
+        )
+        .cornerRadius(8)
+    }
+}
+
+private struct ApprovalCommandButton: View {
+    let title: String
+    let systemImage: String
+    let foreground: Color
+    let background: Color
+    let command: String
+    let onCommand: (String) -> Void
+
+    var body: some View {
+        Button {
+            onCommand(command)
+        } label: {
+            Label(title, systemImage: systemImage)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(foreground)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 7)
+                .background(background)
+                .cornerRadius(8)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private extension String {
+    var prefersWideMessageLayout: Bool {
+        contains("```") || parseBlocks(self).contains { block in
+            if case .table = block { return true }
+            return false
+        }
+    }
+}
+
 struct CollapsibleMessageContent: View {
     let text: String
     let textColor: Color
@@ -79,8 +195,16 @@ struct CollapsibleMessageContent: View {
 
     @State private var isExpanded = false
 
+    private var quotedContent: ParsedQuotedMessage? {
+        parseLeadingQuotedMessage(text)
+    }
+
+    private var bodyText: String {
+        quotedContent?.body ?? text
+    }
+
     private var analysis: MessageContentAnalysis {
-        analyzeMessageContent(text)
+        analyzeMessageContent(bodyText)
     }
 
     private var shouldShowToggle: Bool {
@@ -88,10 +212,10 @@ struct CollapsibleMessageContent: View {
     }
 
     private var displayText: String {
-        if isExpanded { return text }
+        if isExpanded { return bodyText }
         switch analysis.kind {
         case .normal:
-            return text
+            return bodyText
         case .longText:
             return analysis.preview
         case .denseEncoded:
@@ -101,6 +225,14 @@ struct CollapsibleMessageContent: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            if let quotedContent {
+                EmbeddedQuoteView(
+                    summary: quotedContent.quote,
+                    colors: colors,
+                    textColor: textColor
+                )
+            }
+
             MarkdownMessageBody(
                 text: displayText,
                 textColor: textColor,
@@ -137,6 +269,69 @@ struct CollapsibleMessageContent: View {
         case .normal:
             return ""
         }
+    }
+}
+
+struct ParsedQuotedMessage {
+    let quote: String
+    let body: String
+}
+
+func parseLeadingQuotedMessage(_ text: String) -> ParsedQuotedMessage? {
+    let lines = text.components(separatedBy: .newlines)
+    guard let firstLine = lines.first,
+          firstLine.trimmingCharacters(in: .whitespaces).hasPrefix(">") else {
+        return nil
+    }
+
+    var quoteLines: [String] = []
+    var index = 0
+    while index < lines.count {
+        let line = lines[index]
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        guard trimmed.hasPrefix(">") else { break }
+        var value = trimmed
+        value.removeFirst()
+        quoteLines.append(value.trimmingCharacters(in: .whitespaces))
+        index += 1
+    }
+
+    while index < lines.count && lines[index].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        index += 1
+    }
+
+    let quote = quoteLines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    let body = lines.dropFirst(index).joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !quote.isEmpty, !body.isEmpty else { return nil }
+    return ParsedQuotedMessage(quote: quote, body: body)
+}
+
+private struct EmbeddedQuoteView: View {
+    let summary: String
+    let colors: MochiColors
+    let textColor: Color
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            RoundedRectangle(cornerRadius: 1.5)
+                .fill(textColor.opacity(0.45))
+                .frame(width: 3)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("引用")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(textColor.opacity(0.68))
+                Text(summary)
+                    .font(.system(size: 12, weight: .regular))
+                    .foregroundColor(textColor.opacity(0.74))
+                    .lineLimit(3)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(colors.surface.opacity(0.28))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }
 

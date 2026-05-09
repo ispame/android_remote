@@ -117,11 +117,11 @@ struct HelpCardView: View {
                 .foregroundColor(colors.textPrimary)
 
             VStack(alignment: .leading, spacing: 4) {
-                Text("1. 在 OpenClaw 侧启动 Gateway Plugin")
-                Text("2. Plugin 会生成配对二维码")
-                Text("3. 点击「扫描二维码配对」")
-                Text("4. 扫描后自动连接并配对")
-                Text("5. 配对成功后即可开始对话")
+                Text("1. 在 Agent 侧启动 Boson Relay 连接")
+                Text("2. 扫描 Agent 生成的配对二维码")
+                Text("3. App 会为每个 Agent 单独保存配置")
+                Text("4. 多个 Agent 时可在顶部切换")
+                Text("5. 当前 Chat 始终对应当前配置")
             }
             .font(.system(size: 12, weight: .regular))
             .foregroundColor(colors.textSecondary.opacity(0.7))
@@ -178,6 +178,158 @@ struct SettingsTopBarView: View {
     }
 }
 
+private struct AgentFormState: Identifiable, Equatable {
+    var id: String
+    var isDraft: Bool
+    var platform: AgentPlatform
+    var displayName: String
+    var gatewayUrl: String
+    var backendId: String
+    var token: String
+    var backendLabel: String?
+    var isPaired: Bool
+
+    init(profile: AgentProfile, isDraft: Bool = false) {
+        id = profile.id
+        self.isDraft = isDraft
+        platform = profile.platform
+        displayName = profile.resolvedDisplayName
+        gatewayUrl = profile.gatewayUrl
+        backendId = profile.backendId
+        token = profile.token
+        backendLabel = profile.backendLabel
+        isPaired = profile.isPaired
+    }
+
+    static func draft(gatewayUrl: String) -> AgentFormState {
+        AgentFormState(
+            profile: AgentProfile(
+                id: UUID().uuidString,
+                appClientId: "",
+                platform: .custom,
+                displayName: "",
+                gatewayUrl: gatewayUrl,
+                backendId: "",
+                token: "",
+                isPaired: false
+            ),
+            isDraft: true
+        )
+    }
+
+    var resolvedName: String {
+        let trimmed = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty { return trimmed }
+        if let backendLabel, !backendLabel.isEmpty { return backendLabel }
+        return platform.defaultDisplayName
+    }
+}
+
+private struct AgentFormCardView: View {
+    @Binding var form: AgentFormState
+    let index: Int
+    let status: AgentAvailabilityStatus
+    let isSelected: Bool
+    let isOnlyPersistedProfile: Bool
+    let colors: MochiColors
+    let onSelect: () -> Void
+    let onRemove: () -> Void
+    let onPair: () -> Void
+
+    private var statusColor: Color {
+        switch status {
+        case .available: return colors.onlineGreen
+        case .pairing, .connecting: return colors.accent
+        case .unconfigured, .unpaired: return colors.textSecondary
+        case .offline: return colors.recordingRed
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                Button(action: onSelect) {
+                    HStack(spacing: 8) {
+                        Image(systemName: isSelected ? "checkmark.circle.fill" : form.platform.iconName)
+                            .font(.system(size: 16, weight: .semibold))
+                        Text("Agent \(index + 1)")
+                            .font(.system(size: 14, weight: .semibold))
+                    }
+                    .foregroundColor(isSelected ? colors.primary : colors.textPrimary)
+                }
+                .buttonStyle(.plain)
+
+                Text(status.label)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(statusColor)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(statusColor.opacity(0.12))
+                    .cornerRadius(8)
+
+                Spacer()
+
+                Button(action: onRemove) {
+                    Image(systemName: "minus.circle.fill")
+                        .font(.system(size: 20, weight: .semibold))
+                        .foregroundColor(colors.recordingRed)
+                        .frame(width: 32, height: 32)
+                }
+                .accessibilityLabel(isOnlyPersistedProfile ? "清空Agent配置" : "删除Agent")
+            }
+
+            OutlinedTextField(
+                label: "Agent 名称（Agent label）",
+                placeholder: form.platform.defaultDisplayName,
+                text: $form.displayName,
+                colors: colors
+            )
+
+            OutlinedTextField(
+                label: "Gateway URL",
+                placeholder: "wss://boson-tech.top/ws",
+                text: $form.gatewayUrl,
+                colors: colors
+            )
+
+            OutlinedTextField(
+                label: "Backend Id",
+                placeholder: "bk_xxx",
+                text: $form.backendId,
+                colors: colors
+            )
+
+            OutlinedTextField(
+                label: "Token",
+                placeholder: "配对 Token",
+                text: $form.token,
+                colors: colors
+            )
+
+            Button(action: onPair) {
+                HStack {
+                    Image(systemName: "link")
+                    Text("配对")
+                }
+                .font(.system(size: 15, weight: .medium))
+                .foregroundColor(colors.onPrimary)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 12)
+                .background(form.backendId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? colors.textSecondary.opacity(0.35) : colors.primary)
+                .cornerRadius(8)
+            }
+            .disabled(form.backendId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        }
+        .padding(14)
+        .background(colors.surface)
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(isSelected ? colors.primary : colors.divider, lineWidth: isSelected ? 1.5 : 1)
+        )
+        .cornerRadius(8)
+    }
+}
+
 struct SettingsScreenView: View {
     @ObservedObject var wsManager: WebSocketManager
     @ObservedObject var settingsManager: SettingsManager
@@ -188,15 +340,19 @@ struct SettingsScreenView: View {
     let onUnpair: () -> Void
     let onBack: () -> Void
     let onNavigateToQRScanner: () -> Void
+    let onSelectProfile: (String) -> Void
 
-    @State private var gatewayUrl: String = ""
     @State private var deviceLabel: String = ""
-    @State private var manualBackendId: String = ""
-    @State private var manualToken: String = ""
+    @State private var agentForms: [AgentFormState] = []
     @State private var asrMode: String = "router"
     @State private var asrProfileId: String = ""
     @State private var asrProfiles: [AsrProviderProfile] = []
     @State private var showSaved = false
+    @State private var statusMessage: String?
+
+    private var canAddDraft: Bool {
+        agentForms.count < SettingsManager.maxAgentProfiles && !agentForms.contains(where: { $0.isDraft })
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -211,27 +367,10 @@ struct SettingsScreenView: View {
 
             ScrollView {
                 VStack(spacing: 16) {
-                    // Connection status
-                    ConnectionStatusCard(
-                        connectionState: wsManager.connectionState,
-                        pairingState: wsManager.pairingState,
-                        pairedBackendLabel: settingsManager.config.pairedBackendLabel,
-                        colors: colors,
-                        onUnpair: onUnpair
-                    )
-
-                    Divider()
-
-                    // QR scan pairing
-                    SectionTitleView(text: "扫码配对 OpenClaw", colors: colors)
-                    Text("扫描 OpenClaw Gateway Plugin 生成的二维码，配对成功后即可开始对话")
-                        .font(.system(size: 12, weight: .regular))
-                        .foregroundColor(colors.textSecondary)
-
                     Button(action: onNavigateToQRScanner) {
                         HStack {
                             Image(systemName: "qrcode.viewfinder")
-                            Text(settingsManager.config.pairedBackendId == nil ? "扫描二维码配对" : "重新扫码配对")
+                            Text("扫码或新增Agent")
                         }
                         .font(.system(size: 15, weight: .medium))
                         .foregroundColor(colors.onPrimary)
@@ -241,105 +380,67 @@ struct SettingsScreenView: View {
                         .cornerRadius(8)
                     }
 
-                    Divider()
-
-                    // Manual pairing
-                    SectionTitleView(text: "手动配对", colors: colors)
-                    Text("输入 Gateway 地址和 Backend ID 进行配对")
-                        .font(.system(size: 12, weight: .regular))
-                        .foregroundColor(colors.textSecondary)
-
-                    OutlinedTextField(
-                        label: "Backend ID",
-                        placeholder: "agent backend ID",
-                        text: $manualBackendId,
-                        colors: colors
-                    )
-                    OutlinedTextField(
-                        label: "Token",
-                        placeholder: "配对 Token",
-                        text: $manualToken,
-                        colors: colors
-                    )
-
-                    Button {
-                        guard !gatewayUrl.isEmpty else { return }
-                        guard !manualBackendId.isEmpty else { return }
-
-                        let config = GatewayConfig(
-                            gatewayUrl: gatewayUrl,
-                            deviceId: settingsManager.config.deviceId,
-                            deviceLabel: deviceLabel.isEmpty ? "我的设备" : deviceLabel,
-                            token: manualToken,
-                            pairedBackendId: manualBackendId,
-                            pairedBackendLabel: nil,
-                            asrMode: asrMode,
-                            asrProfileId: asrProfileId
-                        )
-                        settingsManager.updateConfig(config)
-                        wsManager.updateCredentials(deviceLabel: config.deviceLabel, token: config.token)
-                        wsManager.updateAsrConfiguration(mode: config.asrMode, profileId: config.asrProfileId)
-                        wsManager.rememberBackendForPairing(manualBackendId)
-                        wsManager.reconnect(to: config.gatewayUrl)
-                        onRequestPair(manualBackendId)
-                    } label: {
-                        HStack {
-                            Image(systemName: "link")
-                            Text("配对")
+                    VStack(spacing: 12) {
+                        ForEach(agentForms.indices, id: \.self) { index in
+                            AgentFormCardView(
+                                form: $agentForms[index],
+                                index: index,
+                                status: status(for: agentForms[index]),
+                                isSelected: agentForms[index].id == settingsManager.selectedProfileId,
+                                isOnlyPersistedProfile: settingsManager.profiles.count == 1 && !agentForms[index].isDraft,
+                                colors: colors,
+                                onSelect: {
+                                    selectForm(agentForms[index])
+                                },
+                                onRemove: {
+                                    removeForm(agentForms[index])
+                                },
+                                onPair: {
+                                    pairForm(agentForms[index])
+                                }
+                            )
                         }
-                        .font(.system(size: 15, weight: .medium))
-                        .foregroundColor(colors.onPrimary)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
-                        .background(colors.primary)
-                        .cornerRadius(8)
+
+                        Button(action: addDraftAgent) {
+                            Image(systemName: "plus.circle.fill")
+                                .font(.system(size: 24, weight: .semibold))
+                                .foregroundColor(canAddDraft ? colors.primary : colors.textSecondary.opacity(0.4))
+                                .frame(width: 44, height: 36)
+                        }
+                        .disabled(!canAddDraft)
+                        .accessibilityLabel("新增Agent")
                     }
-                    .disabled(wsManager.connectionState == .connecting)
-
-                    Divider()
-
-                    // Gateway address
-                    SectionTitleView(text: "Gateway 地址", colors: colors)
-                    OutlinedTextField(
-                        label: "Gateway URL",
-                        placeholder: "ws://gateway.example.com:8765",
-                        text: $gatewayUrl,
-                        colors: colors
-                    )
 
                     Divider()
 
                     SectionTitleView(text: "语音识别", colors: colors)
                     Picker("语音识别", selection: $asrMode) {
                         Text("Router 识别").tag("router")
-                        Text("OpenClaw 后端识别").tag("backend")
+                        Text("Agent 识别").tag("backend")
                     }
                     .pickerStyle(.segmented)
 
-                    if asrMode == "router" {
-                        if asrProfiles.isEmpty {
-                            OutlinedTextField(
-                                label: "Provider / Model Profile",
-                                placeholder: "默认 profile 或 volcengine-bigmodel",
-                                text: $asrProfileId,
-                                colors: colors
-                            )
-                        } else {
-                            Picker("Provider / Model", selection: $asrProfileId) {
-                                ForEach(asrProfiles) { profile in
-                                    Text("\(profile.providerLabel) · \(profile.modelLabel)").tag(profile.id)
-                                }
+                    if asrMode == "router", asrProfiles.isEmpty {
+                        OutlinedTextField(
+                            label: "Provider / Model Profile",
+                            placeholder: "默认 profile 或 volcengine-bigmodel",
+                            text: $asrProfileId,
+                            colors: colors
+                        )
+                    } else if asrMode == "router" {
+                        Picker("Provider / Model", selection: $asrProfileId) {
+                            ForEach(asrProfiles) { profile in
+                                Text("\(profile.providerLabel) · \(profile.modelLabel)").tag(profile.id)
                             }
-                            .pickerStyle(.menu)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 10)
-                            .background(colors.inputBg)
-                            .cornerRadius(8)
                         }
+                        .pickerStyle(.menu)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 10)
+                        .background(colors.inputBg)
+                        .cornerRadius(8)
                     }
 
-                    // Device info
                     SectionTitleView(text: "设备信息", colors: colors)
                     OutlinedTextField(
                         label: "设备名称",
@@ -349,26 +450,7 @@ struct SettingsScreenView: View {
                     )
 
                     Button {
-                        let config = GatewayConfig(
-                            gatewayUrl: gatewayUrl,
-                            deviceId: settingsManager.config.deviceId,
-                            deviceLabel: deviceLabel.isEmpty ? "我的设备" : deviceLabel,
-                            token: manualToken,
-                            pairedBackendId: manualBackendId.isEmpty ? nil : manualBackendId,
-                            pairedBackendLabel: settingsManager.config.pairedBackendLabel,
-                            asrMode: asrMode,
-                            asrProfileId: asrProfileId
-                        )
-                        settingsManager.updateConfig(config)
-                        wsManager.applyConfiguration(
-                            gatewayUrl: config.gatewayUrl,
-                            deviceLabel: config.deviceLabel,
-                            token: config.token,
-                            pairedBackendId: config.pairedBackendId,
-                            pairedBackendLabel: config.pairedBackendLabel,
-                            asrMode: config.asrMode,
-                            asrProfileId: config.asrProfileId
-                        )
+                        saveAll()
                         showSaved = true
                         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { showSaved = false }
                     } label: {
@@ -387,7 +469,13 @@ struct SettingsScreenView: View {
                             .foregroundColor(colors.accent)
                     }
 
-                    HelpCardView(colors: colors)
+                    if let statusMessage {
+                        Text(statusMessage)
+                            .font(.system(size: 12, weight: .regular))
+                            .foregroundColor(colors.recordingRed)
+                            .multilineTextAlignment(.center)
+                            .frame(maxWidth: .infinity)
+                    }
                 }
                 .padding(16)
             }
@@ -395,18 +483,182 @@ struct SettingsScreenView: View {
         }
         .background(colors.background)
         .onAppear {
-            gatewayUrl = settingsManager.config.gatewayUrl
-            deviceLabel = settingsManager.config.deviceLabel
-            manualBackendId = settingsManager.config.pairedBackendId ?? ""
-            manualToken = settingsManager.config.token
-            asrMode = settingsManager.config.asrMode.isEmpty ? "router" : settingsManager.config.asrMode
-            asrProfileId = settingsManager.config.asrProfileId
+            syncFormsFromProfiles(keepingDraft: false)
+            syncGlobalSettings()
+            loadAsrProfiles()
+        }
+        .onReceive(settingsManager.$profiles) { _ in
+            syncFormsFromProfiles(keepingDraft: true)
+        }
+        .onChange(of: asrGatewayUrl) { _ in
             loadAsrProfiles()
         }
     }
 
+    private var asrGatewayUrl: String {
+        agentForms.first(where: { !$0.gatewayUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })?.gatewayUrl
+            ?? settingsManager.selectedProfile.gatewayUrl
+    }
+
+    private func syncFormsFromProfiles(keepingDraft: Bool) {
+        let drafts = keepingDraft ? agentForms.filter(\.isDraft) : []
+        var forms = settingsManager.profiles.map { AgentFormState(profile: $0) }
+        for draft in drafts where forms.count < SettingsManager.maxAgentProfiles {
+            forms.append(draft)
+        }
+        agentForms = forms
+        deviceLabel = settingsManager.config.deviceLabel
+    }
+
+    private func syncGlobalSettings() {
+        asrMode = settingsManager.globalAsrMode
+        asrProfileId = settingsManager.globalAsrProfileId
+    }
+
+    private func status(for form: AgentFormState) -> AgentAvailabilityStatus {
+        if form.backendId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return .unconfigured
+        }
+        guard !form.isDraft, let profile = settingsManager.profiles.first(where: { $0.id == form.id }) else {
+            return .unpaired
+        }
+        return wsManager.availabilityStatus(for: profile)
+    }
+
+    private func selectForm(_ form: AgentFormState) {
+        guard !form.isDraft else { return }
+        settingsManager.selectProfile(form.id)
+        wsManager.applyProfile(settingsManager.selectedProfile, deviceLabel: settingsManager.config.deviceLabel)
+        onSelectProfile(form.id)
+    }
+
+    private func addDraftAgent() {
+        guard canAddDraft else {
+            statusMessage = "最多支持 \(SettingsManager.maxAgentProfiles) 个 Agent"
+            return
+        }
+        let gateway = agentForms.first(where: { !$0.backendId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })?.gatewayUrl
+            ?? settingsManager.selectedProfile.gatewayUrl
+        agentForms.append(.draft(gatewayUrl: gateway))
+        statusMessage = nil
+    }
+
+    private func removeForm(_ form: AgentFormState) {
+        if form.isDraft {
+            agentForms.removeAll { $0.id == form.id }
+            statusMessage = nil
+            return
+        }
+
+        if !form.backendId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, form.isPaired {
+            wsManager.unpair(profileId: form.id, backendId: form.backendId)
+        }
+
+        if settingsManager.profiles.count <= 1 {
+            settingsManager.clearProfile(form.id)
+            wsManager.clearProfileState(profileId: form.id)
+        } else {
+            settingsManager.deleteProfile(form.id)
+            wsManager.removeProfileState(profileId: form.id)
+            wsManager.syncProfiles(settingsManager.profiles)
+            wsManager.applyProfile(settingsManager.selectedProfile, deviceLabel: settingsManager.config.deviceLabel)
+        }
+        syncFormsFromProfiles(keepingDraft: true)
+        statusMessage = nil
+    }
+
+    private func pairForm(_ form: AgentFormState) {
+        guard let profile = saveForm(form, select: true) else { return }
+        guard !profile.backendId.isEmpty else {
+            statusMessage = "请填写 Backend Id"
+            return
+        }
+        wsManager.syncProfiles(settingsManager.profiles)
+        wsManager.applyProfile(profile, deviceLabel: settingsManager.config.deviceLabel)
+        wsManager.rememberBackendForPairing(profile.backendId)
+        onRequestPair(profile.backendId)
+    }
+
+    @discardableResult
+    private func saveForm(_ form: AgentFormState, select: Bool) -> AgentProfile? {
+        let backendId = form.backendId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let gatewayUrl = normalizedGatewayUrl(form.gatewayUrl)
+        if let error = sharedGatewayError(for: form, gatewayUrl: gatewayUrl, backendId: backendId) {
+            statusMessage = error
+            return nil
+        }
+        if form.isDraft, settingsManager.profiles.count >= SettingsManager.maxAgentProfiles {
+            statusMessage = "最多支持 \(SettingsManager.maxAgentProfiles) 个 Agent"
+            return nil
+        }
+
+        let existing = settingsManager.profiles.first { $0.id == form.id }
+        let backendChanged = existing?.backendId != backendId
+        let displayName = form.displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? form.platform.defaultDisplayName
+            : form.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let backendLabel = backendChanged ? (backendId.isEmpty ? nil : backendId) : (existing?.backendLabel ?? form.backendLabel ?? backendId)
+        let profile = AgentProfile(
+            id: form.id,
+            appClientId: settingsManager.baseDeviceId,
+            platform: form.platform,
+            displayName: displayName,
+            gatewayUrl: gatewayUrl,
+            backendId: backendId,
+            backendLabel: backendLabel,
+            token: form.token.trimmingCharacters(in: .whitespacesAndNewlines),
+            isPaired: !backendId.isEmpty && !backendChanged && (existing?.isPaired ?? form.isPaired),
+            asrMode: asrMode,
+            asrProfileId: asrMode == "router" ? asrProfileId : ""
+        )
+
+        guard settingsManager.saveProfile(profile, select: select) else {
+            statusMessage = settingsManager.profileAcceptError(gatewayUrl: gatewayUrl, backendId: backendId) ?? "无法保存 Agent"
+            return nil
+        }
+        agentForms.removeAll { $0.id == form.id && $0.isDraft }
+        syncFormsFromProfiles(keepingDraft: true)
+        statusMessage = nil
+        return settingsManager.profiles.first { $0.id == profile.id } ?? profile
+    }
+
+    private func saveAll() {
+        for form in agentForms {
+            if form.isDraft,
+               form.displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               form.backendId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               form.token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                continue
+            }
+            _ = saveForm(form, select: form.id == settingsManager.selectedProfileId)
+        }
+        settingsManager.updateDeviceLabel(deviceLabel)
+        settingsManager.updateGlobalAsr(mode: asrMode, profileId: asrProfileId)
+        wsManager.syncProfiles(settingsManager.profiles)
+        wsManager.updateAsrConfiguration(mode: asrMode, profileId: asrProfileId)
+        wsManager.applyProfile(settingsManager.selectedProfile, deviceLabel: settingsManager.config.deviceLabel)
+        syncFormsFromProfiles(keepingDraft: true)
+    }
+
+    private func sharedGatewayError(for form: AgentFormState, gatewayUrl: String, backendId: String) -> String? {
+        guard !backendId.isEmpty else { return nil }
+        let target = AgentProfile.normalizedGatewayKey(gatewayUrl)
+        let otherGateways = agentForms
+            .filter { $0.id != form.id && !$0.backendId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            .map { AgentProfile.normalizedGatewayKey(normalizedGatewayUrl($0.gatewayUrl)) }
+        if let first = otherGateways.first, first != target {
+            return "当前版本仅支持同一 Gateway 下最多 \(SettingsManager.maxAgentProfiles) 个 Agent"
+        }
+        return nil
+    }
+
+    private func normalizedGatewayUrl(_ value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "wss://boson-tech.top/ws" : trimmed
+    }
+
     private func loadAsrProfiles() {
-        guard let url = asrProvidersUrl(from: gatewayUrl) else { return }
+        guard let url = asrProvidersUrl(from: asrGatewayUrl) else { return }
         URLSession.shared.dataTask(with: url) { data, _, _ in
             guard let data,
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }

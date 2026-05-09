@@ -20,10 +20,11 @@ struct InputAreaView: View {
     @Binding var inputMode: InputMode
     let isRecording: Bool
     let isPaired: Bool
+    let isAudioEnabled: Bool
     let colors: MochiColors
-    let quoteDraft: String?
+    let quotedMessageSummary: String?
     let onSendText: (String) -> Void
-    let onQuoteDraftConsumed: () -> Void
+    let onCancelQuote: () -> Void
     let onMicPress: () -> Void
     let onMicRelease: (Bool) -> Void
     @ObservedObject var audioRecorder: AudioRecorder
@@ -60,7 +61,15 @@ struct InputAreaView: View {
         VStack(spacing: 0) {
             Divider().background(colors.divider)
 
-            if inputMode == .text {
+            if let quotedMessageSummary {
+                QuotePreviewBar(
+                    summary: quotedMessageSummary,
+                    colors: colors,
+                    onCancel: onCancelQuote
+                )
+            }
+
+            if inputMode == .text || !isAudioEnabled {
                 TextInputRowView(
                     textFieldValue: $textFieldValue,
                     colors: colors,
@@ -68,7 +77,8 @@ struct InputAreaView: View {
                         onSendText(text)
                         textFieldValue = ""
                     },
-                    onSwitchToVoice: { inputMode = .voice }
+                    onSwitchToVoice: { inputMode = .voice },
+                    canSwitchToVoice: isAudioEnabled
                 )
             } else {
                 VoiceInputRowView(
@@ -112,16 +122,55 @@ struct InputAreaView: View {
         .animation(.easeInOut(duration: 0.16), value: recordingState.isCancelled)
         .animation(.easeOut(duration: 0.18), value: isRecording)
         .onChange(of: inputMode) { newValue in
-            if newValue == .text && quoteDraft == nil {
+            if newValue == .text {
                 textFieldValue = ""
             }
         }
-        .onChange(of: quoteDraft) { draft in
-            guard let draft else { return }
+        .onChange(of: quotedMessageSummary) { summary in
+            guard summary != nil else { return }
             inputMode = .text
-            textFieldValue = draft
-            onQuoteDraftConsumed()
         }
+        .onChange(of: isAudioEnabled) { enabled in
+            if !enabled {
+                inputMode = .text
+            }
+        }
+    }
+}
+
+private struct QuotePreviewBar: View {
+    let summary: String
+    let colors: MochiColors
+    let onCancel: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            RoundedRectangle(cornerRadius: 1.5)
+                .fill(colors.primary)
+                .frame(width: 3, height: 34)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("引用")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(colors.textSecondary)
+                Text(summary)
+                    .font(.system(size: 13, weight: .regular))
+                    .foregroundColor(colors.textSecondary)
+                    .lineLimit(2)
+            }
+
+            Spacer(minLength: 8)
+
+            Button(action: onCancel) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(colors.textSecondary)
+                    .frame(width: 28, height: 28)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 10)
+        .padding(.bottom, 2)
     }
 }
 
@@ -132,16 +181,24 @@ struct TextInputRowView: View {
     let colors: MochiColors
     let onSend: (String) -> Void
     let onSwitchToVoice: () -> Void
+    let canSwitchToVoice: Bool
 
     var body: some View {
         HStack(spacing: 8) {
             // Voice mode toggle button
-            Button(action: onSwitchToVoice) {
-                Image(systemName: "mic.fill")
-                    .font(.system(size: 22))
-                    .foregroundColor(colors.icon)
+            if canSwitchToVoice {
+                Button(action: onSwitchToVoice) {
+                    Image(systemName: "mic.fill")
+                        .font(.system(size: 22))
+                        .foregroundColor(colors.icon)
+                }
+                .frame(width: 44, height: 44)
+            } else {
+                Image(systemName: "text.bubble.fill")
+                    .font(.system(size: 20))
+                    .foregroundColor(colors.textSecondary)
+                    .frame(width: 44, height: 44)
             }
-            .frame(width: 44, height: 44)
 
             // Input field — matches Android's RoundedCornerShape + border style
             ZStack(alignment: .leading) {
