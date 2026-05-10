@@ -96,10 +96,178 @@ struct TopBarView: View {
     }
 }
 
+struct HeadsetStatusStripView: View {
+    @ObservedObject var headsetController: HeadsetConversationController
+    let colors: MochiColors
+
+    private var connectionLabel: String {
+        switch headsetController.connectionState {
+        case .idle:
+            return "耳机待机"
+        case .scanning:
+            return "查找 A9Ultra"
+        case .connecting(let name):
+            return "连接 \(name)"
+        case .connected(let name):
+            return "找到 \(name)，校验中"
+        case .ready(let name):
+            return "\(name) 已就绪"
+        case .unsupportedProduct(let productId):
+            return "非 A9Ultra: 0x\(String(productId, radix: 16))"
+        case .bluetoothUnavailable(let message):
+            return message
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "headphones")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundColor(colors.primary)
+            Text(connectionLabel)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundColor(colors.textSecondary)
+                .lineLimit(1)
+            Spacer(minLength: 8)
+            Text(headsetController.headsetStatusLabel)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundColor(colors.primary)
+                .lineLimit(1)
+            Button {
+                headsetController.debugRestartHeadset()
+            } label: {
+                Image(systemName: "arrow.clockwise")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(colors.primary)
+                    .frame(width: 28, height: 28)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("重连耳机")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .background(colors.inputBg)
+    }
+}
+
+#if DEBUG
+private struct HeadsetDebugPanelView: View {
+    @ObservedObject var headsetController: HeadsetConversationController
+    @ObservedObject var bleManager: A9UltraBLEManager
+    let colors: MochiColors
+
+    private var connectionLabel: String {
+        switch headsetController.connectionState {
+        case .idle:
+            return "待机"
+        case .scanning:
+            return "扫描"
+        case .connecting(let name):
+            return "连接 \(name)"
+        case .connected(let name):
+            return "\(name) 校验中"
+        case .ready(let name):
+            return "\(name) 已就绪"
+        case .unsupportedProduct(let productId):
+            return "非目标 0x\(String(productId, radix: 16))"
+        case .bluetoothUnavailable(let message):
+            return message
+        }
+    }
+
+    private var debugFields: [String] {
+        let info = bleManager.debugInfo
+        return [
+            "状态 \(connectionLabel) / \(headsetController.sessionState.label)",
+            "PID \(info.productIdText)",
+            "W \(info.hasWriteCharacteristic ? "1" : "0")",
+            "N \(info.hasNotifyCharacteristic ? "1" : "0")",
+            "Frame \(info.lastFrameText)",
+            "Chunk \(info.audioChunkCount)",
+            "Probe \(headsetController.isDebugRecordingProbeActive ? "on" : "off")"
+        ]
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 72), spacing: 6)], spacing: 6) {
+                HeadsetDebugButton(title: "重连", colors: colors) {
+                    headsetController.debugRestartHeadset()
+                }
+                HeadsetDebugButton(title: "重试校验", colors: colors) {
+                    headsetController.debugRetryHandshake()
+                }
+                HeadsetDebugButton(title: "强制就绪", colors: colors) {
+                    headsetController.debugForceReady()
+                }
+                HeadsetDebugButton(title: "录音测试", colors: colors) {
+                    headsetController.debugStartRecordingProbe()
+                }
+                HeadsetDebugButton(title: "停止录音", colors: colors, isDestructive: true) {
+                    headsetController.debugStopRecordingProbe()
+                }
+            }
+
+            Text(debugFields.joined(separator: " | "))
+                .font(.system(size: 10, weight: .regular))
+                .foregroundColor(colors.textSecondary)
+                .lineLimit(3)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if let lastError = bleManager.debugInfo.lastError, !lastError.isEmpty {
+                Text("错误 \(lastError)")
+                    .font(.system(size: 10, weight: .regular))
+                    .foregroundColor(colors.recordingRed)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if !bleManager.debugLogLines.isEmpty {
+                Text(bleManager.debugLogLines.suffix(10).joined(separator: "\n"))
+                    .font(.system(size: 9, weight: .regular, design: .monospaced))
+                    .foregroundColor(colors.textSecondary)
+                    .lineLimit(10)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(6)
+                    .background(colors.inputBg)
+                    .cornerRadius(6)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(colors.surface)
+    }
+}
+
+private struct HeadsetDebugButton: View {
+    let title: String
+    let colors: MochiColors
+    var isDestructive = false
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(isDestructive ? colors.recordingRed : colors.primary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 7)
+                .background(isDestructive ? colors.recordingRed.opacity(0.10) : colors.inputBg)
+                .cornerRadius(7)
+        }
+        .buttonStyle(.plain)
+    }
+}
+#endif
+
 struct MainScreenView: View {
     @ObservedObject var wsManager: WebSocketManager
     @ObservedObject var settingsManager: SettingsManager
     @ObservedObject var audioRecorder: AudioRecorder
+    @ObservedObject var headsetController: HeadsetConversationController
     let isDark: Bool
     let colors: MochiColors
     let onToggleTheme: () -> Void
@@ -139,6 +307,10 @@ struct MainScreenView: View {
                 onNavigateToSettings: onNavigateToSettings,
                 onSelectProfile: onSelectProfile
             )
+
+            Divider().background(colors.divider)
+
+            HeadsetStatusStripView(headsetController: headsetController, colors: colors)
 
             Divider().background(colors.divider)
 

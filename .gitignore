@@ -62,3 +62,6 @@ lint/tmp/
 .DS_Store
 Thumbs.db
 *.xcuserstate
+
+# CocoaPods
+iosApp/OpenClawRemote/Pods/

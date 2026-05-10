@@ -1,10 +1,14 @@
 import SwiftUI
 import Combine
+import UIKit
 
 @main
 struct OpenClawRemoteApp: App {
+    @UIApplicationDelegateAdaptor(BosonRemoteControlAppDelegate.self) private var appDelegate
+
     @StateObject private var settingsManager: SettingsManager
     @StateObject private var wsManager: WebSocketManager
+    @StateObject private var headsetController: HeadsetConversationController
     @StateObject private var audioRecorder = AudioRecorder()
 
     @State private var isDark = false
@@ -23,6 +27,10 @@ struct OpenClawRemoteApp: App {
         )
         manager.syncProfiles(settings.profiles)
         _wsManager = StateObject(wrappedValue: manager)
+        _headsetController = StateObject(wrappedValue: HeadsetConversationController(
+            wsManager: manager,
+            settingsManager: settings
+        ))
     }
 
     private var colors: MochiColors {
@@ -67,6 +75,7 @@ struct OpenClawRemoteApp: App {
                         wsManager: wsManager,
                         settingsManager: settingsManager,
                         audioRecorder: audioRecorder,
+                        headsetController: headsetController,
                         isDark: isDark,
                         colors: colors,
                         onToggleTheme: { isDark.toggle() },
@@ -86,6 +95,7 @@ struct OpenClawRemoteApp: App {
                 let isSystemDark = UITraitCollection.current.userInterfaceStyle == .dark
                 isDark = isSystemDark
                 applySelectedProfile()
+                headsetController.start()
             }
         }
     }
@@ -135,6 +145,57 @@ struct OpenClawRemoteApp: App {
     private func applySelectedProfile() {
         wsManager.syncProfiles(settingsManager.profiles)
         wsManager.applyProfile(settingsManager.selectedProfile, deviceLabel: settingsManager.config.deviceLabel)
+    }
+}
+
+final class BosonRemoteControlAppDelegate: UIResponder, UIApplicationDelegate {
+    override var canBecomeFirstResponder: Bool {
+        true
+    }
+
+    func application(
+        _ application: UIApplication,
+        didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
+    ) -> Bool {
+        application.beginReceivingRemoteControlEvents()
+        becomeFirstResponder()
+        return true
+    }
+
+    func applicationDidBecomeActive(_ application: UIApplication) {
+        application.beginReceivingRemoteControlEvents()
+        becomeFirstResponder()
+    }
+
+    override func remoteControlReceived(with event: UIEvent?) {
+        guard event?.type == .remoteControl,
+              let legacyEvent = HeadsetLegacyRemoteControlEvent(event?.subtype) else {
+            return
+        }
+        NotificationCenter.default.post(
+            name: .headsetLegacyRemoteControlEvent,
+            object: nil,
+            userInfo: [HeadsetLegacyRemoteControlEvent.userInfoKey: legacyEvent.rawValue]
+        )
+    }
+}
+
+private extension HeadsetLegacyRemoteControlEvent {
+    init?(_ subtype: UIEvent.EventSubtype?) {
+        switch subtype {
+        case .remoteControlPreviousTrack:
+            self = .previousTrack
+        case .remoteControlNextTrack:
+            self = .nextTrack
+        case .remoteControlPlay:
+            self = .play
+        case .remoteControlPause:
+            self = .pause
+        case .remoteControlTogglePlayPause:
+            self = .togglePlayPause
+        default:
+            return nil
+        }
     }
 }
 

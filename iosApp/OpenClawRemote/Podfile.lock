@@ -1,0 +1,18 @@
+PODS:
+  - libopus (1.1):
+    - libopus/float (= 1.1)
+  - libopus/float (1.1)
+
+DEPENDENCIES:
+  - libopus (~> 1.1)
+
+SPEC REPOS:
+  trunk:
+    - libopus
+
+SPEC CHECKSUMS:
+  libopus: ad5f060dcb8f30f139777244d70f9111f1c80863
+
+PODFILE CHECKSUM: 53f9f28166beaa52632a0836beea95b1c5ea89ac
+
+COCOAPODS: 1.16.2

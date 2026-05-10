@@ -14,6 +14,7 @@ settings:
     CODE_SIGN_STYLE: Automatic
     PRODUCT_BUNDLE_IDENTIFIER: boson-tech.OpenClawRemote
     GENERATE_INFOPLIST_FILE: NO
+    SWIFT_OBJC_BRIDGING_HEADER: Sources/OpenClawRemote-Bridging-Header.h
 
 targets:
   OpenClawRemote:

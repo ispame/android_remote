@@ -342,6 +342,46 @@ final class WebSocketManager: ObservableObject {
         sendJson(frame)
     }
 
+    @discardableResult
+    func sendAudio(_ data: Data, profileId: String) -> Bool {
+        let state = profileId == activeProfileId
+            ? currentRuntimeStateSnapshot()
+            : (profileStates[profileId] ?? ProfileRuntimeState())
+        guard state.pairingState == .paired, let backendId = state.registeredBackendId else { return false }
+
+        let base64 = data.base64EncodedString()
+        let clientMessageId = UUID().uuidString
+        let frame: [String: Any] = [
+            "type": "message",
+            "to": backendId,
+            "client_message_id": clientMessageId,
+            "content": base64,
+            "content_type": "audio",
+            "audio": [
+                "format": "wav",
+                "codec": "pcm_s16le",
+                "sample_rate": 16000,
+                "channels": 1
+            ],
+            "asr": [
+                "mode": asrMode,
+                "profile_id": asrProfileId
+            ]
+        ]
+        let msg = ChatMessage(
+            content: "正在识别...",
+            timestamp: timestamp(),
+            senderId: "user",
+            status: .sending,
+            seq: nil,
+            clientMessageId: clientMessageId
+        )
+        appendMessage(msg, profileId: profileId)
+        pendingAudioProfileIdsByClientMessageId[clientMessageId] = profileId
+        sendJson(frame)
+        return true
+    }
+
     func unpair() {
         guard let backendId = registeredBackendId, let profileId = activeProfileId else { return }
         unpair(profileId: profileId, backendId: backendId)

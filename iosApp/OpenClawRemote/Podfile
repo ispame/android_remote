@@ -3,7 +3,7 @@ use_frameworks!
 inhibit_all_warnings!
 
 target 'OpenClawRemote' do
-  # AVFoundation and other iOS system frameworks are linked automatically — no pods needed
+  pod 'libopus', '~> 1.1'
 end
 
 post_install do |installer|
