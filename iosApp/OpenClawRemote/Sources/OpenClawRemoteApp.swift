@@ -149,53 +149,11 @@ struct OpenClawRemoteApp: App {
 }
 
 final class BosonRemoteControlAppDelegate: UIResponder, UIApplicationDelegate {
-    override var canBecomeFirstResponder: Bool {
-        true
-    }
-
     func application(
-        _ application: UIApplication,
+        _: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
-        application.beginReceivingRemoteControlEvents()
-        becomeFirstResponder()
         return true
-    }
-
-    func applicationDidBecomeActive(_ application: UIApplication) {
-        application.beginReceivingRemoteControlEvents()
-        becomeFirstResponder()
-    }
-
-    override func remoteControlReceived(with event: UIEvent?) {
-        guard event?.type == .remoteControl,
-              let legacyEvent = HeadsetLegacyRemoteControlEvent(event?.subtype) else {
-            return
-        }
-        NotificationCenter.default.post(
-            name: .headsetLegacyRemoteControlEvent,
-            object: nil,
-            userInfo: [HeadsetLegacyRemoteControlEvent.userInfoKey: legacyEvent.rawValue]
-        )
-    }
-}
-
-private extension HeadsetLegacyRemoteControlEvent {
-    init?(_ subtype: UIEvent.EventSubtype?) {
-        switch subtype {
-        case .remoteControlPreviousTrack:
-            self = .previousTrack
-        case .remoteControlNextTrack:
-            self = .nextTrack
-        case .remoteControlPlay:
-            self = .play
-        case .remoteControlPause:
-            self = .pause
-        case .remoteControlTogglePlayPause:
-            self = .togglePlayPause
-        default:
-            return nil
-        }
     }
 }
 

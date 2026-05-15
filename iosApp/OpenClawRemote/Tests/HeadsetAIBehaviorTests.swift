@@ -3,19 +3,16 @@ import Foundation
 @main
 struct HeadsetAIBehaviorTests {
     static func main() throws {
-        try testWakeWordUsesVoiceRecognitionWithoutKeyOverride()
+        try testPrivateProtocolRequiresProductId()
+        try testDeviceInfoRequestPayloadIncludesProductIdAndCapabilities()
+        try testVoiceAssistantKeyConfigurationTargetsShortPress()
         try testWakeSleepTLVParsing()
         try testRecordingPayloadParsing()
-        try testWakeWordSessionPolicy()
-        try testMediaCommandsOnlyDiagnoseDuringWakeWordMode()
+        try testPrivateWakeStartsAndWakeOrSleepFinishes()
         try testIdleAudioDoesNotStartSession()
-        try testNonDirectionalMediaCommandsOnlyDiagnose()
-        try testInputDiagnosticsKeepsMediaAndBLESignals()
+        try testInputDiagnosticsTracksPrivateBLESignals()
         try testInputDiagnosticsShowsRawBLESignals()
         try testInputDiagnosticsShowsVoiceAndOpusAcks()
-        try testLegacyRemoteControlEventsMapToCommands()
-        try testMediaOwnershipStartsOnlyAfterHeadsetReady()
-        try testNowPlayingMetadataAdvertisesPlayableQueue()
         try testVoiceActivityWaitsForSpeechBeforeFinishing()
         try testVoiceActivityFinishesAfterSpeechAndTailSilence()
         try testVoiceActivityRequiresUsefulSpeechForASR()
@@ -23,13 +20,35 @@ struct HeadsetAIBehaviorTests {
         print("HeadsetAIBehaviorTests passed")
     }
 
-    private static func testWakeWordUsesVoiceRecognitionWithoutKeyOverride() throws {
-        try expect(A9UltraStartupConfiguration.shouldWriteKeySettings == false, "wake-word mode must not override headset keys at startup")
-        try expect(A9UltraStartupConfiguration.voiceRecognitionPayload == Data([0x01]), "startup should enable headset voice recognition")
+    private static func testPrivateProtocolRequiresProductId() throws {
+        try expect(A9UltraPrivateProtocolPolicy.targetProductId == 0x0025, "A9Ultra PID should be the private-protocol gate")
+        try expect(A9UltraPrivateProtocolPolicy.accepts(productId: 0x0025), "target PID should be accepted")
+        try expect(!A9UltraPrivateProtocolPolicy.accepts(productId: 0x0024), "non-target PID must be rejected")
+        try expect(!A9UltraPrivateProtocolPolicy.accepts(productId: nil), "missing PID must not be trusted")
+        try expect(A9UltraPrivateProtocolPolicy.supportsVoiceRecognition(capabilities: 0x0010), "capability bit4 should enable private voice path")
+        try expect(!A9UltraPrivateProtocolPolicy.supportsVoiceRecognition(capabilities: 0x000F), "missing capability bit4 should block private voice path")
+    }
+
+    private static func testDeviceInfoRequestPayloadIncludesProductIdAndCapabilities() throws {
+        let types = ABMateTLVCodec.parse(A9UltraPrivateProtocolPolicy.deviceInfoRequestPayload).map(\.type)
+        try expect(types == [0x24, 0xFE, 0xFF, 0x05, 0x1C], "startup device info request should ask for PID, capabilities, packet size, key readback, and voice state")
+    }
+
+    private static func testVoiceAssistantKeyConfigurationTargetsShortPress() throws {
+        let values = Dictionary(uniqueKeysWithValues: ABMateTLVCodec.parse(A9UltraKeyConfiguration.voiceAssistantCommandPayload).compactMap { item -> (UInt8, UInt8)? in
+            guard let value = item.value.first else { return nil }
+            return (item.type, value)
+        })
+
+        try expect(values[0x01] == A9UltraKeyConfiguration.voiceAssistantFunction, "left short press should use private voice assistant function")
+        try expect(values[0x02] == A9UltraKeyConfiguration.voiceAssistantFunction, "right short press should use private voice assistant function")
+        try expect(values[0x03] == A9UltraKeyConfiguration.voiceAssistantFunction, "left double tap should use private voice assistant function")
+        try expect(values[0x04] == A9UltraKeyConfiguration.voiceAssistantFunction, "right double tap should use private voice assistant function")
     }
 
     private static func testWakeSleepTLVParsing() throws {
-        try expect(HeadsetWakeSleepEvent(value: Data([0x01])) == .wake, "0x26 01 should be wake")
+        try expect(HeadsetWakeSleepEvent(value: Data([0x01])) == .wake(side: nil), "0x26 01 should be wake")
+        try expect(HeadsetWakeSleepEvent(value: Data([0x01, 0x01])) == .wake(side: .left), "0x26 01 01 should be left wake")
         try expect(HeadsetWakeSleepEvent(value: Data([0x00])) == .sleep, "0x26 00 should be sleep")
     }
 
@@ -45,27 +64,11 @@ struct HeadsetAIBehaviorTests {
         try expect(packet.diagnosticLabel == "Opus 右耳 3x40", "diagnostic label should be compact")
     }
 
-    private static func testWakeWordSessionPolicy() throws {
-        try expect(HeadsetWakeWordSessionPolicy.agentSide == .left, "wake-word v1 should use Agent1")
-        try expect(HeadsetWakeWordSessionPolicy.shouldStartSession(on: .wake, activeSide: nil), "wake should start idle session")
-        try expect(HeadsetWakeWordSessionPolicy.shouldFinishSession(on: .sleep, activeSide: .left), "sleep should finish active session")
-        try expect(!HeadsetWakeWordSessionPolicy.shouldStartSession(on: .sleep, activeSide: nil), "sleep must not start session")
-    }
-
-    private static func testMediaCommandsOnlyDiagnoseDuringWakeWordMode() throws {
-        try expect(HeadsetRemoteCommandKind.previousTrack.activationSide == nil, "previous should diagnose only")
-        try expect(HeadsetRemoteCommandKind.nextTrack.activationSide == nil, "next should diagnose only")
-        try expect(HeadsetRemoteCommandKind.play.activationSide == nil, "play should diagnose only")
-        try expect(HeadsetRemoteCommandKind.pause.activationSide == nil, "pause should diagnose only")
-        try expect(HeadsetRemoteCommandKind.togglePlayPause.activationSide == nil, "toggle should diagnose only")
-        try expect(
-            HeadsetAudioRoutingPolicy.sessionSide(activeSide: .right, reportedAudioSide: .left) == .right,
-            "reported audio source must not override an explicitly active right session"
-        )
-        try expect(
-            HeadsetAudioRoutingPolicy.sessionSide(activeSide: .left, reportedAudioSide: .right) == .left,
-            "reported audio source must not override an explicitly active left session"
-        )
+    private static func testPrivateWakeStartsAndWakeOrSleepFinishes() throws {
+        try expect(HeadsetPrivateSessionPolicy.shouldStartSession(on: .wake(side: .right), activeSide: nil), "wake should start idle private session")
+        try expect(!HeadsetPrivateSessionPolicy.shouldStartSession(on: .sleep, activeSide: nil), "sleep must not start idle private session")
+        try expect(HeadsetPrivateSessionPolicy.shouldFinishSession(on: .wake(side: .left), activeSide: .right), "second wake should finish active private session")
+        try expect(HeadsetPrivateSessionPolicy.shouldFinishSession(on: .sleep, activeSide: .right), "sleep should finish active private session")
     }
 
     private static func testIdleAudioDoesNotStartSession() throws {
@@ -79,36 +82,16 @@ struct HeadsetAIBehaviorTests {
         )
     }
 
-    private static func testNonDirectionalMediaCommandsOnlyDiagnose() throws {
-        try expect(HeadsetRemoteCommandKind.play.activationSide == nil, "play should not activate an Agent")
-        try expect(HeadsetRemoteCommandKind.pause.activationSide == nil, "pause should not activate an Agent")
-        try expect(HeadsetRemoteCommandKind.togglePlayPause.activationSide == nil, "toggle should not activate an Agent")
-        try expect(HeadsetRemoteCommandKind.nextTrack.diagnosticLabel == "收到 next", "next diagnostic label should be compact")
-        try expect(HeadsetRemoteCommandKind.togglePlayPause.diagnosticLabel == "收到 toggle", "toggle diagnostic label should be compact")
-    }
-
-    private static func testInputDiagnosticsKeepsMediaAndBLESignals() throws {
+    private static func testInputDiagnosticsTracksPrivateBLESignals() throws {
         var diagnostics = HeadsetInputDiagnostics()
 
         diagnostics.recordBLE(.sleep, payload: Data([0x00]))
         try expect(diagnostics.label == "BLE sleep #1 00", "BLE sleep should be visible")
 
-        diagnostics.recordMedia(.nextTrack)
-        try expect(
-            diagnostics.label == "媒体 next #1 | BLE sleep #1 00",
-            "media command must stay visible even if BLE sleep was also received"
-        )
-
         diagnostics.recordBLE(.wake, payload: Data([0x01]))
         try expect(
-            diagnostics.label == "媒体 next #1 | BLE wake #2 01",
-            "latest BLE signal should update without hiding media command"
-        )
-
-        diagnostics.recordMedia(.togglePlayPause, source: .legacyResponder)
-        try expect(
-            diagnostics.label == "legacy toggle #2 | BLE wake #2 01",
-            "legacy remote-control events should be distinguishable from command-center events"
+            diagnostics.label == "BLE wake #2 01",
+            "latest private BLE signal should replace the previous one"
         )
     }
 
@@ -127,27 +110,6 @@ struct HeadsetAIBehaviorTests {
 
         diagnostics.recordBLE(.opusRecordingAck, payload: Data([0x00]))
         try expect(diagnostics.label == "BLE opus ok #2 00", "opus recording ack should be visible")
-    }
-
-    private static func testLegacyRemoteControlEventsMapToCommands() throws {
-        try expect(HeadsetLegacyRemoteControlEvent.previousTrack.commandKind == .previousTrack, "legacy previous should map to previous")
-        try expect(HeadsetLegacyRemoteControlEvent.nextTrack.commandKind == .nextTrack, "legacy next should map to next")
-        try expect(HeadsetLegacyRemoteControlEvent.togglePlayPause.commandKind == .togglePlayPause, "legacy toggle should map to toggle")
-    }
-
-    private static func testMediaOwnershipStartsOnlyAfterHeadsetReady() throws {
-        try expect(!HeadsetMediaActivationPolicy.shouldOwnMedia(headsetReady: false), "media ownership should not start while BLE is still scanning")
-        try expect(HeadsetMediaActivationPolicy.shouldOwnMedia(headsetReady: true), "media ownership should start after A9Ultra is ready")
-    }
-
-    private static func testNowPlayingMetadataAdvertisesPlayableQueue() throws {
-        try expect(HeadsetNowPlayingMetadata.playbackDuration >= 3_600, "now playing should look like a long-lived audio stream")
-        try expect(HeadsetNowPlayingMetadata.playbackQueueCount > 1, "previous/next requires a playable queue")
-        try expect(
-            HeadsetNowPlayingMetadata.playbackQueueIndex > 0
-                && HeadsetNowPlayingMetadata.playbackQueueIndex < HeadsetNowPlayingMetadata.playbackQueueCount,
-            "queue index should leave both previous and next available"
-        )
     }
 
     private static func testVoiceActivityWaitsForSpeechBeforeFinishing() throws {

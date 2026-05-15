@@ -1,6 +1,6 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Codex (Codex.ai/code) when working with code in this repository.
 
 ## Project Overview
 
@@ -119,3 +119,7 @@ Warm cream (light) / Pure ink black (dark) — terracotta/amber accents.
 
 **Light:** Background `#FAF7F2`, Primary `#B85C38` (terracotta)
 **Dark:** Background `#000000` (pure ink), Primary `#C9884A` (warm amber)
+
+
+## 连接A9耳机的文档在路径
+/Users/spame/WorkTable/openclaw_coder/boson/android_remote/docs/ble

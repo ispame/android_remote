@@ -1,7 +1,6 @@
 import AVFoundation
 import Combine
 import Foundation
-import MediaPlayer
 import UIKit
 
 enum HeadsetSessionState: Equatable {
@@ -40,7 +39,6 @@ final class HeadsetConversationController: NSObject, ObservableObject {
     private let wsManager: WebSocketManager
     private let settingsManager: SettingsManager
     private let synthesizer = AVSpeechSynthesizer()
-    private let mediaCommandBridge = HeadsetMediaCommandBridge()
     private let promptTonePlayer = HeadsetPromptTonePlayer()
     private var cancellables = Set<AnyCancellable>()
     private var activeSide: HeadsetSide?
@@ -88,10 +86,6 @@ final class HeadsetConversationController: NSObject, ObservableObject {
 
     func start() {
         observeAudioSessionChanges()
-        mediaCommandBridge.start(activateNow: true) { [weak self] command in
-            self?.handleRemoteCommand(command)
-        }
-        lastHeadsetCommandLabel = mediaCommandBridge.statusLabel
         bleManager.start()
     }
 
@@ -99,7 +93,6 @@ final class HeadsetConversationController: NSObject, ObservableObject {
         finishWorkItem?.cancel()
         sessionDeadlineWorkItem?.cancel()
         removeAudioSessionObservers()
-        mediaCommandBridge.stop()
         bleManager.stop()
         synthesizer.stopSpeaking(at: .immediate)
         headsetReadyForMedia = false
@@ -107,31 +100,6 @@ final class HeadsetConversationController: NSObject, ObservableObject {
         headsetKeyConfigurationLabel = nil
         isDebugRecordingProbeActive = false
         sessionState = .idle
-    }
-
-    private func handleRemoteCommand(
-        _ command: HeadsetRemoteCommandKind,
-        source: HeadsetMediaCommandSource = .commandCenter
-    ) {
-        reassertHeadsetMediaSession()
-        recordMediaCommand(command, source: source)
-        guard HeadsetMediaActivationPolicy.shouldOwnMedia(headsetReady: headsetReadyForMedia) else {
-            lastHeadsetCommandLabel = "耳机未就绪"
-            return
-        }
-        guard let side = command.activationSide else { return }
-        activateFromHeadsetButton(side: side)
-    }
-
-    private func activateFromHeadsetButton(side: HeadsetSide) {
-        isDebugRecordingProbeActive = false
-        if let currentSide = activeSide {
-            finishCurrentSession(speakIfEmpty: false)
-            if currentSide == side {
-                return
-            }
-        }
-        startSession(side: side)
     }
 
     func debugRestartHeadset() {
@@ -192,20 +160,43 @@ final class HeadsetConversationController: NSObject, ObservableObject {
         case .ready:
             headsetReadyForMedia = true
             sessionState = .idle
-            reassertHeadsetMediaSession()
+            lastHeadsetCommandLabel = "A9 私有链路就绪"
+            prepareHeadsetAudioSession()
         case .disconnected:
             headsetReadyForMedia = false
-            mediaCommandBridge.suspendNowPlaying()
             resetActiveSession()
-        case .wake(_, let payload):
-            isDebugRecordingProbeActive = false
+        case .wake(let side, let payload):
             recordBLESignal(.wake, payload: payload)
+            let event = HeadsetWakeSleepEvent.wake(side: side)
+            if HeadsetPrivateSessionPolicy.shouldStartSession(on: event, activeSide: activeSide) {
+                let effectiveSide = HeadsetPrivateSessionPolicy.side(for: event)
+                if isDebugRecordingProbeActive {
+                    isDebugRecordingProbeActive = false
+                    bleManager.setOpusRecording(enabled: false)
+                }
+                startSession(side: effectiveSide)
+            } else if HeadsetPrivateSessionPolicy.shouldFinishSession(on: event, activeSide: activeSide) {
+                finishCurrentSession(speakIfEmpty: false)
+            }
         case .sleep(let payload):
             isDebugRecordingProbeActive = false
             recordBLESignal(.sleep, payload: payload)
+            if HeadsetPrivateSessionPolicy.shouldFinishSession(on: .sleep, activeSide: activeSide) {
+                finishCurrentSession(speakIfEmpty: false)
+            }
         case .keySettingsAck(let success, let payload):
             recordBLESignal(.keySettingsAck, payload: payload)
             headsetKeyConfigurationLabel = success ? "按键写入成功" : "按键写入失败"
+        case .voiceRecognitionAck(let success, let payload):
+            recordBLESignal(.voiceRecognitionAck, payload: payload)
+            if !success {
+                headsetKeyConfigurationLabel = "语音识别开启失败"
+            }
+        case .opusRecordingAck(let success, let payload):
+            recordBLESignal(.opusRecordingAck, payload: payload)
+            if !success {
+                lastHeadsetCommandLabel = "耳机录音开关失败"
+            }
         case .keyConfiguration(let payload):
             recordBLESignal(.keyConfiguration, payload: payload)
             headsetKeyConfigurationLabel = "按键 \(A9UltraKeyConfiguration.summary(payload))"
@@ -254,7 +245,7 @@ final class HeadsetConversationController: NSObject, ObservableObject {
         voiceActivityDetector.reset()
         lastHeadsetCommandLabel = nil
         decoders[side]?.reset()
-        reassertHeadsetMediaSession()
+        prepareHeadsetAudioSession()
         bleManager.setOpusRecording(enabled: true)
         playStartPrompt(for: side)
         sessionState = .recording(side)
@@ -338,8 +329,9 @@ final class HeadsetConversationController: NSObject, ObservableObject {
 
     private func profile(for side: HeadsetSide) -> AgentProfile? {
         let profiles = settingsManager.profiles
-        guard profiles.indices.contains(side.agentIndex) else { return nil }
-        let profile = profiles[side.agentIndex]
+        // 两只耳朵共用第一个配置的 Agent profile
+        guard !profiles.isEmpty else { return nil }
+        let profile = profiles[0]
         guard !profile.backendId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
         return profile
     }
@@ -358,7 +350,7 @@ final class HeadsetConversationController: NSObject, ObservableObject {
     }
 
     private func speak(_ text: String, side: HeadsetSide, forceShort _: Bool = false) {
-        reassertHeadsetMediaSession()
+        prepareHeadsetAudioSession()
         let utterance = AVSpeechUtterance(string: text)
         utterance.voice = AVSpeechSynthesisVoice(language: "zh-CN")
         utterance.rate = 0.48
@@ -371,22 +363,11 @@ final class HeadsetConversationController: NSObject, ObservableObject {
         HeadsetAudioSessionCoordinator.activate()
     }
 
-    private func reassertHeadsetMediaSession() {
+    private func prepareHeadsetAudioSession() {
         configureSpeechSession()
-        mediaCommandBridge.reassertNowPlaying()
-        if case .idle = sessionState,
-           lastHeadsetCommandLabel == nil || lastHeadsetCommandLabel?.hasPrefix("媒体") == true {
-            lastHeadsetCommandLabel = mediaCommandBridge.statusLabel
+        if case .idle = sessionState, lastHeadsetCommandLabel == nil {
+            lastHeadsetCommandLabel = headsetReadyForMedia ? "A9 私有链路就绪" : nil
         }
-    }
-
-    private func recordMediaCommand(
-        _ command: HeadsetRemoteCommandKind,
-        source: HeadsetMediaCommandSource = .commandCenter
-    ) {
-        var diagnostics = inputDiagnostics
-        diagnostics.recordMedia(command, source: source)
-        inputDiagnostics = diagnostics
     }
 
     private func recordBLESignal(_ signal: HeadsetBLESignalKind, payload: Data) {
@@ -404,7 +385,7 @@ final class HeadsetConversationController: NSObject, ObservableObject {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.reassertHeadsetMediaSession()
+            self?.prepareHeadsetAudioSession()
         })
 
         audioSessionObservers.append(center.addObserver(
@@ -412,7 +393,7 @@ final class HeadsetConversationController: NSObject, ObservableObject {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.reassertHeadsetMediaSession()
+            self?.prepareHeadsetAudioSession()
         })
 
         audioSessionObservers.append(center.addObserver(
@@ -428,15 +409,7 @@ final class HeadsetConversationController: NSObject, ObservableObject {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.reassertHeadsetMediaSession()
-        })
-
-        audioSessionObservers.append(center.addObserver(
-            forName: .headsetLegacyRemoteControlEvent,
-            object: nil,
-            queue: .main
-        ) { [weak self] notification in
-            self?.handleLegacyRemoteControlEvent(notification)
+            self?.prepareHeadsetAudioSession()
         })
     }
 
@@ -460,28 +433,20 @@ final class HeadsetConversationController: NSObject, ObservableObject {
                 resetActiveSession()
             }
         case .ended:
-            lastHeadsetCommandLabel = "媒体接管恢复"
-            reassertHeadsetMediaSession()
+            lastHeadsetCommandLabel = "音频恢复"
+            prepareHeadsetAudioSession()
         @unknown default:
-            reassertHeadsetMediaSession()
+            prepareHeadsetAudioSession()
         }
-    }
-
-    private func handleLegacyRemoteControlEvent(_ notification: Notification) {
-        guard let rawEvent = notification.userInfo?[HeadsetLegacyRemoteControlEvent.userInfoKey] as? String,
-              let event = HeadsetLegacyRemoteControlEvent(rawValue: rawEvent) else {
-            return
-        }
-        handleRemoteCommand(event.commandKind, source: .legacyResponder)
     }
 
     private func playStartPrompt(for side: HeadsetSide) {
-        reassertHeadsetMediaSession()
+        prepareHeadsetAudioSession()
         promptTonePlayer.play(channel: side.promptToneChannel, frequency: 880, duration: 0.10)
     }
 
     private func playEndPrompt() {
-        reassertHeadsetMediaSession()
+        prepareHeadsetAudioSession()
         promptTonePlayer.play(channel: .both, frequency: 660, duration: 0.10)
     }
 
@@ -490,183 +455,6 @@ final class HeadsetConversationController: NSObject, ObservableObject {
         let endings = CharacterSet(charactersIn: "。！？!?")
         let sentenceCount = content.unicodeScalars.filter { endings.contains($0) }.count
         return sentenceCount > 2
-    }
-}
-
-private final class HeadsetMediaCommandBridge {
-    private var commandTokens: [(command: MPRemoteCommand, token: Any)] = []
-    private var silentPlayer: AVAudioPlayer?
-    private var isActive = false
-    private var onCommand: ((HeadsetRemoteCommandKind) -> Void)?
-
-    var statusLabel: String {
-        silentPlayer?.isPlaying == true ? "媒体接管中" : "媒体接管重试中"
-    }
-
-    func start(activateNow: Bool = true, onCommand: @escaping (HeadsetRemoteCommandKind) -> Void) {
-        self.onCommand = onCommand
-        guard !isActive else {
-            if activateNow {
-                reassertNowPlaying()
-            }
-            return
-        }
-        isActive = true
-
-        installCommandHandlers()
-        if activateNow {
-            reassertNowPlaying()
-        }
-    }
-
-    func reassertNowPlaying() {
-        guard isActive else { return }
-        HeadsetAudioSessionCoordinator.activate()
-        publishNowPlayingInfo()
-        ensureKeepAlivePlayer()
-        UIApplication.shared.beginReceivingRemoteControlEvents()
-    }
-
-    func suspendNowPlaying() {
-        silentPlayer?.stop()
-        silentPlayer = nil
-        MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
-        if #available(iOS 13.0, *) {
-            MPNowPlayingInfoCenter.default().playbackState = .stopped
-        }
-    }
-
-    private func installCommandHandlers() {
-        guard commandTokens.isEmpty else { return }
-        let center = MPRemoteCommandCenter.shared()
-        center.previousTrackCommand.isEnabled = true
-        center.nextTrackCommand.isEnabled = true
-        center.playCommand.isEnabled = true
-        center.pauseCommand.isEnabled = true
-        center.togglePlayPauseCommand.isEnabled = true
-
-        commandTokens = [
-            (center.previousTrackCommand, center.previousTrackCommand.addTarget { [weak self] _ in
-                self?.emit(.previousTrack) ?? .commandFailed
-            }),
-            (center.nextTrackCommand, center.nextTrackCommand.addTarget { [weak self] _ in
-                self?.emit(.nextTrack) ?? .commandFailed
-            }),
-            (center.playCommand, center.playCommand.addTarget { [weak self] _ in
-                self?.emit(.play) ?? .commandFailed
-            }),
-            (center.pauseCommand, center.pauseCommand.addTarget { [weak self] _ in
-                self?.emit(.pause) ?? .commandFailed
-            }),
-            (center.togglePlayPauseCommand, center.togglePlayPauseCommand.addTarget { [weak self] _ in
-                self?.emit(.togglePlayPause) ?? .commandFailed
-            })
-        ]
-    }
-
-    func stop() {
-        guard isActive else { return }
-        isActive = false
-
-        let center = MPRemoteCommandCenter.shared()
-        for entry in commandTokens {
-            entry.command.removeTarget(entry.token)
-        }
-        commandTokens.removeAll()
-        center.previousTrackCommand.isEnabled = false
-        center.nextTrackCommand.isEnabled = false
-        center.playCommand.isEnabled = false
-        center.pauseCommand.isEnabled = false
-        center.togglePlayPauseCommand.isEnabled = false
-
-        silentPlayer?.stop()
-        silentPlayer = nil
-        onCommand = nil
-        MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
-        if #available(iOS 13.0, *) {
-            MPNowPlayingInfoCenter.default().playbackState = .stopped
-        }
-        UIApplication.shared.endReceivingRemoteControlEvents()
-    }
-
-    private func emit(_ command: HeadsetRemoteCommandKind) -> MPRemoteCommandHandlerStatus {
-        guard isActive else { return .commandFailed }
-        reassertNowPlaying()
-        DispatchQueue.main.async { [onCommand] in
-            onCommand?(command)
-        }
-        return .success
-    }
-
-    private func publishNowPlayingInfo() {
-        MPNowPlayingInfoCenter.default().nowPlayingInfo = [
-            MPMediaItemPropertyTitle: HeadsetNowPlayingMetadata.title,
-            MPMediaItemPropertyArtist: HeadsetNowPlayingMetadata.artist,
-            MPMediaItemPropertyAlbumTitle: HeadsetNowPlayingMetadata.album,
-            MPMediaItemPropertyPlaybackDuration: HeadsetNowPlayingMetadata.playbackDuration,
-            MPNowPlayingInfoPropertyPlaybackRate: HeadsetNowPlayingMetadata.playbackRate,
-            MPNowPlayingInfoPropertyDefaultPlaybackRate: HeadsetNowPlayingMetadata.playbackRate,
-            MPNowPlayingInfoPropertyElapsedPlaybackTime: Date().timeIntervalSinceReferenceDate
-                .truncatingRemainder(dividingBy: HeadsetNowPlayingMetadata.playbackDuration),
-            MPNowPlayingInfoPropertyPlaybackQueueCount: HeadsetNowPlayingMetadata.playbackQueueCount,
-            MPNowPlayingInfoPropertyPlaybackQueueIndex: HeadsetNowPlayingMetadata.playbackQueueIndex
-        ]
-
-        if #available(iOS 13.0, *) {
-            MPNowPlayingInfoCenter.default().playbackState = .playing
-        }
-    }
-
-    private func ensureKeepAlivePlayer() {
-        if let player = silentPlayer {
-            if !player.isPlaying {
-                player.play()
-            }
-            return
-        }
-
-        guard let player = try? AVAudioPlayer(data: Self.keepAliveWavData()) else { return }
-        player.numberOfLoops = -1
-        player.volume = 1.0
-        player.prepareToPlay()
-        player.play()
-        silentPlayer = player
-    }
-
-    private static func keepAliveWavData() -> Data {
-        let sampleRate = 16_000
-        let seconds = 2
-        let channels = 1
-        let bitsPerSample = 16
-        let byteRate = sampleRate * channels * bitsPerSample / 8
-        let blockAlign = channels * bitsPerSample / 8
-        let dataSize = sampleRate * seconds * blockAlign
-        let riffSize = 36 + dataSize
-
-        var data = Data()
-        data.append(contentsOf: "RIFF".utf8)
-        data.appendMediaUInt32LE(UInt32(riffSize))
-        data.append(contentsOf: "WAVEfmt ".utf8)
-        data.appendMediaUInt32LE(16)
-        data.appendMediaUInt16LE(1)
-        data.appendMediaUInt16LE(UInt16(channels))
-        data.appendMediaUInt32LE(UInt32(sampleRate))
-        data.appendMediaUInt32LE(UInt32(byteRate))
-        data.appendMediaUInt16LE(UInt16(blockAlign))
-        data.appendMediaUInt16LE(UInt16(bitsPerSample))
-        data.append(contentsOf: "data".utf8)
-        data.appendMediaUInt32LE(UInt32(dataSize))
-        for index in 0..<(sampleRate * seconds) {
-            let sample: Int16
-            switch index & 0x03 {
-            case 0: sample = 1
-            case 1: sample = -1
-            case 2: sample = 2
-            default: sample = -2
-            }
-            data.appendMediaUInt16LE(UInt16(bitPattern: sample))
-        }
-        return data
     }
 }
 

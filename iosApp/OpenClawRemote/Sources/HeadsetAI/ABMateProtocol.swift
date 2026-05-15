@@ -23,67 +23,70 @@ enum HeadsetSide: String, CaseIterable {
     }
 }
 
-enum HeadsetRemoteCommandKind: Equatable {
-    case previousTrack
-    case nextTrack
-    case play
-    case pause
-    case togglePlayPause
+enum HeadsetWakeSleepEvent: Equatable {
+    case wake(side: HeadsetSide?)
+    case sleep
 
-    var activationSide: HeadsetSide? {
-        nil
+    init?(value: Data) {
+        guard let state = value.first else { return nil }
+        if state == 0x01 {
+            let side = value.count >= 2 ? HeadsetSide.fromAudioSource(value[1]) : nil
+            self = .wake(side: side)
+        } else {
+            self = .sleep
+        }
     }
+}
+
+struct HeadsetRecordingPacket: Equatable {
+    let side: HeadsetSide
+    let frameCount: Int
+    let frameSize: Int
+    let opusData: Data
 
     var diagnosticLabel: String {
-        switch self {
-        case .previousTrack: return "收到 prev"
-        case .nextTrack: return "收到 next"
-        case .play: return "收到 play"
-        case .pause: return "收到 pause"
-        case .togglePlayPause: return "收到 toggle"
-        }
+        "Opus \(side.displayName) \(frameCount)x\(frameSize)"
+    }
+
+    static func parse(_ payload: Data) -> HeadsetRecordingPacket? {
+        guard payload.count >= 4, payload[0] == 0 else { return nil }
+        return HeadsetRecordingPacket(
+            side: HeadsetSide.fromAudioSource(payload[1]),
+            frameCount: max(1, Int(payload[2])),
+            frameSize: max(0, Int(payload[3])),
+            opusData: payload.subdata(in: 4..<payload.count)
+        )
     }
 }
 
-enum HeadsetMediaCommandSource: Equatable {
-    case commandCenter
-    case legacyResponder
+enum HeadsetPrivateSessionPolicy {
+    static func shouldStartSession(on event: HeadsetWakeSleepEvent, activeSide: HeadsetSide?) -> Bool {
+        guard activeSide == nil else { return false }
+        if case .wake = event { return true }
+        return false
+    }
 
-    var label: String {
-        switch self {
-        case .commandCenter: return "媒体"
-        case .legacyResponder: return "legacy"
+    static func shouldFinishSession(on event: HeadsetWakeSleepEvent, activeSide: HeadsetSide?) -> Bool {
+        guard activeSide != nil else { return false }
+        switch event {
+        case .wake, .sleep:
+            return true
         }
     }
-}
 
-enum HeadsetLegacyRemoteControlEvent: String, Equatable {
-    case previousTrack
-    case nextTrack
-    case play
-    case pause
-    case togglePlayPause
-
-    static let userInfoKey = "event"
-
-    var commandKind: HeadsetRemoteCommandKind {
-        switch self {
-        case .previousTrack: return .previousTrack
-        case .nextTrack: return .nextTrack
-        case .play: return .play
-        case .pause: return .pause
-        case .togglePlayPause: return .togglePlayPause
+    static func side(for event: HeadsetWakeSleepEvent, fallback: HeadsetSide = .right) -> HeadsetSide {
+        if case .wake(let side) = event {
+            return side ?? fallback
         }
+        return fallback
     }
-}
-
-extension Notification.Name {
-    static let headsetLegacyRemoteControlEvent = Notification.Name("Boson.HeadsetLegacyRemoteControlEvent")
 }
 
 enum HeadsetBLESignalKind: Equatable {
     case wake
     case sleep
+    case voiceRecognitionAck
+    case opusRecordingAck
     case keySettingsAck
     case keyConfiguration
     case raw(String)
@@ -92,6 +95,8 @@ enum HeadsetBLESignalKind: Equatable {
         switch self {
         case .wake: return "wake"
         case .sleep: return "sleep"
+        case .voiceRecognitionAck: return "voice ok"
+        case .opusRecordingAck: return "opus ok"
         case .keySettingsAck: return "key ack"
         case .keyConfiguration: return "key cfg"
         case .raw(let label): return label
@@ -100,18 +105,9 @@ enum HeadsetBLESignalKind: Equatable {
 }
 
 struct HeadsetInputDiagnostics: Equatable {
-    private(set) var mediaCommandCount = 0
     private(set) var bleSignalCount = 0
-    private var lastMediaCommand: HeadsetRemoteCommandKind?
-    private var lastMediaSource: HeadsetMediaCommandSource = .commandCenter
     private var lastBLESignal: HeadsetBLESignalKind?
     private var lastBLEPayload = Data()
-
-    mutating func recordMedia(_ command: HeadsetRemoteCommandKind, source: HeadsetMediaCommandSource = .commandCenter) {
-        mediaCommandCount += 1
-        lastMediaCommand = command
-        lastMediaSource = source
-    }
 
     mutating func recordBLE(_ signal: HeadsetBLESignalKind, payload: Data) {
         bleSignalCount += 1
@@ -120,36 +116,15 @@ struct HeadsetInputDiagnostics: Equatable {
     }
 
     mutating func reset() {
-        mediaCommandCount = 0
         bleSignalCount = 0
-        lastMediaCommand = nil
-        lastMediaSource = .commandCenter
         lastBLESignal = nil
         lastBLEPayload.removeAll(keepingCapacity: true)
     }
 
     var label: String? {
-        var parts: [String] = []
-        if let lastMediaCommand {
-            parts.append("\(lastMediaSource.label) \(lastMediaCommand.shortLabel) #\(mediaCommandCount)")
-        }
-        if let lastBLESignal {
-            let payload = lastBLEPayload.headsetHexPrefix(8)
-            parts.append("BLE \(lastBLESignal.label) #\(bleSignalCount)\(payload.isEmpty ? "" : " \(payload)")")
-        }
-        return parts.isEmpty ? nil : parts.joined(separator: " | ")
-    }
-}
-
-private extension HeadsetRemoteCommandKind {
-    var shortLabel: String {
-        switch self {
-        case .previousTrack: return "prev"
-        case .nextTrack: return "next"
-        case .play: return "play"
-        case .pause: return "pause"
-        case .togglePlayPause: return "toggle"
-        }
+        guard let lastBLESignal else { return nil }
+        let payload = lastBLEPayload.headsetHexPrefix(8)
+        return "BLE \(lastBLESignal.label) #\(bleSignalCount)\(payload.isEmpty ? "" : " \(payload)")"
     }
 }
 
@@ -169,22 +144,6 @@ enum HeadsetAudioRoutingPolicy {
     static func sessionSide(activeSide: HeadsetSide, reportedAudioSide _: HeadsetSide) -> HeadsetSide {
         activeSide
     }
-}
-
-enum HeadsetMediaActivationPolicy {
-    static func shouldOwnMedia(headsetReady: Bool) -> Bool {
-        headsetReady
-    }
-}
-
-enum HeadsetNowPlayingMetadata {
-    static let title = "Boson Agent 待命"
-    static let artist = "AI Assistant"
-    static let album = "A9Ultra Headset"
-    static let playbackDuration: TimeInterval = 3_600
-    static let playbackRate = 1.0
-    static let playbackQueueCount = 3
-    static let playbackQueueIndex = 1
 }
 
 enum HeadsetVoiceActivityDecision: Equatable {
@@ -470,6 +429,8 @@ enum A9UltraKeyConfiguration {
     static let nextTrackFunction: UInt8 = 0x04
     static let playPauseFunction: UInt8 = 0x07
     static let disabledFunction: UInt8 = 0x00
+    /// 语音助手功能码（Value=2）→ 触发 0x26 01 01 私有唤醒 Notify，不走 AVRCP
+    static let voiceAssistantFunction: UInt8 = 0x02
 
     static var mediaRemoteCommandPayload: Data {
         ABMateTLVCodec.encode([
@@ -477,6 +438,20 @@ enum A9UltraKeyConfiguration {
             ABMateTLVCodec.item(0x02, byte: playPauseFunction),
             ABMateTLVCodec.item(0x03, byte: playPauseFunction),
             ABMateTLVCodec.item(0x04, byte: playPauseFunction),
+            ABMateTLVCodec.item(0x05, byte: playPauseFunction),
+            ABMateTLVCodec.item(0x06, byte: playPauseFunction),
+            ABMateTLVCodec.item(0x07, byte: playPauseFunction),
+            ABMateTLVCodec.item(0x08, byte: playPauseFunction)
+        ])
+    }
+
+    /// 左/右耳短按和双击 → 语音助手 → 触发 0x26 01 01 私有唤醒 Notify
+    static var voiceAssistantCommandPayload: Data {
+        ABMateTLVCodec.encode([
+            ABMateTLVCodec.item(0x01, byte: voiceAssistantFunction),
+            ABMateTLVCodec.item(0x02, byte: voiceAssistantFunction),
+            ABMateTLVCodec.item(0x03, byte: voiceAssistantFunction),
+            ABMateTLVCodec.item(0x04, byte: voiceAssistantFunction),
             ABMateTLVCodec.item(0x05, byte: playPauseFunction),
             ABMateTLVCodec.item(0x06, byte: playPauseFunction),
             ABMateTLVCodec.item(0x07, byte: playPauseFunction),
@@ -501,6 +476,25 @@ enum A9UltraKeyConfiguration {
             return String(format: "%02x=%02x", type, value)
         }
         return parts.isEmpty ? payload.headsetProtocolHexPrefix(16) : parts.joined(separator: " ")
+    }
+}
+
+enum A9UltraPrivateProtocolPolicy {
+    static let targetProductId: UInt16 = 0x0025
+    static let requiredDeviceInfoTypes: [UInt8] = [0x24, 0xFE, 0xFF, 0x05, 0x1C]
+    static let voiceRecognitionEnablePayload = Data([0x01])
+
+    static var deviceInfoRequestPayload: Data {
+        ABMateTLVCodec.encode(requiredDeviceInfoTypes.map { ABMateTLVCodec.empty($0) })
+    }
+
+    static func accepts(productId: UInt16?) -> Bool {
+        productId == targetProductId
+    }
+
+    static func supportsVoiceRecognition(capabilities: UInt16?) -> Bool {
+        guard let capabilities else { return false }
+        return (capabilities & 0x0010) != 0
     }
 }
 

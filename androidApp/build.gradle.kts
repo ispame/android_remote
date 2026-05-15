@@ -51,4 +51,6 @@ dependencies {
     implementation("io.ktor:ktor-client-websockets:2.3.7")
     implementation("io.ktor:ktor-client-okhttp:2.3.7")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.2")
+    implementation("io.github.jaredmdobson:concentus:1.0.2")
+    testImplementation("junit:junit:4.13.2")
 }

@@ -18,6 +18,8 @@ enum HeadsetBLEEvent {
     case wake(side: HeadsetSide?, payload: Data)
     case sleep(payload: Data)
     case keySettingsAck(success: Bool, payload: Data)
+    case voiceRecognitionAck(success: Bool, payload: Data)
+    case opusRecordingAck(success: Bool, payload: Data)
     case keyConfiguration(payload: Data)
     case rawNotify(label: String, payload: Data)
     case audioChunk(side: HeadsetSide, opusData: Data, frameCount: Int, frameSize: Int)
@@ -59,8 +61,9 @@ struct A9UltraDebugInfo: Equatable {
 }
 
 final class A9UltraBLEManager: NSObject, ObservableObject {
-    static let targetProductId: UInt16 = 0x0025
-    private static let debugLoggingEnabled = false
+    static let targetProductId: UInt16 = A9UltraPrivateProtocolPolicy.targetProductId
+    /// 调试开关：设为 true 可在 Xcode Console 看到所有 BLE Notify 原始数据
+    private static let debugLoggingEnabled = true
 
     private let serviceUUID = CBUUID(string: "FF12")
     private let writeUUID = CBUUID(string: "FF15")
@@ -167,11 +170,21 @@ final class A9UltraBLEManager: NSObject, ObservableObject {
             refreshDebugInfo()
             return
         }
+        guard A9UltraPrivateProtocolPolicy.accepts(productId: productId) else {
+            lastError = "调试强制就绪失败：PID 未通过"
+            appendDebugLog("force ready blocked: pid=\(productId.map { String($0, radix: 16) } ?? "-")")
+            refreshDebugInfo()
+            return
+        }
         appendDebugLog("force ready")
         configureVerifiedDevice()
     }
 
     func setOpusRecording(enabled: Bool) {
+        guard productVerified else {
+            appendDebugLog("opus recording \(enabled ? "on" : "off") skipped: PID not verified")
+            return
+        }
         appendDebugLog("opus recording \(enabled ? "on" : "off")")
         send(
             command: .opusRecording,
@@ -230,29 +243,27 @@ final class A9UltraBLEManager: NSObject, ObservableObject {
     private func requestDeviceProfile() {
         appendDebugLog("request device profile")
         awaitingDeviceProfileResponse = true
-        let payload = ABMateTLVCodec.encode([
-            ABMateTLVCodec.empty(0x24),
-            ABMateTLVCodec.empty(0xFE),
-            ABMateTLVCodec.empty(0xFF),
-            ABMateTLVCodec.empty(0x05),
-            ABMateTLVCodec.empty(0x1C)
-        ])
-        send(command: .deviceInfo, payload: payload)
+        send(command: .deviceInfo, payload: A9UltraPrivateProtocolPolicy.deviceInfoRequestPayload)
     }
 
     private func configureVerifiedDevice() {
+        guard A9UltraPrivateProtocolPolicy.accepts(productId: productId) else {
+            failPrivateProtocolVerification("PID 未通过，拒绝配置 A9 私有链路")
+            return
+        }
         appendDebugLog("configure verified device")
         probeTimeoutWorkItem?.cancel()
         awaitingDeviceProfileResponse = false
         lastError = nil
-        send(command: .voiceRecognition, payload: Data([0x01]))
-        let keyPayload = A9UltraKeyConfiguration.mediaRemoteCommandPayload
-        appendDebugLog("key config terminal play/pause verification, Siri function cleared payload=\(keyPayload.hexPrefix(24))")
+        productVerified = true
+        send(command: .voiceRecognition, payload: A9UltraPrivateProtocolPolicy.voiceRecognitionEnablePayload)
+        appendDebugLog("voice recognition ON sent")
+        let keyPayload = A9UltraKeyConfiguration.voiceAssistantCommandPayload
+        appendDebugLog("key config payload=\(keyPayload.hexPrefix(24))")
         send(command: .keySettings, payload: keyPayload)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
             self?.requestKeyConfigurationReadback()
         }
-        productVerified = true
         events.send(.ready)
         if case .connected(let name) = state {
             state = .ready(name)
@@ -289,6 +300,10 @@ final class A9UltraBLEManager: NSObject, ObservableObject {
                 handleKeySettingsResponse(frame)
             case ABMateCommand.deviceInfo.rawValue, ABMateCommand.deviceInfoNotify.rawValue:
                 handleDeviceInfo(frame)
+            case ABMateCommand.voiceRecognition.rawValue:
+                handleVoiceRecognitionResponse(frame)
+            case ABMateCommand.opusRecording.rawValue:
+                handleOpusRecordingResponse(frame)
             case ABMateCommand.recordingData.rawValue:
                 handleRecordingData(frame.payload)
             default:
@@ -301,26 +316,20 @@ final class A9UltraBLEManager: NSObject, ObservableObject {
     private func handleDeviceInfo(_ frame: ABMateFrame) {
         let tlvs = ABMateTLVCodec.parse(frame.payload)
         appendDebugLog("device info tlv=\(tlvs.map { "0x\(String($0.type, radix: 16))" }.joined(separator: ","))")
-        var sawProductId = false
+        var responseProductId: UInt16?
+        var capabilities: UInt16?
         for item in tlvs {
             switch item.type {
             case 0x24:
-                sawProductId = true
                 guard let productId = item.value.littleEndianUInt16(at: 0) else { continue }
+                responseProductId = productId
                 self.productId = productId
                 debugInfo.productId = productId
                 appendDebugLog("product id 0x\(String(productId, radix: 16))")
-                if productId == Self.targetProductId {
-                    if !productVerified {
-                        configureVerifiedDevice()
-                    }
-                } else {
-                    state = .unsupportedProduct(productId)
-                    lastError = "检测到非 A9Ultra 设备: 0x\(String(productId, radix: 16))"
-                    debugInfo.lastError = lastError
-                    appendDebugLog("unsupported product 0x\(String(productId, radix: 16))")
-                    events.send(.error(lastError ?? "非 A9Ultra 设备"))
-                    disconnectCurrent()
+            case 0xFE:
+                capabilities = item.value.littleEndianUInt16(at: 0)
+                if let capabilities {
+                    appendDebugLog("capabilities 0x\(String(capabilities, radix: 16))")
                 }
             case 0xFF:
                 if let maxLength = item.value.first {
@@ -328,10 +337,16 @@ final class A9UltraBLEManager: NSObject, ObservableObject {
                     appendDebugLog("max packet \(codec.maxPacketLength)")
                 }
             case 0x26:
-                if item.value.first == 0x01 {
-                    appendDebugLog("wake notify, media button owns activation payload=\(item.value.hexPrefix(8))")
-                    events.send(.wake(side: nil, payload: item.value))
-                } else {
+                guard productVerified else {
+                    appendDebugLog("ignore wake/sleep before PID verification payload=\(item.value.hexPrefix(8))")
+                    break
+                }
+                guard let event = HeadsetWakeSleepEvent(value: item.value) else { break }
+                switch event {
+                case .wake(let side):
+                    appendDebugLog("wake notify payload=\(item.value.hexPrefix(8))")
+                    events.send(.wake(side: side, payload: item.value))
+                case .sleep:
                     appendDebugLog("sleep notify payload=\(item.value.hexPrefix(8))")
                     events.send(.sleep(payload: item.value))
                 }
@@ -346,17 +361,29 @@ final class A9UltraBLEManager: NSObject, ObservableObject {
             }
         }
 
-        if !sawProductId,
-           !productVerified,
-           activeProbeChannel != nil,
-           frame.command == ABMateCommand.deviceInfo.rawValue,
-           frame.type == .response,
-           !tlvs.isEmpty {
-            productId = Self.targetProductId
-            debugInfo.productId = Self.targetProductId
-            appendDebugLog("valid AB Mate response without product id, trust A9 candidate as 0x\(String(Self.targetProductId, radix: 16))")
-            configureVerifiedDevice()
+        guard !productVerified,
+              frame.command == ABMateCommand.deviceInfo.rawValue,
+              frame.type == .response else {
+            return
         }
+
+        guard let responseProductId else {
+            failPrivateProtocolVerification("设备信息未返回 PID，停止 A9 私有链路")
+            return
+        }
+
+        guard A9UltraPrivateProtocolPolicy.accepts(productId: responseProductId) else {
+            rejectUnsupportedProduct(responseProductId)
+            return
+        }
+
+        if let capabilities,
+           !A9UltraPrivateProtocolPolicy.supportsVoiceRecognition(capabilities: capabilities) {
+            failPrivateProtocolVerification("A9 设备不支持语音识别能力 bit4，停止私有按键链路")
+            return
+        }
+
+        configureVerifiedDevice()
     }
 
     private func handleKeySettingsResponse(_ frame: ABMateFrame) {
@@ -365,17 +392,29 @@ final class A9UltraBLEManager: NSObject, ObservableObject {
         events.send(.keySettingsAck(success: success, payload: frame.payload))
     }
 
+    private func handleVoiceRecognitionResponse(_ frame: ABMateFrame) {
+        let success = frame.payload.first == 0x00
+        appendDebugLog("voice recognition ack \(success ? "ok" : "failed") payload=\(frame.payload.hexPrefix(24))")
+        events.send(.voiceRecognitionAck(success: success, payload: frame.payload))
+    }
+
+    private func handleOpusRecordingResponse(_ frame: ABMateFrame) {
+        let tlvSuccess = A9UltraKeyConfiguration.isSuccessfulAck(frame.payload)
+        let flatSuccess = frame.payload.first == 0x00
+        let success = tlvSuccess || flatSuccess
+        appendDebugLog("opus recording ack \(success ? "ok" : "failed") payload=\(frame.payload.hexPrefix(24))")
+        events.send(.opusRecordingAck(success: success, payload: frame.payload))
+    }
+
     private func handleRecordingData(_ payload: Data) {
-        guard payload.count >= 4 else { return }
-        let audioType = payload[0]
-        guard audioType == 0 else { return }
-        let side = HeadsetSide.fromAudioSource(payload[1])
-        let frameCount = max(1, Int(payload[2]))
-        let frameSize = max(0, Int(payload[3]))
-        let opusData = payload.subdata(in: 4..<payload.count)
+        guard productVerified else {
+            appendDebugLog("ignore audio before PID verification")
+            return
+        }
+        guard let packet = HeadsetRecordingPacket.parse(payload) else { return }
         debugInfo.audioChunkCount += 1
-        appendDebugLog("audio chunk \(debugInfo.audioChunkCount), side=\(side.rawValue), opus=\(opusData.count)")
-        events.send(.audioChunk(side: side, opusData: opusData, frameCount: frameCount, frameSize: frameSize))
+        appendDebugLog("audio chunk \(debugInfo.audioChunkCount), side=\(packet.side.rawValue), opus=\(packet.opusData.count)")
+        events.send(.audioChunk(side: packet.side, opusData: packet.opusData, frameCount: packet.frameCount, frameSize: packet.frameSize))
     }
 
     private func handlePnPId(_ data: Data) {
@@ -394,6 +433,26 @@ final class A9UltraBLEManager: NSObject, ObservableObject {
             debugInfo.productId = productId
         }
         refreshDebugInfo()
+    }
+
+    private func rejectUnsupportedProduct(_ productId: UInt16) {
+        state = .unsupportedProduct(productId)
+        lastError = "检测到非 A9Ultra 设备: 0x\(String(productId, radix: 16))"
+        debugInfo.lastError = lastError
+        appendDebugLog("unsupported product 0x\(String(productId, radix: 16))")
+        events.send(.error(lastError ?? "非 A9Ultra 设备"))
+        disconnectCurrent()
+    }
+
+    private func failPrivateProtocolVerification(_ message: String) {
+        lastError = message
+        debugInfo.lastError = message
+        appendDebugLog("private protocol verification failed: \(message)")
+        events.send(.error(message))
+        if let peripheral {
+            rejectedPeripheralIds.insert(peripheral.identifier)
+            central.cancelPeripheralConnection(peripheral)
+        }
     }
 
     private func clearControlChannel() {

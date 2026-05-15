@@ -62,6 +62,7 @@ fun MainScreen(
     isDark: Boolean,
     isLoadingHistory: Boolean,
     hasMoreHistory: Boolean,
+    headsetStatusLabel: String? = null,
     viewModel: ChatViewModel,
     audioRecorder: AudioRecorder,
     onToggleTheme: () -> Unit,
@@ -113,6 +114,7 @@ fun MainScreen(
             connectionState = connectionState,
             pairingState = pairingState,
             pairedBackendLabel = pairedBackendLabel,
+            headsetStatusLabel = headsetStatusLabel,
             isDark = isDark,
             onToggleTheme = onToggleTheme,
             onNavigateToSettings = onNavigateToSettings,
@@ -293,6 +295,7 @@ private fun TopBar(
     connectionState: ConnectionState,
     pairingState: PairingState,
     pairedBackendLabel: String?,
+    headsetStatusLabel: String?,
     isDark: Boolean,
     onToggleTheme: () -> Unit,
     onNavigateToSettings: () -> Unit,
@@ -305,14 +308,6 @@ private fun TopBar(
             .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(
-            text = "Boson Relay",
-            fontSize = 13.sp,
-            color = colors.textSecondary,
-        )
-
-        Spacer(modifier = Modifier.width(8.dp))
-
         val (statusColor, statusText) = when {
             pairingState == PairingState.PAIRED -> colors.onlineGreen to "已配对${pairedBackendLabel?.let { " · $it" } ?: ""}"
             connectionState == ConnectionState.REGISTERED -> colors.accent to "已连接，请扫码"
@@ -320,13 +315,37 @@ private fun TopBar(
             connectionState == ConnectionState.CONNECTING -> colors.accent to "连接中..."
             else -> colors.recordingRed to "未连接"
         }
-        Text(
-            text = "• $statusText",
-            fontSize = 11.sp,
-            color = statusColor,
-        )
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = "Boson Relay",
+                    fontSize = 13.sp,
+                    color = colors.textSecondary,
+                )
 
-        Spacer(modifier = Modifier.weight(1f))
+                Spacer(modifier = Modifier.width(8.dp))
+
+                Text(
+                    text = "• $statusText",
+                    fontSize = 11.sp,
+                    color = statusColor,
+                    maxLines = 1,
+                )
+            }
+            if (!headsetStatusLabel.isNullOrBlank()) {
+                Text(
+                    text = "耳机 $headsetStatusLabel",
+                    fontSize = 10.sp,
+                    color = colors.textSecondary,
+                    maxLines = 1,
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.width(8.dp))
 
         Box(
             modifier = Modifier
