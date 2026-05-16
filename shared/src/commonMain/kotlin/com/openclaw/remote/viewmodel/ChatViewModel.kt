@@ -41,27 +41,44 @@ class ChatViewModel(
     private var wsManager: WebSocketManager? = null
     private val viewModelScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var lastAutoHistoryRequestAt = 0L
+    private var generatedDeviceId: String? = null
+    private var activeConnectionKey: ChatConnectionKey? = null
+    private var activeManagerJobs: List<Job> = emptyList()
+    private var latestConfig = GatewayConfig()
 
     init {
         viewModelScope.launch {
             settingsManager.configFlow.collect { config ->
-                reconnect(config)
+                latestConfig = config
+                reconnectIfNeeded(config)
             }
         }
     }
 
-    private fun reconnect(config: GatewayConfig) {
-        wsManager?.disconnect()
-
-        val deviceId = config.deviceId.ifEmpty {
-            "device_${UUID.randomUUID().toString().take(8)}"
+    private fun reconnectIfNeeded(config: GatewayConfig, force: Boolean = false) {
+        val deviceId = effectiveDeviceId(config)
+        val nextConnectionKey = config.toChatConnectionKey(deviceId)
+        if (!force && !shouldReconnectForConfig(activeConnectionKey, nextConnectionKey)) {
+            return
         }
+        reconnect(config, deviceId, nextConnectionKey)
+    }
 
+    private fun effectiveDeviceId(config: GatewayConfig): String {
+        if (config.deviceId.isNotEmpty()) return config.deviceId
+        val deviceId = generatedDeviceId ?: "device_${UUID.randomUUID().toString().take(8)}"
+            .also { generatedDeviceId = it }
         viewModelScope.launch {
-            if (config.deviceId.isEmpty()) {
-                settingsManager.updateDeviceId(deviceId)
-            }
+            settingsManager.updateDeviceId(deviceId)
         }
+        return deviceId
+    }
+
+    private fun reconnect(config: GatewayConfig, deviceId: String, connectionKey: ChatConnectionKey) {
+        activeManagerJobs.forEach { it.cancel() }
+        activeManagerJobs = emptyList()
+        wsManager?.disconnect()
+        activeConnectionKey = connectionKey
 
         val configuredBackendLabel = config.pairedBackendLabel ?: config.pairedBackendId
         if (configuredBackendLabel != null) {
@@ -77,102 +94,114 @@ class ChatViewModel(
             asrMode = config.asrMode,
             asrProfileId = config.asrProfileId,
         )
+        val manager = wsManager!!
 
-        viewModelScope.launch {
-            wsManager!!.connectionState.collect { _connectionState.value = it }
-        }
-
-        viewModelScope.launch {
-            wsManager!!.pairingState.collect { state ->
-                _pairingState.value = state
-                when {
-                    state == PairingState.PENDING && configuredBackendLabel != null -> {
-                        _pairedBackendLabel.value = configuredBackendLabel
-                    }
-                    state != PairingState.PAIRED -> {
-                        _pairedBackendLabel.value = null
+        activeManagerJobs = listOf(
+            viewModelScope.launch {
+                manager.connectionState.collect { _connectionState.value = it }
+            },
+            viewModelScope.launch {
+                manager.pairingState.collect { state ->
+                    _pairingState.value = state
+                    when {
+                        state == PairingState.PENDING && configuredBackendLabel != null -> {
+                            _pairedBackendLabel.value = configuredBackendLabel
+                        }
+                        state != PairingState.PAIRED -> {
+                            _pairedBackendLabel.value = null
+                        }
                     }
                 }
-            }
-        }
-
-        viewModelScope.launch {
-            wsManager!!.messageChannel.receiveAsFlow().collect { event ->
-                when (event) {
-                    is WsMessageEvent.Registered -> Unit
-                    is WsMessageEvent.Paired -> {
-                        _pairedBackendLabel.value = event.backendLabel
-                        viewModelScope.launch {
-                            settingsManager.updatePairedBackend(event.backendId, event.backendLabel)
-                        }
-                        requestAutoHistorySync()
-                    }
-                    is WsMessageEvent.NewMessage -> {
-                        val displayMessage = event.message.sanitizedForDisplay() ?: return@collect
-                        _messages.value = _messages.value + displayMessage
-                    }
-                    is WsMessageEvent.HistoryResponse -> {
-                        _isLoadingHistory.value = false
-                        if (!event.error.isNullOrBlank()) {
-                            _hasMoreHistory.value = false
-                            return@collect
-                        }
-                        val existingKeys = _messages.value.map(::messageHistoryKey).toSet()
-                        val historyMessages = event.messages
-                            .mapNotNull { it.sanitizedForDisplay() }
-                            .filterNot { messageHistoryKey(it) in existingKeys }
-                        if (historyMessages.isNotEmpty()) {
-                            _messages.value = historyMessages + _messages.value
-                        }
-                        _hasMoreHistory.value = event.hasMore
-                    }
-                    is WsMessageEvent.AsrResult -> {
-                        if (!event.success && event.clientMessageId != null && event.error in hiddenAsrErrors) {
-                            _messages.value = _messages.value.filter { message ->
-                                message.clientMessageId != event.clientMessageId
-                            }
-                            return@collect
-                        }
-                        _messages.value = _messages.value.map { message ->
-                            if (event.clientMessageId != null && message.clientMessageId == event.clientMessageId) {
-                                message.copy(
-                                    content = if (event.success) event.text.orEmpty() else "语音识别失败: ${event.error ?: "unknown"}",
-                                    status = if (event.success) MessageStatus.DELIVERED else MessageStatus.FAILED,
+            },
+            viewModelScope.launch {
+                manager.messageChannel.receiveAsFlow().collect { event ->
+                    when (event) {
+                        is WsMessageEvent.Registered -> Unit
+                        is WsMessageEvent.Paired -> {
+                            _pairedBackendLabel.value = event.backendLabel
+                            if (shouldPersistPairedBackend(latestConfig, event.backendId, event.backendLabel)) {
+                                latestConfig = latestConfig.copy(
+                                    pairedBackendId = event.backendId,
+                                    pairedBackendLabel = event.backendLabel,
                                 )
-                            } else {
-                                message
+                                viewModelScope.launch {
+                                    settingsManager.updatePairedBackend(event.backendId, event.backendLabel)
+                                }
+                            }
+                            requestAutoHistorySync()
+                        }
+                        is WsMessageEvent.NewMessage -> {
+                            val displayMessage = event.message.sanitizedForDisplay() ?: return@collect
+                            _messages.value = _messages.value + displayMessage
+                        }
+                        is WsMessageEvent.HistoryResponse -> {
+                            _isLoadingHistory.value = false
+                            if (!event.error.isNullOrBlank()) {
+                                _hasMoreHistory.value = false
+                                return@collect
+                            }
+                            val existingKeys = _messages.value.map(::messageHistoryKey).toSet()
+                            val historyMessages = event.messages
+                                .mapNotNull { it.sanitizedForDisplay() }
+                                .filterNot { messageHistoryKey(it) in existingKeys }
+                            if (historyMessages.isNotEmpty()) {
+                                _messages.value = historyMessages + _messages.value
+                            }
+                            _hasMoreHistory.value = event.hasMore
+                        }
+                        is WsMessageEvent.AsrResult -> {
+                            if (!event.success && event.clientMessageId != null && event.error in hiddenAsrErrors) {
+                                _messages.value = _messages.value.filter { message ->
+                                    message.clientMessageId != event.clientMessageId
+                                }
+                                return@collect
+                            }
+                            _messages.value = _messages.value.map { message ->
+                                if (event.clientMessageId != null && message.clientMessageId == event.clientMessageId) {
+                                    message.copy(
+                                        content = if (event.success) event.text.orEmpty() else "语音识别失败: ${event.error ?: "unknown"}",
+                                        status = if (event.success) MessageStatus.DELIVERED else MessageStatus.FAILED,
+                                    )
+                                } else {
+                                    message
+                                }
                             }
                         }
-                    }
-                    is WsMessageEvent.Unpaired -> {
-                        _pairedBackendLabel.value = null
-                        viewModelScope.launch {
-                            settingsManager.updatePairedBackend(null, null)
+                        is WsMessageEvent.Unpaired -> {
+                            _pairedBackendLabel.value = null
+                            viewModelScope.launch {
+                                settingsManager.updatePairedBackend(null, null)
+                            }
+                            _messages.value = _messages.value + ChatMessage(
+                                "已解除配对",
+                                SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date()),
+                                "assistant"
+                            )
                         }
-                        _messages.value = _messages.value + ChatMessage(
-                            "已解除配对",
-                            SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date()),
-                            "assistant"
-                        )
-                    }
-                    is WsMessageEvent.Error -> {
-                        _messages.value = _messages.value + ChatMessage(
-                            "错误 (${event.code}): ${event.message}",
-                            SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date()),
-                            "assistant"
-                        )
+                        is WsMessageEvent.Error -> {
+                            _messages.value = _messages.value + ChatMessage(
+                                "错误 (${event.code}): ${event.message}",
+                                SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date()),
+                                "assistant"
+                            )
+                        }
                     }
                 }
-            }
-        }
+            },
+        )
 
-        wsManager?.connect()
+        manager.connect()
     }
 
     fun connect() {
         viewModelScope.launch {
+            wsManager?.let { manager ->
+                manager.connect()
+                return@launch
+            }
             val config = settingsManager.configFlow.first()
-            reconnect(config)
+            latestConfig = config
+            reconnectIfNeeded(config)
         }
     }
 
@@ -220,6 +249,7 @@ class ChatViewModel(
     }
 
     fun onCleared() {
+        activeManagerJobs.forEach { it.cancel() }
         viewModelScope.cancel()
     }
 
@@ -278,3 +308,30 @@ class ChatViewModel(
         val hiddenAsrErrors = setOf("ASR_AUDIO_EMPTY", "ASR_EMPTY_TRANSCRIPT")
     }
 }
+
+internal data class ChatConnectionKey(
+    val gatewayUrl: String,
+    val deviceId: String,
+    val deviceLabel: String,
+    val token: String,
+    val pairedBackendId: String?,
+    val asrMode: String,
+    val asrProfileId: String,
+)
+
+internal fun GatewayConfig.toChatConnectionKey(effectiveDeviceId: String): ChatConnectionKey =
+    ChatConnectionKey(
+        gatewayUrl = gatewayUrl,
+        deviceId = effectiveDeviceId,
+        deviceLabel = deviceLabel,
+        token = token,
+        pairedBackendId = pairedBackendId,
+        asrMode = asrMode,
+        asrProfileId = asrProfileId,
+    )
+
+internal fun shouldReconnectForConfig(previous: ChatConnectionKey?, next: ChatConnectionKey): Boolean =
+    previous != next
+
+internal fun shouldPersistPairedBackend(config: GatewayConfig, backendId: String?, backendLabel: String?): Boolean =
+    config.pairedBackendId != backendId || config.pairedBackendLabel != backendLabel

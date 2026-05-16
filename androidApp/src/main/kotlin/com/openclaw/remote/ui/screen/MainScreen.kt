@@ -10,7 +10,8 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -33,16 +34,19 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
-import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.input.pointer.changedToUpIgnoreConsumed
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.TextFieldValue
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.openclaw.remote.audio.AudioRecorder
@@ -52,7 +56,6 @@ import com.openclaw.remote.domain.PairingState
 import com.openclaw.remote.ui.theme.MochiColors
 import com.openclaw.remote.ui.theme.MochiTheme
 import com.openclaw.remote.viewmodel.ChatViewModel
-import kotlin.math.roundToInt
 
 @Composable
 fun MainScreen(
@@ -77,8 +80,18 @@ fun MainScreen(
     var isSelectingMessages by remember { mutableStateOf(false) }
     var selectedMessageKeys by remember { mutableStateOf<Set<String>>(emptySet()) }
     var quotedMessageSummary by remember { mutableStateOf<String?>(null) }
-    var dragOffsetY by remember { mutableFloatStateOf(0f) }
-    var isDragging by remember { mutableStateOf(false) }
+    val configuration = LocalConfiguration.current
+    val density = LocalDensity.current
+    val screenHeightPx = with(density) { configuration.screenHeightDp.dp.toPx() }
+    val recordingPanelTopYPx = recordingPanelTopY(screenHeightPx)
+    var touchLocationY by remember { mutableFloatStateOf(screenHeightPx) }
+    var isMicGestureActive by remember { mutableStateOf(false) }
+    val recordingState = voiceRecordingState(
+        isRecording = isRecording,
+        isGestureActive = isMicGestureActive,
+        touchY = touchLocationY,
+        panelTopY = recordingPanelTopYPx,
+    )
     val lastMessageKey = messages.lastOrNull()?.let { message ->
         message.clientMessageId ?: "${message.senderId}|${message.timestamp}|${message.content}"
     }
@@ -108,168 +121,179 @@ fun MainScreen(
         }
     }
 
-    Column(
+    LaunchedEffect(isRecording, screenHeightPx) {
+        if (!isRecording) {
+            touchLocationY = screenHeightPx
+            isMicGestureActive = false
+        }
+    }
+
+    Box(
         modifier = Modifier
             .fillMaxSize()
             .background(colors.background)
             .imePadding()
     ) {
-        TopBar(
-            connectionState = connectionState,
-            pairingState = pairingState,
-            pairedBackendLabel = pairedBackendLabel,
-            headsetStatusLabel = headsetStatusLabel,
-            isDark = isDark,
-            onToggleTheme = onToggleTheme,
-            onNavigateToSettings = onNavigateToSettings,
-            colors = colors,
-        )
+        Column(modifier = Modifier.fillMaxSize()) {
+            TopBar(
+                connectionState = connectionState,
+                pairingState = pairingState,
+                pairedBackendLabel = pairedBackendLabel,
+                headsetStatusLabel = headsetStatusLabel,
+                isDark = isDark,
+                onToggleTheme = onToggleTheme,
+                onNavigateToSettings = onNavigateToSettings,
+                colors = colors,
+            )
 
-        HorizontalDivider(color = colors.divider, thickness = 0.5.dp)
+            HorizontalDivider(color = colors.divider, thickness = 0.5.dp)
 
-        Box(modifier = Modifier.weight(1f)) {
-            LazyColumn(
-                state = listState,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(horizontal = 16.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp),
-                contentPadding = PaddingValues(vertical = 16.dp),
-                reverseLayout = false,
-            ) {
-                if (hasMoreHistory) {
-                    item {
-                        Box(
-                            modifier = Modifier.fillMaxWidth(),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            if (isLoadingHistory) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(20.dp),
-                                    strokeWidth = 2.dp,
-                                    color = colors.accent,
-                                )
-                            } else {
-                                TextButton(onClick = { viewModel.loadMoreHistory() }) {
-                                    Text(
-                                        text = "查看历史消息 ↑",
-                                        fontSize = 13.sp,
-                                        color = colors.textSecondary,
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-
-                itemsIndexed(messages) { index, msg ->
-                    val isUser = msg.senderId == "user"
-                    val messageKey = messageSelectionKey(index, msg)
-                    MessageBubble(
-                        message = msg,
-                        isUser = isUser,
-                        isSelectionMode = isSelectingMessages,
-                        isSelected = selectedMessageKeys.contains(messageKey),
-                        onClick = {
-                            if (isSelectingMessages) {
-                                selectedMessageKeys = toggleSelectedMessage(selectedMessageKeys, messageKey)
-                                if (selectedMessageKeys.isEmpty()) {
-                                    isSelectingMessages = false
-                                }
-                            }
-                        },
-                        onCopy = {
-                            clipboardManager.setText(AnnotatedString(msg.content))
-                        },
-                        onQuote = {
-                            quotedMessageSummary = quoteSummary(msg.content)
-                        },
-                        onSelect = {
-                            isSelectingMessages = true
-                            selectedMessageKeys = setOf(messageKey)
-                        },
-                    )
-                }
-            }
-
-            if (pairingState != PairingState.PAIRED) {
-                Box(
+            Box(modifier = Modifier.weight(1f)) {
+                LazyColumn(
+                    state = listState,
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(horizontal = 16.dp),
-                    contentAlignment = Alignment.Center
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                    contentPadding = PaddingValues(vertical = 16.dp),
+                    reverseLayout = false,
                 ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(
-                            text = "请先扫码配对后端 Agent",
-                            fontSize = 16.sp,
-                            color = colors.textSecondary,
+                    if (hasMoreHistory) {
+                        item {
+                            Box(
+                                modifier = Modifier.fillMaxWidth(),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                if (isLoadingHistory) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(20.dp),
+                                        strokeWidth = 2.dp,
+                                        color = colors.accent,
+                                    )
+                                } else {
+                                    TextButton(onClick = { viewModel.loadMoreHistory() }) {
+                                        Text(
+                                            text = "查看历史消息 ↑",
+                                            fontSize = 13.sp,
+                                            color = colors.textSecondary,
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    itemsIndexed(messages) { index, msg ->
+                        val isUser = msg.senderId == "user"
+                        val messageKey = messageSelectionKey(index, msg)
+                        MessageBubble(
+                            message = msg,
+                            isUser = isUser,
+                            isSelectionMode = isSelectingMessages,
+                            isSelected = selectedMessageKeys.contains(messageKey),
+                            onClick = {
+                                if (isSelectingMessages) {
+                                    selectedMessageKeys = toggleSelectedMessage(selectedMessageKeys, messageKey)
+                                    if (selectedMessageKeys.isEmpty()) {
+                                        isSelectingMessages = false
+                                    }
+                                }
+                            },
+                            onCopy = {
+                                clipboardManager.setText(AnnotatedString(msg.content))
+                            },
+                            onQuote = {
+                                quotedMessageSummary = quoteSummary(msg.content)
+                            },
+                            onSelect = {
+                                isSelectingMessages = true
+                                selectedMessageKeys = setOf(messageKey)
+                            },
                         )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        TextButton(onClick = onNavigateToSettings) {
-                            Text("去设置", fontSize = 14.sp)
+                    }
+                }
+
+                if (pairingState != PairingState.PAIRED) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(horizontal = 16.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text(
+                                text = "请先扫码配对后端 Agent",
+                                fontSize = 16.sp,
+                                color = colors.textSecondary,
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            TextButton(onClick = onNavigateToSettings) {
+                                Text("去设置", fontSize = 14.sp)
+                            }
                         }
                     }
                 }
             }
-        }
 
-        if (isSelectingMessages) {
-            MessageSelectionToolbar(
-                selectedCount = selectedMessageKeys.size,
+            if (isSelectingMessages) {
+                MessageSelectionToolbar(
+                    selectedCount = selectedMessageKeys.size,
+                    colors = colors,
+                    onCopy = {
+                        clipboardManager.setText(
+                            AnnotatedString(selectedMessages.joinToString(separator = "\n\n") { it.content })
+                        )
+                        selectedMessageKeys = emptySet()
+                        isSelectingMessages = false
+                    },
+                    onCancel = {
+                        selectedMessageKeys = emptySet()
+                        isSelectingMessages = false
+                    },
+                )
+            }
+
+            InputArea(
+                isRecording = isRecording,
                 colors = colors,
-                onCopy = {
-                    clipboardManager.setText(
-                        AnnotatedString(selectedMessages.joinToString(separator = "\n\n") { it.content })
-                    )
-                    selectedMessageKeys = emptySet()
-                    isSelectingMessages = false
+                viewModel = viewModel,
+                audioRecorder = audioRecorder,
+                pairingState = pairingState,
+                quotedMessageSummary = quotedMessageSummary,
+                onCancelQuote = { quotedMessageSummary = null },
+                recordingState = recordingState,
+                onMicTouchLocationChanged = { globalY ->
+                    touchLocationY = globalY
+                    isMicGestureActive = true
                 },
-                onCancel = {
-                    selectedMessageKeys = emptySet()
-                    isSelectingMessages = false
+                onMicReleaseLocation = { finalGlobalY, pointerCancelled ->
+                    val cancelled = shouldCancelVoiceRelease(
+                        finalTouchY = finalGlobalY,
+                        panelTopY = recordingPanelTopYPx,
+                        pointerCancelled = pointerCancelled,
+                    )
+                    isMicGestureActive = false
+                    touchLocationY = screenHeightPx
+                    cancelled
+                },
+                onSendText = { text ->
+                    val outgoingText = quotedMessageSummary?.let { "> $it\n\n$text" } ?: text
+                    viewModel.sendText(outgoingText)
+                    quotedMessageSummary = null
                 },
             )
         }
 
-        InputArea(
-            isRecording = isRecording,
-            colors = colors,
-            viewModel = viewModel,
-            audioRecorder = audioRecorder,
-            pairingState = pairingState,
-            quotedMessageSummary = quotedMessageSummary,
-            onCancelQuote = { quotedMessageSummary = null },
-            dragOffsetY = dragOffsetY,
-            isDragging = isDragging,
-            onDragUpdate = { didDrag, delta ->
-                dragOffsetY += delta
-                isDragging = didDrag || dragOffsetY < -30f
-            },
-            onSendText = { text ->
-                val outgoingText = quotedMessageSummary?.let { "> $it\n\n$text" } ?: text
-                viewModel.sendText(outgoingText)
-                quotedMessageSummary = null
-            },
-        )
-
         // 录音遮罩层
         AnimatedVisibility(
+            modifier = Modifier.align(Alignment.BottomCenter),
             visible = isRecording,
             enter = fadeIn() + slideInVertically { it },
             exit = fadeOut() + slideOutVertically { it },
         ) {
-            LaunchedEffect(isRecording) {
-                if (!isRecording) {
-                    dragOffsetY = 0f
-                    isDragging = false
-                }
-            }
             RecordingOverlay(
                 isRecording = isRecording,
-                isCancelled = dragOffsetY < -80f && isDragging,
-                isDragging = isDragging,
-                dragOffsetY = dragOffsetY,
+                recordingState = recordingState,
                 colors = colors,
             )
         }
@@ -420,9 +444,9 @@ private fun InputArea(
     quotedMessageSummary: String? = null,
     onCancelQuote: () -> Unit = {},
     onSendText: (String) -> Unit = { viewModel.sendText(it) },
-    dragOffsetY: Float = 0f,
-    isDragging: Boolean = false,
-    onDragUpdate: ((Boolean, Float) -> Unit)? = null,
+    recordingState: VoiceRecordingState = VoiceRecordingState.IDLE,
+    onMicTouchLocationChanged: (Float) -> Unit = {},
+    onMicReleaseLocation: (Float, Boolean) -> Boolean = { _, pointerCancelled -> pointerCancelled },
 ) {
     var inputMode by rememberSaveable { mutableStateOf(InputMode.VOICE) }
 
@@ -457,15 +481,15 @@ private fun InputArea(
         } else {
             VoiceInputRow(
                 isRecording = isRecording,
-                dragOffsetY = dragOffsetY,
-                isDragging = isDragging,
+                recordingState = recordingState,
                 onMicPress = {
-                    if (!isRecording) {
+                    if (!audioRecorder.isRecording.value) {
                         audioRecorder.startRecording()
                     }
                 },
-                onMicRelease = { cancelled ->
-                    if (isRecording) {
+                onMicRelease = { finalGlobalY, pointerCancelled ->
+                    val cancelled = onMicReleaseLocation(finalGlobalY, pointerCancelled)
+                    if (audioRecorder.isRecording.value) {
                         audioRecorder.stopRecording { audioData ->
                             if (!cancelled) {
                                 viewModel.sendAudio(audioData)
@@ -473,8 +497,8 @@ private fun InputArea(
                         }
                     }
                 },
+                onMicTouchLocationChanged = onMicTouchLocationChanged,
                 onSwitchToText = { inputMode = InputMode.TEXT },
-                onDrag = onDragUpdate,
                 colors = colors,
             )
         }
@@ -638,16 +662,13 @@ private fun SendButton(
 @Composable
 private fun VoiceInputRow(
     isRecording: Boolean,
-    dragOffsetY: Float,
-    isDragging: Boolean,
+    recordingState: VoiceRecordingState,
     onMicPress: () -> Unit,
-    onMicRelease: (cancelled: Boolean) -> Unit,
+    onMicRelease: (finalGlobalY: Float, pointerCancelled: Boolean) -> Unit,
+    onMicTouchLocationChanged: (Float) -> Unit,
     onSwitchToText: () -> Unit,
-    onDrag: ((Boolean, Float) -> Unit)?,
     colors: MochiColors,
 ) {
-    val isCancelled = dragOffsetY < -80f && isDragging
-
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -674,15 +695,10 @@ private fun VoiceInputRow(
 
             VoiceMicButton(
                 isRecording = isRecording,
-                isCancelled = isCancelled,
-                isDragging = isDragging,
-                dragOffsetY = dragOffsetY,
+                recordingState = recordingState,
                 onPress = onMicPress,
-                onRelease = { _, didDrag ->
-                    val cancelled = isDragging && dragOffsetY < -80f
-                    onMicRelease(cancelled)
-                },
-                onDrag = { didDrag, delta -> onDrag?.invoke(didDrag, delta) },
+                onRelease = onMicRelease,
+                onTouchLocationChanged = onMicTouchLocationChanged,
                 colors = colors,
             )
 
@@ -696,13 +712,12 @@ private fun VoiceInputRow(
 @Composable
 private fun RecordingOverlay(
     isRecording: Boolean,
-    isCancelled: Boolean,
-    isDragging: Boolean,
-    dragOffsetY: Float,
+    recordingState: VoiceRecordingState,
     colors: MochiColors,
 ) {
     if (!isRecording) return
 
+    val isCancelled = recordingState.isCancelled
     val infiniteTransition = rememberInfiniteTransition(label = "glowPulse")
     val glowAlpha by infiniteTransition.animateFloat(
         initialValue = 0.3f,
@@ -714,16 +729,13 @@ private fun RecordingOverlay(
         label = "glowAlpha",
     )
 
-    val cancelProgress = (-dragOffsetY / 80f).coerceIn(0f, 1f)
-    val isCancellingState = isCancelled || cancelProgress > 0.3f
-
     Box(
         modifier = Modifier
             .fillMaxWidth()
             .height(180.dp)
             .background(
                 brush = Brush.verticalGradient(
-                    colors = if (isCancellingState) {
+                    colors = if (isCancelled) {
                         listOf(
                             Color(0xFF2B0606).copy(alpha = 0.95f),
                             Color(0xFF1A0303).copy(alpha = 0.98f),
@@ -747,7 +759,7 @@ private fun RecordingOverlay(
                 .background(
                     brush = Brush.radialGradient(
                         colors = listOf(
-                            if (isCancellingState) Color(0xFFE53935).copy(alpha = glowAlpha * 0.5f)
+                            if (isCancelled) Color(0xFFE53935).copy(alpha = glowAlpha * 0.5f)
                             else Color(0xFF4DA6FF).copy(alpha = glowAlpha * 0.5f),
                             Color.Transparent,
                         ),
@@ -764,7 +776,7 @@ private fun RecordingOverlay(
             // 波形动画
             VoiceWaveform(
                 isActive = isRecording && !isCancelled,
-                isCancelled = isCancellingState,
+                isCancelled = isCancelled,
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(60.dp),
@@ -772,37 +784,14 @@ private fun RecordingOverlay(
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // 取消进度条
-            if (isDragging) {
-                Box(
-                    modifier = Modifier
-                        .width(120.dp)
-                        .height(3.dp)
-                        .clip(RoundedCornerShape(2.dp))
-                        .background(Color.White.copy(alpha = 0.3f)),
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxHeight()
-                            .fillMaxWidth(cancelProgress)
-                            .clip(RoundedCornerShape(2.dp))
-                            .background(
-                                if (isCancellingState) Color.White else Color.White.copy(alpha = 0.8f),
-                            ),
-                    )
-                }
-                Spacer(modifier = Modifier.height(8.dp))
-            }
-
             // 提示文字
             Text(
                 text = when {
                     isCancelled -> "松开取消"
-                    isDragging -> "上划取消 ↓"
                     else -> "松手发送，上滑取消 ↑"
                 },
                 fontSize = 14.sp,
-                color = if (isCancellingState) Color.White else Color.White.copy(alpha = 0.9f),
+                color = if (isCancelled) Color.White else Color.White.copy(alpha = 0.9f),
             )
         }
     }
@@ -876,34 +865,24 @@ private fun VoiceWaveform(
 @Composable
 private fun VoiceMicButton(
     isRecording: Boolean,
-    isCancelled: Boolean,
-    isDragging: Boolean,
-    dragOffsetY: Float,
+    recordingState: VoiceRecordingState,
     onPress: () -> Unit,
-    onRelease: (realOffsetY: Float, didDrag: Boolean) -> Unit,
-    onDrag: (isDragging: Boolean, delta: Float) -> Unit,
+    onRelease: (finalGlobalY: Float, pointerCancelled: Boolean) -> Unit,
+    onTouchLocationChanged: (Float) -> Unit,
     colors: MochiColors,
 ) {
-    val animatedScale by animateFloatAsState(
-        targetValue = if (isRecording) 1.15f else 1f,
-        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy),
-        label = "micScale",
-    )
-
-    val animatedOffsetY by animateFloatAsState(
-        targetValue = if (isDragging) dragOffsetY.coerceAtMost(0f) else 0f,
-        animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy),
-        label = "dragOffset",
-    )
-
+    val buttonTopYState = remember { mutableFloatStateOf(0f) }
+    val currentOnPress by rememberUpdatedState(onPress)
+    val currentOnRelease by rememberUpdatedState(onRelease)
+    val currentOnTouchLocationChanged by rememberUpdatedState(onTouchLocationChanged)
     val backgroundColor = when {
-        isCancelled -> colors.recordingRed.copy(alpha = 0.8f)
+        recordingState.isCancelled -> colors.recordingRed.copy(alpha = 0.8f)
         isRecording -> colors.recordingRed
         else -> colors.secondary
     }
 
     val iconRotation by animateFloatAsState(
-        targetValue = if (isCancelled) 45f else 0f,
+        targetValue = if (recordingState.isCancelled) 45f else 0f,
         animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy),
         label = "iconRotate",
     )
@@ -911,34 +890,40 @@ private fun VoiceMicButton(
     Box(
         modifier = Modifier
             .size(56.dp)
-            .offset { IntOffset(0, animatedOffsetY.roundToInt()) }
-            .scale(animatedScale)
             .clip(CircleShape)
             .background(backgroundColor)
-            .pointerInput(isRecording) {
-                var didDrag = false
-                var realOffsetY = 0f
-                detectDragGestures(
-                    onDragStart = {
-                        didDrag = false
-                        realOffsetY = 0f
-                        onPress()
-                    },
-                    onDragEnd = {
-                        onRelease(realOffsetY, didDrag)
-                    },
-                    onDragCancel = {
-                        onRelease(realOffsetY, didDrag)
-                    },
-                    onDrag = { change, dragAmount ->
-                        change.consume()
-                        realOffsetY += dragAmount.y
-                        if (dragAmount.y < -5f || dragAmount.y > 5f) {
-                            didDrag = true
+            .onGloballyPositioned { coordinates ->
+                buttonTopYState.floatValue = coordinates.positionInWindow().y
+            }
+            .pointerInput(Unit) {
+                fun globalY(localY: Float): Float = buttonTopYState.floatValue + localY
+
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    var lastGlobalY = globalY(down.position.y)
+                    currentOnTouchLocationChanged(lastGlobalY)
+                    currentOnPress()
+
+                    var pointerCancelled = false
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        val change = event.changes.firstOrNull { it.id == down.id }
+                        if (change == null) {
+                            pointerCancelled = true
+                            break
                         }
-                        onDrag(didDrag, dragAmount.y)
-                    },
-                )
+
+                        lastGlobalY = globalY(change.position.y)
+                        currentOnTouchLocationChanged(lastGlobalY)
+
+                        if (change.changedToUpIgnoreConsumed()) {
+                            break
+                        }
+                        change.consume()
+                    }
+
+                    currentOnRelease(lastGlobalY, pointerCancelled)
+                }
             },
         contentAlignment = Alignment.Center,
     ) {
