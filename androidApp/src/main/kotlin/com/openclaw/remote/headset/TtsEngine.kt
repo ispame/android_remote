@@ -5,7 +5,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
 interface TtsEngine {
-    fun speak(text: String, apiKey: String? = null)
+    fun speak(text: String, apiKey: String? = null, voiceId: String? = null)
     fun stop()
     fun release()
 }

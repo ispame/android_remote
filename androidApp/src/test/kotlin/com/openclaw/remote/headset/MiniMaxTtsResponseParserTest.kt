@@ -7,6 +7,20 @@ import org.junit.Test
 
 class MiniMaxTtsResponseParserTest {
     @Test
+    fun requestBuilderUsesSelectedVoiceId() {
+        val json = MiniMaxTtsRequestBuilder.build(
+            text = "你好",
+            voiceId = "Chinese (Mandarin)_Warm_Girl",
+        )
+
+        assertEquals(
+            "Chinese (Mandarin)_Warm_Girl",
+            json.getJSONObject("voice_setting").getString("voice_id"),
+        )
+        assertEquals("hex", json.getString("output_format"))
+    }
+
+    @Test
     fun parsesHexEncodedAudioFromNonStreamingResponse() {
         val parsed = MiniMaxTtsResponseParser.parse(
             """

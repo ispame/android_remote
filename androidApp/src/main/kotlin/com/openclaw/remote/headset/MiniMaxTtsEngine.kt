@@ -29,7 +29,7 @@ class MiniMaxTtsEngine(context: Context) : BaseTtsEngine(context) {
 
     private var currentTrack: AudioTrack? = null
 
-    override fun speak(text: String, apiKey: String?) {
+    override fun speak(text: String, apiKey: String?, voiceId: String?) {
         if (text.isBlank()) return
         if (apiKey.isNullOrBlank()) {
             Log.e(TAG, "MiniMax API key is empty")
@@ -40,7 +40,11 @@ class MiniMaxTtsEngine(context: Context) : BaseTtsEngine(context) {
         scope.launch {
             try {
                 onSpeakStart?.invoke()
-                val audioData = fetchTtsAudio(text, apiKey)
+                val audioData = fetchTtsAudio(
+                    text = text,
+                    apiKey = apiKey,
+                    voiceId = voiceId?.takeIf { it.isNotBlank() } ?: MiniMaxVoiceCatalog.DEFAULT_VOICE_ID,
+                )
                 playMp3Audio(audioData)
                 onSpeakDone?.invoke()
             } catch (e: Exception) {
@@ -50,28 +54,9 @@ class MiniMaxTtsEngine(context: Context) : BaseTtsEngine(context) {
         }
     }
 
-    private suspend fun fetchTtsAudio(text: String, apiKey: String): ByteArray = withContext(Dispatchers.IO) {
-        // MiniMax TTS API - 参考: https://api.minimaxi.com/document/APIDetail/3
-        val json = JSONObject().apply {
-            put("model", "speech-2.8-hd")
-            put("text", text)
-            put("stream", false)
-            put("voice_setting", JSONObject().apply {
-                put("voice_id", "male-qn-qingse")
-                put("speed", 1.0)
-                put("vol", 1.0)
-                put("pitch", 0.0)
-                put("emotion", "happy")
-            })
-            put("audio_setting", JSONObject().apply {
-                put("sample_rate", 32000)
-                put("bitrate", 128000)
-                put("format", "mp3")
-                put("channel", 1)
-            })
-            put("subtitle_enable", false)
-            put("output_format", "hex")
-        }
+    private suspend fun fetchTtsAudio(text: String, apiKey: String, voiceId: String): ByteArray = withContext(Dispatchers.IO) {
+        // MiniMax TTS API - 参考: https://platform.minimaxi.com/docs/api-reference/speech/t2a
+        val json = MiniMaxTtsRequestBuilder.build(text = text, voiceId = voiceId)
 
         val request = Request.Builder()
             .url("https://api.minimaxi.com/v1/t2a_v2")
@@ -246,6 +231,31 @@ class MiniMaxTtsEngine(context: Context) : BaseTtsEngine(context) {
 
     companion object {
         private const val TAG = "MiniMaxTtsEngine"
+    }
+}
+
+object MiniMaxTtsRequestBuilder {
+    fun build(text: String, voiceId: String): JSONObject {
+        return JSONObject().apply {
+            put("model", "speech-2.8-hd")
+            put("text", text)
+            put("stream", false)
+            put("voice_setting", JSONObject().apply {
+                put("voice_id", voiceId)
+                put("speed", 1.0)
+                put("vol", 1.0)
+                put("pitch", 0.0)
+                put("emotion", "happy")
+            })
+            put("audio_setting", JSONObject().apply {
+                put("sample_rate", 32000)
+                put("bitrate", 128000)
+                put("format", "mp3")
+                put("channel", 1)
+            })
+            put("subtitle_enable", false)
+            put("output_format", "hex")
+        }
     }
 }
 

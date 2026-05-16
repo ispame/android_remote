@@ -47,7 +47,7 @@ class SystemTtsEngine(context: Context) : BaseTtsEngine(context) {
         }
     }
 
-    override fun speak(text: String, apiKey: String?) {
+    override fun speak(text: String, apiKey: String?, voiceId: String?) {
         if (!initialized) {
             Log.w(TAG, "TTS not initialized")
             return

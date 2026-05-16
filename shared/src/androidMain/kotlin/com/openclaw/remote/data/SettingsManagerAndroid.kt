@@ -37,7 +37,7 @@ class SettingsManagerAndroid(private val context: Context) : SettingsManager {
             asrProfileId = prefs[ASR_PROFILE_ID] ?: "",
             ttsEngine = prefs[TTS_ENGINE] ?: "system",
             minimaxApiKey = prefs[MINIMAX_API_KEY] ?: "",
-            minimaxVoiceId = prefs[MINIMAX_VOICE_ID] ?: "female_sunny_zh",
+            minimaxVoiceId = prefs[MINIMAX_VOICE_ID] ?: "male-qn-qingse",
         )
     }
 

@@ -13,6 +13,7 @@ import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.LinkOff
 import androidx.compose.material.icons.filled.QrCodeScanner
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -27,6 +28,8 @@ import com.openclaw.remote.data.GatewayConfig
 import com.openclaw.remote.data.SettingsManager
 import com.openclaw.remote.domain.ConnectionState
 import com.openclaw.remote.domain.PairingState
+import com.openclaw.remote.headset.MiniMaxVoiceCatalog
+import com.openclaw.remote.headset.MiniMaxVoiceOption
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -62,11 +65,20 @@ fun SettingsScreen(
     // TTS 配置
     var ttsEngine by remember(config) { mutableStateOf(config.ttsEngine.ifEmpty { "system" }) }
     var minimaxApiKey by remember(config) { mutableStateOf(config.minimaxApiKey) }
+    var minimaxVoiceId by remember(config) {
+        mutableStateOf(config.minimaxVoiceId.ifEmpty { MiniMaxVoiceCatalog.DEFAULT_VOICE_ID })
+    }
     var ttsEngineMenuExpanded by remember { mutableStateOf(false) }
+    var minimaxVoiceMenuExpanded by remember { mutableStateOf(false) }
+    var fetchedMiniMaxVoices by remember { mutableStateOf<List<MiniMaxVoiceOption>>(emptyList()) }
+    var isRefreshingMiniMaxVoices by remember { mutableStateOf(false) }
     val ttsEngines = listOf(
         "system" to "系统 TTS",
         "minimax" to "MiniMax"
     )
+    val minimaxVoices = remember(fetchedMiniMaxVoices, minimaxVoiceId) {
+        mergeMiniMaxVoices(minimaxVoiceId, fetchedMiniMaxVoices)
+    }
 
     var showSavedSnackbar by remember { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
@@ -117,7 +129,7 @@ fun SettingsScreen(
                                         asrProfileId = asrProfileId,
                                         ttsEngine = ttsEngine,
                                         minimaxApiKey = minimaxApiKey,
-                                        minimaxVoiceId = config.minimaxVoiceId,
+                                        minimaxVoiceId = minimaxVoiceId,
                                     )
                                 )
                                 showSavedSnackbar = true
@@ -223,7 +235,7 @@ fun SettingsScreen(
                                 asrProfileId = asrProfileId,
                                 ttsEngine = ttsEngine,
                                 minimaxApiKey = minimaxApiKey,
-                                minimaxVoiceId = config.minimaxVoiceId,
+                                minimaxVoiceId = minimaxVoiceId,
                             )
                         )
                         snackbarHostState.showSnackbar("正在连接并配对...")
@@ -358,6 +370,63 @@ fun SettingsScreen(
                     visualTransformation = PasswordVisualTransformation(),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password)
                 )
+
+                Box(modifier = Modifier.fillMaxWidth()) {
+                    OutlinedButton(
+                        onClick = { minimaxVoiceMenuExpanded = true },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            minimaxVoices.firstOrNull { it.id == minimaxVoiceId }?.let(::voiceLabel)
+                                ?: "选择 MiniMax 音色"
+                        )
+                    }
+                    DropdownMenu(
+                        expanded = minimaxVoiceMenuExpanded,
+                        onDismissRequest = { minimaxVoiceMenuExpanded = false }
+                    ) {
+                        minimaxVoices.forEach { voice ->
+                            DropdownMenuItem(
+                                text = { Text(voiceLabel(voice)) },
+                                onClick = {
+                                    minimaxVoiceId = voice.id
+                                    minimaxVoiceMenuExpanded = false
+                                }
+                            )
+                        }
+                    }
+                }
+
+                OutlinedButton(
+                    onClick = {
+                        scope.launch {
+                            if (minimaxApiKey.isBlank()) {
+                                snackbarHostState.showSnackbar("请先填写 MiniMax API Key")
+                                return@launch
+                            }
+                            isRefreshingMiniMaxVoices = true
+                            runCatching {
+                                MiniMaxVoiceCatalog.fetchAvailableVoices(minimaxApiKey)
+                            }.onSuccess { voices ->
+                                fetchedMiniMaxVoices = voices
+                                snackbarHostState.showSnackbar("已刷新 ${voices.size} 个 MiniMax 音色")
+                            }.onFailure { error ->
+                                snackbarHostState.showSnackbar("刷新音色失败：${error.message ?: "unknown"}")
+                            }
+                            isRefreshingMiniMaxVoices = false
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !isRefreshingMiniMaxVoices
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Refresh,
+                        contentDescription = null,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(if (isRefreshingMiniMaxVoices) "正在刷新音色..." else "从 MiniMax 刷新可用音色")
+                }
             }
 
             HorizontalDivider()
@@ -387,7 +456,7 @@ fun SettingsScreen(
                                 asrProfileId = asrProfileId,
                                 ttsEngine = ttsEngine,
                                 minimaxApiKey = minimaxApiKey,
-                                minimaxVoiceId = config.minimaxVoiceId,
+                                minimaxVoiceId = minimaxVoiceId,
                             )
                         )
                         showSavedSnackbar = true
@@ -528,6 +597,17 @@ private data class AsrProviderProfile(
     val providerLabel: String,
     val modelLabel: String,
 )
+
+private fun mergeMiniMaxVoices(currentVoiceId: String, fetchedVoices: List<MiniMaxVoiceOption>): List<MiniMaxVoiceOption> {
+    val current = currentVoiceId.takeIf { it.isNotBlank() }?.let {
+        MiniMaxVoiceOption(it, it, "当前配置")
+    }
+    return (listOfNotNull(current) + fetchedVoices + MiniMaxVoiceCatalog.builtinVoices)
+        .distinctBy { it.id }
+}
+
+private fun voiceLabel(voice: MiniMaxVoiceOption): String =
+    "${voice.category} · ${voice.name}"
 
 private suspend fun fetchAsrProfiles(gatewayUrl: String): Pair<String?, List<AsrProviderProfile>> {
     return withContext(Dispatchers.IO) {

@@ -98,7 +98,8 @@ class MainActivity : ComponentActivity() {
                     val lastMsg = messages.lastOrNull()
                     if (lastMsg != null && lastMsg.senderId == "assistant" && lastMsg.content.isNotBlank()) {
                         val apiKey = if (config.ttsEngine == "minimax") config.minimaxApiKey else null
-                        ttsEngine?.speak(lastMsg.content, apiKey)
+                        val voiceId = if (config.ttsEngine == "minimax") config.minimaxVoiceId else null
+                        ttsEngine?.speak(lastMsg.content, apiKey, voiceId)
                     }
                 }
 
