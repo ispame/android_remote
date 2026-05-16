@@ -8,7 +8,11 @@ import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.util.Log
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -16,6 +20,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
+import java.io.File
 import java.nio.ByteBuffer
 import java.util.concurrent.TimeUnit
 
@@ -27,7 +32,9 @@ class MiniMaxTtsEngine(context: Context) : BaseTtsEngine(context) {
         .writeTimeout(30, TimeUnit.SECONDS)
         .build()
 
+    @Volatile
     private var currentTrack: AudioTrack? = null
+    private var speakJob: Job? = null
 
     override fun speak(text: String, apiKey: String?, voiceId: String?) {
         if (text.isBlank()) return
@@ -37,19 +44,28 @@ class MiniMaxTtsEngine(context: Context) : BaseTtsEngine(context) {
             return
         }
 
-        scope.launch {
+        speakJob?.cancel()
+        stopCurrentTrack()
+        speakJob = scope.launch {
+            var didStart = false
             try {
+                didStart = true
                 onSpeakStart?.invoke()
                 val audioData = fetchTtsAudio(
                     text = text,
                     apiKey = apiKey,
                     voiceId = voiceId?.takeIf { it.isNotBlank() } ?: MiniMaxVoiceCatalog.DEFAULT_VOICE_ID,
                 )
-                playMp3Audio(audioData)
-                onSpeakDone?.invoke()
+                withContext(Dispatchers.IO) {
+                    playMp3Audio(audioData)
+                }
+            } catch (e: CancellationException) {
+                Log.d(TAG, "MiniMax TTS cancelled")
+                throw e
             } catch (e: Exception) {
                 Log.e(TAG, "MiniMax TTS failed", e)
-                onSpeakDone?.invoke()
+            } finally {
+                if (didStart) onSpeakDone?.invoke()
             }
         }
     }
@@ -82,12 +98,12 @@ class MiniMaxTtsEngine(context: Context) : BaseTtsEngine(context) {
         }
     }
 
-    private fun playMp3Audio(mp3Data: ByteArray) {
+    private suspend fun playMp3Audio(mp3Data: ByteArray) {
         var extractor: MediaExtractor? = null
         var mediaCodec: MediaCodec? = null
         var codecStarted = false
         var track: AudioTrack? = null
-        val tempFile = java.io.File(context.cacheDir, "tts_temp.mp3")
+        val tempFile = File.createTempFile("tts_", ".mp3", context.cacheDir)
         try {
             tempFile.writeBytes(mp3Data)
             Log.d(TAG, "MiniMax playback temp file bytes=${mp3Data.size} header=${mp3Data.headerHex()}")
@@ -163,6 +179,8 @@ class MiniMaxTtsEngine(context: Context) : BaseTtsEngine(context) {
             val bufferInfo = MediaCodec.BufferInfo()
 
             while (true) {
+                currentCoroutineContext().ensureActive()
+
                 val inputBufferIndex = mediaCodec.dequeueInputBuffer(10000)
                 if (inputBufferIndex >= 0) {
                     val inputBuffer = mediaCodec.getInputBuffer(inputBufferIndex)
@@ -181,13 +199,17 @@ class MiniMaxTtsEngine(context: Context) : BaseTtsEngine(context) {
 
                 val outputBufferIndex = mediaCodec.dequeueOutputBuffer(bufferInfo, 10000)
                 if (outputBufferIndex >= 0) {
+                    currentCoroutineContext().ensureActive()
                     val outputBuffer = mediaCodec.getOutputBuffer(outputBufferIndex)
                     if (outputBuffer != null && bufferInfo.size > 0) {
                         val pcmData = ByteArray(bufferInfo.size)
                         outputBuffer.position(bufferInfo.offset)
                         outputBuffer.limit(bufferInfo.offset + bufferInfo.size)
                         outputBuffer.get(pcmData)
-                        track.write(pcmData, 0, pcmData.size)
+                        val written = track.write(pcmData, 0, pcmData.size)
+                        if (written < 0) {
+                            throw IllegalStateException("AudioTrack write failed: $written")
+                        }
                     }
                     mediaCodec.releaseOutputBuffer(outputBufferIndex, false)
 
@@ -198,6 +220,9 @@ class MiniMaxTtsEngine(context: Context) : BaseTtsEngine(context) {
             }
 
             Log.d(TAG, "MiniMax TTS playback completed")
+        } catch (e: CancellationException) {
+            Log.d(TAG, "MiniMax MP3 playback cancelled")
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "MP3 playback failed", e)
         } finally {
@@ -205,7 +230,10 @@ class MiniMaxTtsEngine(context: Context) : BaseTtsEngine(context) {
                 track?.stop()
             } catch (_: Exception) {
             }
-            track?.release()
+            try {
+                track?.release()
+            } catch (_: Exception) {
+            }
             if (currentTrack === track) {
                 currentTrack = null
             }
@@ -220,13 +248,28 @@ class MiniMaxTtsEngine(context: Context) : BaseTtsEngine(context) {
     }
 
     override fun stop() {
-        currentTrack?.stop()
-        currentTrack?.release()
-        currentTrack = null
+        speakJob?.cancel()
+        speakJob = null
+        stopCurrentTrack()
     }
 
     override fun release() {
         stop()
+    }
+
+    private fun stopCurrentTrack() {
+        val track = currentTrack ?: return
+        try {
+            track.stop()
+        } catch (_: Exception) {
+        }
+        try {
+            track.release()
+        } catch (_: Exception) {
+        }
+        if (currentTrack === track) {
+            currentTrack = null
+        }
     }
 
     companion object {

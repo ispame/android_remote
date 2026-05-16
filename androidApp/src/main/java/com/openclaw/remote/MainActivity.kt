@@ -17,6 +17,7 @@ import com.openclaw.remote.audio.AudioRecorderAndroid
 import com.openclaw.remote.data.GatewayConfig
 import com.openclaw.remote.data.SettingsManagerAndroid
 import com.openclaw.remote.headset.A9UltraSppManager
+import com.openclaw.remote.headset.AssistantSpeechTrigger
 import com.openclaw.remote.headset.TtsEngine
 import com.openclaw.remote.headset.TtsEngineFactory
 import com.openclaw.remote.ui.screen.MainScreen
@@ -75,6 +76,7 @@ class MainActivity : ComponentActivity() {
             var isDark by rememberSaveable(systemDark) { mutableStateOf(systemDark) }
             var showSettings by remember { mutableStateOf(false) }
             var showQRScanner by remember { mutableStateOf(false) }
+            val assistantSpeechTrigger = remember { AssistantSpeechTrigger() }
 
             MochiTheme(darkTheme = isDark) {
                 val connectionState by viewModel.connectionState.collectAsState()
@@ -93,14 +95,12 @@ class MainActivity : ComponentActivity() {
                     ttsEngine = TtsEngineFactory.create(config.ttsEngine, this@MainActivity)
                 }
 
-                // 监听新消息，播放 TTS
-                LaunchedEffect(messages, config) {
-                    val lastMsg = messages.lastOrNull()
-                    if (lastMsg != null && lastMsg.senderId == "assistant" && lastMsg.content.isNotBlank()) {
-                        val apiKey = if (config.ttsEngine == "minimax") config.minimaxApiKey else null
-                        val voiceId = if (config.ttsEngine == "minimax") config.minimaxVoiceId else null
-                        ttsEngine?.speak(lastMsg.content, apiKey, voiceId)
-                    }
+                // 监听当前会话的新 assistant 回复，播放 TTS。历史消息和设置变更不重播。
+                LaunchedEffect(messages) {
+                    val msg = assistantSpeechTrigger.onMessagesChanged(messages) ?: return@LaunchedEffect
+                    val apiKey = if (config.ttsEngine == "minimax") config.minimaxApiKey else null
+                    val voiceId = if (config.ttsEngine == "minimax") config.minimaxVoiceId else null
+                    ttsEngine?.speak(msg.content, apiKey, voiceId)
                 }
 
                 if (showQRScanner) {

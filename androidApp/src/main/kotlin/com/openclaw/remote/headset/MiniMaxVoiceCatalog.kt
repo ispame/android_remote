@@ -47,6 +47,20 @@ object MiniMaxVoiceCatalog {
         MiniMaxVoiceOption("Japanese_ColdQueen", "Cold Queen", "日文"),
     ).distinctBy { it.id }
 
+    fun buildSelectableVoices(
+        currentVoiceId: String,
+        fetchedVoices: List<MiniMaxVoiceOption>,
+    ): List<MiniMaxVoiceOption> {
+        val baseVoices = fetchedVoices.ifEmpty { builtinVoices }
+        val current = currentVoiceId.takeIf { it.isNotBlank() && baseVoices.none { voice -> voice.id == it } }?.let {
+            MiniMaxVoiceOption(it, it, "当前配置")
+        }
+
+        return (listOfNotNull(current) + baseVoices)
+            .distinctBy { it.id }
+            .distinctBy { it.displayKey() }
+    }
+
     suspend fun fetchAvailableVoices(apiKey: String): List<MiniMaxVoiceOption> = withContext(Dispatchers.IO) {
         if (apiKey.isBlank()) return@withContext emptyList()
 
@@ -103,4 +117,7 @@ object MiniMaxVoiceCatalog {
             }
         }.distinctBy { it.id }
     }
+
+    private fun MiniMaxVoiceOption.displayKey(): String =
+        "${category.trim()}|${name.trim()}".lowercase()
 }

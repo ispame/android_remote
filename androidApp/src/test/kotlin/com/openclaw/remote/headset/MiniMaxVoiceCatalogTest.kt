@@ -51,4 +51,24 @@ class MiniMaxVoiceCatalogTest {
     fun builtinVoicesIncludeCurrentDefault() {
         assertTrue(MiniMaxVoiceCatalog.builtinVoices.any { it.id == MiniMaxVoiceCatalog.DEFAULT_VOICE_ID })
     }
+
+    @Test
+    fun selectableVoicesPreferFetchedListAndRemoveDuplicates() {
+        val voices = MiniMaxVoiceCatalog.buildSelectableVoices(
+            currentVoiceId = "male-qn-qingse",
+            fetchedVoices = listOf(
+                MiniMaxVoiceOption("male-qn-qingse", "青涩青年音色", "系统音色"),
+                MiniMaxVoiceOption("duplicate-a", "温暖少女", "系统音色"),
+                MiniMaxVoiceOption("duplicate-b", "温暖少女", "系统音色"),
+            ),
+        )
+
+        assertEquals(
+            listOf(
+                MiniMaxVoiceOption("male-qn-qingse", "青涩青年音色", "系统音色"),
+                MiniMaxVoiceOption("duplicate-a", "温暖少女", "系统音色"),
+            ),
+            voices,
+        )
+    }
 }

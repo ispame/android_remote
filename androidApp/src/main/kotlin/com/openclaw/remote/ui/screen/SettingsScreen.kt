@@ -77,7 +77,7 @@ fun SettingsScreen(
         "minimax" to "MiniMax"
     )
     val minimaxVoices = remember(fetchedMiniMaxVoices, minimaxVoiceId) {
-        mergeMiniMaxVoices(minimaxVoiceId, fetchedMiniMaxVoices)
+        MiniMaxVoiceCatalog.buildSelectableVoices(minimaxVoiceId, fetchedMiniMaxVoices)
     }
 
     var showSavedSnackbar by remember { mutableStateOf(false) }
@@ -597,14 +597,6 @@ private data class AsrProviderProfile(
     val providerLabel: String,
     val modelLabel: String,
 )
-
-private fun mergeMiniMaxVoices(currentVoiceId: String, fetchedVoices: List<MiniMaxVoiceOption>): List<MiniMaxVoiceOption> {
-    val current = currentVoiceId.takeIf { it.isNotBlank() }?.let {
-        MiniMaxVoiceOption(it, it, "当前配置")
-    }
-    return (listOfNotNull(current) + fetchedVoices + MiniMaxVoiceCatalog.builtinVoices)
-        .distinctBy { it.id }
-}
 
 private fun voiceLabel(voice: MiniMaxVoiceOption): String =
     "${voice.category} · ${voice.name}"
