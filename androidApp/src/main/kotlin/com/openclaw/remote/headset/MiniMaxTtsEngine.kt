@@ -53,17 +53,28 @@ class MiniMaxTtsEngine(context: Context) : BaseTtsEngine(context) {
     }
 
     private suspend fun fetchTtsAudio(text: String, apiKey: String): ByteArray = withContext(Dispatchers.IO) {
+        // MiniMax TTS API - 参考: https://api.minimaxi.com/document/APIDetail/3
         val json = JSONObject().apply {
-            put("model", "speech-02-hd")
+            put("model", "speech-2.8-hd")
             put("text", text)
             put("stream", false)
             put("voice_setting", JSONObject().apply {
-                put("voice_id", "female_sunny_zh")
+                put("voice_id", "male-qn-qingse")
+                put("speed", 1.0)
+                put("vol", 1.0)
+                put("pitch", 0.0)
+                put("emotion", "happy")
+            })
+            put("audio_setting", JSONObject().apply {
+                put("sample_rate", 32000)
+                put("bitrate", 128000)
+                put("format", "mp3")
+                put("channel", 1)
             })
         }
 
         val request = Request.Builder()
-            .url("https://api.minimax.chat/v1/t2a_v2")
+            .url("https://api.minimaxi.com/v1/t2a_v2")
             .addHeader("Authorization", "Bearer $apiKey")
             .addHeader("Content-Type", "application/json")
             .post(json.toString().toRequestBody("application/json".toMediaType()))
@@ -71,7 +82,8 @@ class MiniMaxTtsEngine(context: Context) : BaseTtsEngine(context) {
 
         val response = httpClient.newCall(request).execute()
         if (!response.isSuccessful) {
-            throw Exception("MiniMax API error: ${response.code}")
+            val errorBody = response.body?.string() ?: ""
+            throw Exception("MiniMax API error: ${response.code}, body: $errorBody")
         }
 
         response.body?.bytes() ?: throw Exception("Empty response")

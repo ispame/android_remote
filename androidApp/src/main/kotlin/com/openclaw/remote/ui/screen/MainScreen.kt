@@ -6,6 +6,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -33,6 +34,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.pointer.pointerInput
@@ -75,6 +77,8 @@ fun MainScreen(
     var isSelectingMessages by remember { mutableStateOf(false) }
     var selectedMessageKeys by remember { mutableStateOf<Set<String>>(emptySet()) }
     var quotedMessageSummary by remember { mutableStateOf<String?>(null) }
+    var dragOffsetY by remember { mutableFloatStateOf(0f) }
+    var isDragging by remember { mutableStateOf(false) }
     val lastMessageKey = messages.lastOrNull()?.let { message ->
         message.clientMessageId ?: "${message.senderId}|${message.timestamp}|${message.content}"
     }
@@ -236,12 +240,39 @@ fun MainScreen(
             pairingState = pairingState,
             quotedMessageSummary = quotedMessageSummary,
             onCancelQuote = { quotedMessageSummary = null },
+            dragOffsetY = dragOffsetY,
+            isDragging = isDragging,
+            onDragUpdate = { didDrag, delta ->
+                dragOffsetY += delta
+                isDragging = didDrag || dragOffsetY < -30f
+            },
             onSendText = { text ->
                 val outgoingText = quotedMessageSummary?.let { "> $it\n\n$text" } ?: text
                 viewModel.sendText(outgoingText)
                 quotedMessageSummary = null
             },
         )
+
+        // 录音遮罩层
+        AnimatedVisibility(
+            visible = isRecording,
+            enter = fadeIn() + slideInVertically { it },
+            exit = fadeOut() + slideOutVertically { it },
+        ) {
+            LaunchedEffect(isRecording) {
+                if (!isRecording) {
+                    dragOffsetY = 0f
+                    isDragging = false
+                }
+            }
+            RecordingOverlay(
+                isRecording = isRecording,
+                isCancelled = dragOffsetY < -80f && isDragging,
+                isDragging = isDragging,
+                dragOffsetY = dragOffsetY,
+                colors = colors,
+            )
+        }
     }
 }
 
@@ -388,6 +419,9 @@ private fun InputArea(
     quotedMessageSummary: String? = null,
     onCancelQuote: () -> Unit = {},
     onSendText: (String) -> Unit = { viewModel.sendText(it) },
+    dragOffsetY: Float = 0f,
+    isDragging: Boolean = false,
+    onDragUpdate: ((Boolean, Float) -> Unit)? = null,
 ) {
     var inputMode by rememberSaveable { mutableStateOf(InputMode.VOICE) }
 
@@ -422,6 +456,8 @@ private fun InputArea(
         } else {
             VoiceInputRow(
                 isRecording = isRecording,
+                dragOffsetY = dragOffsetY,
+                isDragging = isDragging,
                 onMicPress = {
                     if (!isRecording) {
                         audioRecorder.startRecording()
@@ -437,6 +473,7 @@ private fun InputArea(
                     }
                 },
                 onSwitchToText = { inputMode = InputMode.TEXT },
+                onDrag = onDragUpdate,
                 colors = colors,
             )
         }
@@ -600,14 +637,14 @@ private fun SendButton(
 @Composable
 private fun VoiceInputRow(
     isRecording: Boolean,
+    dragOffsetY: Float,
+    isDragging: Boolean,
     onMicPress: () -> Unit,
     onMicRelease: (cancelled: Boolean) -> Unit,
     onSwitchToText: () -> Unit,
+    onDrag: ((Boolean, Float) -> Unit)?,
     colors: MochiColors,
 ) {
-    var dragOffsetY by remember { mutableFloatStateOf(0f) }
-    var isDragging by remember { mutableStateOf(false) }
-
     val isCancelled = dragOffsetY < -80f && isDragging
 
     Column(
@@ -640,16 +677,11 @@ private fun VoiceInputRow(
                 isDragging = isDragging,
                 dragOffsetY = dragOffsetY,
                 onPress = onMicPress,
-                onRelease = { realOffsetY, didDrag ->
-                    val cancelled = didDrag && realOffsetY < -80f
-                    dragOffsetY = 0f
-                    isDragging = false
+                onRelease = { _, didDrag ->
+                    val cancelled = isDragging && dragOffsetY < -80f
                     onMicRelease(cancelled)
                 },
-                onDrag = { delta ->
-                    dragOffsetY += delta
-                    isDragging = dragOffsetY < -30f
-                },
+                onDrag = { didDrag, delta -> onDrag?.invoke(didDrag, delta) },
                 colors = colors,
             )
 
@@ -657,65 +689,186 @@ private fun VoiceInputRow(
 
             Spacer(modifier = Modifier.size(44.dp))
         }
+    }
+}
 
-        AnimatedVisibility(
-            visible = isRecording,
-            enter = fadeIn() + slideInVertically { it },
-            exit = fadeOut() + slideOutVertically { it },
+@Composable
+private fun RecordingOverlay(
+    isRecording: Boolean,
+    isCancelled: Boolean,
+    isDragging: Boolean,
+    dragOffsetY: Float,
+    colors: MochiColors,
+) {
+    if (!isRecording) return
+
+    val infiniteTransition = rememberInfiniteTransition(label = "glowPulse")
+    val glowAlpha by infiniteTransition.animateFloat(
+        initialValue = 0.3f,
+        targetValue = 0.7f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1150, easing = EaseInOut),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "glowAlpha",
+    )
+
+    val cancelProgress = (-dragOffsetY / 80f).coerceIn(0f, 1f)
+    val isCancellingState = isCancelled || cancelProgress > 0.3f
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(180.dp)
+            .background(
+                brush = Brush.verticalGradient(
+                    colors = if (isCancellingState) {
+                        listOf(
+                            Color(0xFF2B0606).copy(alpha = 0.95f),
+                            Color(0xFF1A0303).copy(alpha = 0.98f),
+                        )
+                    } else {
+                        listOf(
+                            Color(0xFF238CFF).copy(alpha = 0.95f),
+                            Color(0xFF1A5FCC).copy(alpha = 0.98f),
+                        )
+                    },
+                ),
+            ),
+        contentAlignment = Alignment.TopCenter,
+    ) {
+        // 动态光晕效果
+        Box(
+            modifier = Modifier
+                .offset(y = 42.dp)
+                .width(320.dp)
+                .height(120.dp)
+                .background(
+                    brush = Brush.radialGradient(
+                        colors = listOf(
+                            if (isCancellingState) Color(0xFFE53935).copy(alpha = glowAlpha * 0.5f)
+                            else Color(0xFF4DA6FF).copy(alpha = glowAlpha * 0.5f),
+                            Color.Transparent,
+                        ),
+                    ),
+                ),
+        )
+
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            VoiceRecordingHint(
-                isCancelled = isCancelled,
-                isDragging = isDragging,
-                dragOffsetY = dragOffsetY,
-                colors = colors,
+            // 波形动画
+            VoiceWaveform(
+                isActive = isRecording && !isCancelled,
+                isCancelled = isCancellingState,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(60.dp),
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // 取消进度条
+            if (isDragging) {
+                Box(
+                    modifier = Modifier
+                        .width(120.dp)
+                        .height(3.dp)
+                        .clip(RoundedCornerShape(2.dp))
+                        .background(Color.White.copy(alpha = 0.3f)),
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxHeight()
+                            .fillMaxWidth(cancelProgress)
+                            .clip(RoundedCornerShape(2.dp))
+                            .background(
+                                if (isCancellingState) Color.White else Color.White.copy(alpha = 0.8f),
+                            ),
+                    )
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+            }
+
+            // 提示文字
+            Text(
+                text = when {
+                    isCancelled -> "松开取消"
+                    isDragging -> "上划取消 ↓"
+                    else -> "松手发送，上滑取消 ↑"
+                },
+                fontSize = 14.sp,
+                color = if (isCancellingState) Color.White else Color.White.copy(alpha = 0.9f),
             )
         }
     }
 }
 
 @Composable
-private fun VoiceRecordingHint(
+private fun VoiceWaveform(
+    isActive: Boolean,
     isCancelled: Boolean,
-    isDragging: Boolean,
-    dragOffsetY: Float,
-    colors: MochiColors,
+    modifier: Modifier = Modifier,
 ) {
-    val cancelProgress = (-dragOffsetY / 80f).coerceIn(0f, 1f)
+    val infiniteTransition = rememberInfiniteTransition(label = "waveform")
 
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(top = 8.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
+    val phase by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 2f * Math.PI.toFloat(),
+        animationSpec = infiniteRepeatable(
+            animation = tween(850, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart,
+        ),
+        label = "phase",
+    )
+
+    val barCount = 54
+    val barSpacing = 3.dp
+
+    Row(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        if (isDragging) {
+        repeat(barCount) { index ->
+            val distanceFromCenter = kotlin.math.abs(index - barCount / 2f) / (barCount / 2f)
+            val centerBias = (1f - distanceFromCenter).coerceIn(0.12f, 1f)
+
+            val barHeight = if (isActive) {
+                val primaryWave = (kotlin.math.sin(phase + index * 0.3f) + 1f) / 2f
+                val secondaryWave = (kotlin.math.sin(phase * 1.5f + index * 0.5f) + 1f) / 2f
+                val liveMotion = (primaryWave * 0.6f + secondaryWave * 0.4f) * centerBias
+                val baseHeight = if (isCancelled) 8f else 5f
+                (baseHeight + liveMotion * 40f).coerceIn(5f, 50f)
+            } else {
+                // 静止状态
+                val idleWave = (kotlin.math.sin(phase * 0.5f + index * 0.2f) + 1f) / 2f
+                (2f + idleWave * 5f).coerceIn(2f, 7f)
+            }
+
             Box(
                 modifier = Modifier
-                    .width(120.dp)
-                    .height(3.dp)
-                    .clip(RoundedCornerShape(2.dp))
-                    .background(colors.inputBorder),
+                    .width(2.dp)
+                    .height(barHeight.dp),
             ) {
                 Box(
                     modifier = Modifier
+                        .fillMaxWidth()
                         .fillMaxHeight()
-                        .fillMaxWidth(cancelProgress)
-                        .clip(RoundedCornerShape(2.dp))
-                        .background(colors.recordingRed),
+                        .background(
+                            color = if (isCancelled) Color(0xFFE53935) else Color.White.copy(alpha = 0.7f),
+                            shape = RoundedCornerShape(1.dp),
+                        ),
                 )
             }
-            Spacer(modifier = Modifier.height(4.dp))
-        }
 
-        Text(
-            text = when {
-                isCancelled -> "松开取消"
-                isDragging -> "上划取消 ↓"
-                else -> "松手发送，上滑取消 ↑"
-            },
-            fontSize = 12.sp,
-            color = if (isCancelled) colors.recordingRed else colors.textSecondary,
-        )
+            if (index < barCount - 1) {
+                Spacer(modifier = Modifier.width(barSpacing))
+            }
+        }
     }
 }
 
@@ -727,7 +880,7 @@ private fun VoiceMicButton(
     dragOffsetY: Float,
     onPress: () -> Unit,
     onRelease: (realOffsetY: Float, didDrag: Boolean) -> Unit,
-    onDrag: (Float) -> Unit,
+    onDrag: (isDragging: Boolean, delta: Float) -> Unit,
     colors: MochiColors,
 ) {
     val animatedScale by animateFloatAsState(
@@ -782,7 +935,7 @@ private fun VoiceMicButton(
                         if (dragAmount.y < -5f || dragAmount.y > 5f) {
                             didDrag = true
                         }
-                        onDrag(dragAmount.y)
+                        onDrag(didDrag, dragAmount.y)
                     },
                 )
             },

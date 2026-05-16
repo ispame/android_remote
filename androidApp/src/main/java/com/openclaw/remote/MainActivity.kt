@@ -156,6 +156,13 @@ class MainActivity : ComponentActivity() {
         handleIntent(intent)
     }
 
+    override fun onResume() {
+        super.onResume()
+        if (::viewModel.isInitialized) {
+            viewModel.connect()
+        }
+    }
+
     override fun onDestroy() {
         headsetManager.stop()
         ttsEngine?.release()

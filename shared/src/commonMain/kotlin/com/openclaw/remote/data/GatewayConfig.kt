@@ -14,5 +14,5 @@ data class GatewayConfig(
     val asrProfileId: String = "",
     val ttsEngine: String = "system",
     val minimaxApiKey: String = "",
-    val minimaxVoiceId: String = "female_sunny_zh",
+    val minimaxVoiceId: String = "male-qn-qingse",
 )

@@ -55,6 +55,10 @@ class WebSocketManager(
 
     private var registeredBackendId: String? = null
 
+    private var reconnectAttempts = 0
+    private var reconnectJob: Job? = null
+    @Volatile private var intentionalDisconnect = false
+
     /** True when reconnecting with a previously paired backend (suppresses pairing message). */
     private var isRestoringPairing = false
 
@@ -65,6 +69,7 @@ class WebSocketManager(
     fun connect() {
         if (_connectionState.value != ConnectionState.DISCONNECTED) return
         _connectionState.value = ConnectionState.CONNECTING
+        intentionalDisconnect = false
 
         scope.launch {
             try {
@@ -81,6 +86,9 @@ class WebSocketManager(
                         ChatMessage("连接失败: ${e.message}", timestamp(), "assistant")
                     )
                 )
+                if (!intentionalDisconnect) {
+                    scheduleReconnect()
+                }
             }
         }
     }
@@ -98,10 +106,15 @@ class WebSocketManager(
             log("ws listen failed error=${e.message}")
             _connectionState.value = ConnectionState.DISCONNECTED
             _pairingState.value = PairingState.UNPAIRED
+            if (!intentionalDisconnect) {
+                scheduleReconnect()
+            }
         }
     }
 
     fun disconnect() {
+        intentionalDisconnect = true
+        cancelReconnect()
         scope.launch {
             webSocketSession?.close()
             webSocketSession = null
@@ -274,6 +287,8 @@ class WebSocketManager(
                     val success = obj["success"]?.jsonPrimitive?.content?.toBoolean() ?: false
                     if (success) {
                         _connectionState.value = ConnectionState.REGISTERED
+                        reconnectAttempts = 0
+                        cancelReconnect()
                         offerEvent(WsMessageEvent.Registered(deviceId))
                         // Restore pairing silently on reconnect if we had a paired backend
                         val preferredBackendId = registeredBackendId
@@ -436,9 +451,30 @@ class WebSocketManager(
         println("$LOG_TAG $message")
     }
 
+    private fun scheduleReconnect() {
+        if (intentionalDisconnect) return
+        cancelReconnect()
+        val delay = minOf(RECONNECT_BASE_DELAY_MS * (1 shl reconnectAttempts), RECONNECT_MAX_DELAY_MS)
+        reconnectAttempts++
+        log("scheduleReconnect delay=${delay}ms attempts=$reconnectAttempts")
+        reconnectJob = scope.launch {
+            delay(delay)
+            if (!intentionalDisconnect) {
+                connect()
+            }
+        }
+    }
+
+    private fun cancelReconnect() {
+        reconnectJob?.cancel()
+        reconnectJob = null
+    }
+
     private companion object {
         private const val LOG_TAG = "OpenClawWS"
         private const val ASR_RESULT_TIMEOUT_MS = 30_000L
+        private const val RECONNECT_BASE_DELAY_MS = 2_000L
+        private const val RECONNECT_MAX_DELAY_MS = 30_000L
     }
 }
 

@@ -19,6 +19,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.openclaw.remote.data.GatewayConfig
@@ -56,6 +58,16 @@ fun SettingsScreen(
     var asrProfileId by remember(config) { mutableStateOf(config.asrProfileId) }
     var asrProfiles by remember { mutableStateOf<List<AsrProviderProfile>>(emptyList()) }
     var asrProfileMenuExpanded by remember { mutableStateOf(false) }
+
+    // TTS 配置
+    var ttsEngine by remember(config) { mutableStateOf(config.ttsEngine.ifEmpty { "system" }) }
+    var minimaxApiKey by remember(config) { mutableStateOf(config.minimaxApiKey) }
+    var ttsEngineMenuExpanded by remember { mutableStateOf(false) }
+    val ttsEngines = listOf(
+        "system" to "系统 TTS",
+        "minimax" to "MiniMax"
+    )
+
     var showSavedSnackbar by remember { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -103,6 +115,9 @@ fun SettingsScreen(
                                         pairedBackendLabel = config.pairedBackendLabel,
                                         asrMode = asrMode,
                                         asrProfileId = asrProfileId,
+                                        ttsEngine = ttsEngine,
+                                        minimaxApiKey = minimaxApiKey,
+                                        minimaxVoiceId = config.minimaxVoiceId,
                                     )
                                 )
                                 showSavedSnackbar = true
@@ -206,6 +221,9 @@ fun SettingsScreen(
                                 pairedBackendLabel = null,
                                 asrMode = asrMode,
                                 asrProfileId = asrProfileId,
+                                ttsEngine = ttsEngine,
+                                minimaxApiKey = minimaxApiKey,
+                                minimaxVoiceId = config.minimaxVoiceId,
                             )
                         )
                         snackbarHostState.showSnackbar("正在连接并配对...")
@@ -296,6 +314,54 @@ fun SettingsScreen(
 
             HorizontalDivider()
 
+            SectionTitle("语音合成 (TTS)")
+            Text(
+                text = "Agent 回复的语音合成引擎",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            // TTS 引擎选择
+            Box(modifier = Modifier.fillMaxWidth()) {
+                OutlinedButton(
+                    onClick = { ttsEngineMenuExpanded = true },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    val selected = ttsEngines.firstOrNull { it.first == ttsEngine }
+                    Text(selected?.second ?: "选择 TTS 引擎")
+                }
+                DropdownMenu(
+                    expanded = ttsEngineMenuExpanded,
+                    onDismissRequest = { ttsEngineMenuExpanded = false }
+                ) {
+                    ttsEngines.forEach { (id, label) ->
+                        DropdownMenuItem(
+                            text = { Text(label) },
+                            onClick = {
+                                ttsEngine = id
+                                ttsEngineMenuExpanded = false
+                            }
+                        )
+                    }
+                }
+            }
+
+            // MiniMax API Key 输入
+            if (ttsEngine == "minimax") {
+                OutlinedTextField(
+                    value = minimaxApiKey,
+                    onValueChange = { minimaxApiKey = it },
+                    label = { Text("MiniMax API Key") },
+                    placeholder = { Text("输入你的 MiniMax API Key") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password)
+                )
+            }
+
+            HorizontalDivider()
+
             SectionTitle("设备信息")
             OutlinedTextField(
                 value = deviceLabel,
@@ -319,6 +385,9 @@ fun SettingsScreen(
                                 pairedBackendLabel = config.pairedBackendLabel,
                                 asrMode = asrMode,
                                 asrProfileId = asrProfileId,
+                                ttsEngine = ttsEngine,
+                                minimaxApiKey = minimaxApiKey,
+                                minimaxVoiceId = config.minimaxVoiceId,
                             )
                         )
                         showSavedSnackbar = true
