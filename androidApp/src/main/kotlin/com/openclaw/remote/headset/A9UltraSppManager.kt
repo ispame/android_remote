@@ -50,6 +50,7 @@ class A9UltraSppManager(
     private val context: Context,
     private val onAudioReady: (ByteArray) -> Unit,
     private val maxRecordingMs: Long = DEFAULT_MAX_RECORDING_MS,
+    private val promptTonePlayer: HeadsetPromptTonePlayer = HeadsetPromptTonePlayer(),
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val mainScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -249,6 +250,7 @@ class A9UltraSppManager(
         when (event) {
             is A9UltraWakeEvent.Wake -> {
                 suppressOpusUntilWake = false
+                promptTonePlayer.play()
                 startSession(reason = "wake")
             }
             A9UltraWakeEvent.Sleep -> {
@@ -386,7 +388,7 @@ class A9UltraSppManager(
         private const val TAG = "A9UltraSPP"
         private const val RECONNECT_DELAY_MS = 3_000L
         private const val MIN_RECORDING_MS = 900L
-        private const val END_SILENCE_MS = 1_400L
+        private const val END_SILENCE_MS = 3_000L
         private const val NO_SPEECH_TIMEOUT_MS = 4_000L
         private const val DEFAULT_MAX_RECORDING_MS = 12_000L
     }

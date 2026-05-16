@@ -381,22 +381,6 @@ final class HeadsetConversationController: NSObject, ObservableObject {
         let center = NotificationCenter.default
 
         audioSessionObservers.append(center.addObserver(
-            forName: UIApplication.didBecomeActiveNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            self?.prepareHeadsetAudioSession()
-        })
-
-        audioSessionObservers.append(center.addObserver(
-            forName: UIApplication.willEnterForegroundNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            self?.prepareHeadsetAudioSession()
-        })
-
-        audioSessionObservers.append(center.addObserver(
             forName: AVAudioSession.interruptionNotification,
             object: nil,
             queue: .main
@@ -409,7 +393,7 @@ final class HeadsetConversationController: NSObject, ObservableObject {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.prepareHeadsetAudioSession()
+            // 只记录路由变化，不自动激活音频会话，避免影响语音输入法
         })
     }
 

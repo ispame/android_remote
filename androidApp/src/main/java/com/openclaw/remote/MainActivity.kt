@@ -17,6 +17,7 @@ import com.openclaw.remote.audio.AudioRecorderAndroid
 import com.openclaw.remote.data.GatewayConfig
 import com.openclaw.remote.data.SettingsManagerAndroid
 import com.openclaw.remote.headset.A9UltraSppManager
+import com.openclaw.remote.headset.HeadsetTtsSpeaker
 import com.openclaw.remote.ui.screen.MainScreen
 import com.openclaw.remote.ui.screen.QRParseResult
 import com.openclaw.remote.ui.screen.SettingsScreen
@@ -34,6 +35,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var settingsManager: SettingsManagerAndroid
     private lateinit var audioRecorder: AudioRecorderAndroid
     private lateinit var headsetManager: A9UltraSppManager
+    private lateinit var ttsSpeaker: HeadsetTtsSpeaker
     private val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main)
 
     private val requestPermissions = registerForActivityResult(
@@ -49,6 +51,7 @@ class MainActivity : ComponentActivity() {
 
         settingsManager = SettingsManagerAndroid(this)
         audioRecorder = AudioRecorderAndroid(this)
+        ttsSpeaker = HeadsetTtsSpeaker(this)
 
         viewModel = ChatViewModel(settingsManager)
         headsetManager = A9UltraSppManager(this, onAudioReady = { audioData ->
@@ -74,6 +77,14 @@ class MainActivity : ComponentActivity() {
                 val isLoadingHistory by viewModel.isLoadingHistory.collectAsState()
                 val hasMoreHistory by viewModel.hasMoreHistory.collectAsState()
                 val headsetState by headsetManager.state.collectAsState()
+
+                // 监听新消息，播放 TTS
+                LaunchedEffect(messages) {
+                    val lastMsg = messages.lastOrNull()
+                    if (lastMsg != null && lastMsg.senderId == "assistant" && lastMsg.content.isNotBlank()) {
+                        ttsSpeaker.speak(lastMsg.content)
+                    }
+                }
 
                 if (showQRScanner) {
                     QRScannerScreen(
@@ -131,6 +142,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         headsetManager.stop()
+        ttsSpeaker.release()
         super.onDestroy()
     }
 
