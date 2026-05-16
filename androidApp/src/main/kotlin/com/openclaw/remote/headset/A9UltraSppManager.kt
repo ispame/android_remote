@@ -49,7 +49,7 @@ sealed class A9UltraSppState {
 class A9UltraSppManager(
     private val context: Context,
     private val onAudioReady: (ByteArray) -> Unit,
-    private val maxRecordingMs: Long = DEFAULT_MAX_RECORDING_MS,
+    private val maxRecordingMs: Long = 300_000L,
     private val promptTonePlayer: HeadsetPromptTonePlayer = HeadsetPromptTonePlayer(),
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -325,9 +325,6 @@ class A9UltraSppManager(
             !voiceDetected && capturedPcmMs >= NO_SPEECH_TIMEOUT_MS -> {
                 stopHeadsetRecording(reason = "no-speech")
             }
-            capturedPcmMs >= maxRecordingMs -> {
-                stopHeadsetRecording(reason = "max-duration")
-            }
         }
     }
 
@@ -388,9 +385,8 @@ class A9UltraSppManager(
         private const val TAG = "A9UltraSPP"
         private const val RECONNECT_DELAY_MS = 3_000L
         private const val MIN_RECORDING_MS = 900L
-        private const val END_SILENCE_MS = 3_000L
+        private const val END_SILENCE_MS = 4_000L
         private const val NO_SPEECH_TIMEOUT_MS = 4_000L
-        private const val DEFAULT_MAX_RECORDING_MS = 12_000L
     }
 }
 

@@ -17,7 +17,8 @@ import com.openclaw.remote.audio.AudioRecorderAndroid
 import com.openclaw.remote.data.GatewayConfig
 import com.openclaw.remote.data.SettingsManagerAndroid
 import com.openclaw.remote.headset.A9UltraSppManager
-import com.openclaw.remote.headset.HeadsetTtsSpeaker
+import com.openclaw.remote.headset.TtsEngine
+import com.openclaw.remote.headset.TtsEngineFactory
 import com.openclaw.remote.ui.screen.MainScreen
 import com.openclaw.remote.ui.screen.QRParseResult
 import com.openclaw.remote.ui.screen.SettingsScreen
@@ -35,7 +36,8 @@ class MainActivity : ComponentActivity() {
     private lateinit var settingsManager: SettingsManagerAndroid
     private lateinit var audioRecorder: AudioRecorderAndroid
     private lateinit var headsetManager: A9UltraSppManager
-    private lateinit var ttsSpeaker: HeadsetTtsSpeaker
+    private var ttsEngine: TtsEngine? = null
+    private var currentConfig: GatewayConfig = GatewayConfig()
     private val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main)
 
     private val requestPermissions = registerForActivityResult(
@@ -51,9 +53,15 @@ class MainActivity : ComponentActivity() {
 
         settingsManager = SettingsManagerAndroid(this)
         audioRecorder = AudioRecorderAndroid(this)
-        ttsSpeaker = HeadsetTtsSpeaker(this)
 
         viewModel = ChatViewModel(settingsManager)
+
+        // 初始化 TTS 引擎和配置
+        scope.launch {
+            settingsManager.configFlow.collect { config ->
+                currentConfig = config
+            }
+        }
         headsetManager = A9UltraSppManager(this, onAudioReady = { audioData ->
             Log.i("A9UltraSPP", "headset audio ready wav=${audioData.size}")
             viewModel.sendAudio(audioData)
@@ -77,12 +85,20 @@ class MainActivity : ComponentActivity() {
                 val isLoadingHistory by viewModel.isLoadingHistory.collectAsState()
                 val hasMoreHistory by viewModel.hasMoreHistory.collectAsState()
                 val headsetState by headsetManager.state.collectAsState()
+                var config by remember { mutableStateOf(currentConfig) }
+
+                // 监听配置变化，重新初始化 TTS 引擎
+                LaunchedEffect(config.ttsEngine) {
+                    ttsEngine?.release()
+                    ttsEngine = TtsEngineFactory.create(config.ttsEngine, this@MainActivity)
+                }
 
                 // 监听新消息，播放 TTS
-                LaunchedEffect(messages) {
+                LaunchedEffect(messages, config) {
                     val lastMsg = messages.lastOrNull()
                     if (lastMsg != null && lastMsg.senderId == "assistant" && lastMsg.content.isNotBlank()) {
-                        ttsSpeaker.speak(lastMsg.content)
+                        val apiKey = if (config.ttsEngine == "minimax") config.minimaxApiKey else null
+                        ttsEngine?.speak(lastMsg.content, apiKey)
                     }
                 }
 
@@ -142,7 +158,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         headsetManager.stop()
-        ttsSpeaker.release()
+        ttsEngine?.release()
         super.onDestroy()
     }
 

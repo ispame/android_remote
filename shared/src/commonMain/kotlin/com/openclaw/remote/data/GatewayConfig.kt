@@ -12,4 +12,7 @@ data class GatewayConfig(
     val pairedBackendLabel: String? = null,
     val asrMode: String = "router",
     val asrProfileId: String = "",
+    val ttsEngine: String = "system",
+    val minimaxApiKey: String = "",
+    val minimaxVoiceId: String = "female_sunny_zh",
 )
