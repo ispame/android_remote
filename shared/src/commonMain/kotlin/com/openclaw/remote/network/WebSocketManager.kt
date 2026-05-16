@@ -60,6 +60,7 @@ class WebSocketManager(
 
     /** seq → callback to invoke when delivery is confirmed or failed. */
     private val pendingAcks = mutableMapOf<Int, (MessageStatus) -> Unit>()
+    private val pendingAudioTimeouts = mutableMapOf<String, Job>()
 
     fun connect() {
         if (_connectionState.value != ConnectionState.DISCONNECTED) return
@@ -94,6 +95,7 @@ class WebSocketManager(
                 }
             }
         } catch (e: Exception) {
+            log("ws listen failed error=${e.message}")
             _connectionState.value = ConnectionState.DISCONNECTED
             _pairingState.value = PairingState.UNPAIRED
         }
@@ -103,6 +105,8 @@ class WebSocketManager(
         scope.launch {
             webSocketSession?.close()
             webSocketSession = null
+            pendingAudioTimeouts.values.forEach { it.cancel() }
+            pendingAudioTimeouts.clear()
             _connectionState.value = ConnectionState.DISCONNECTED
             _pairingState.value = PairingState.UNPAIRED
         }
@@ -149,6 +153,12 @@ class WebSocketManager(
         if (_pairingState.value != PairingState.PAIRED || registeredBackendId == null) return
         val base64Audio = Base64.encode(audioData)
         val clientMessageId = UUID.randomUUID().toString()
+        val audioSummary = AudioPayloadInspector.describe(audioData)
+        log(
+            "sendAudio id=$clientMessageId bytes=${audioData.size} " +
+                "summary=$audioSummary asrMode=${if (asrMode == "backend") "backend" else "router"} " +
+                "asrProfile=${asrProfileId.ifBlank { "-" }}"
+        )
         val frame = buildJsonObject {
             put("type", "message")
             put("to", registeredBackendId)
@@ -179,7 +189,15 @@ class WebSocketManager(
                 )
             )
         )
-        send(frame.toString())
+        scheduleAudioAsrTimeout(clientMessageId)
+        send(
+            text = frame.toString(),
+            label = "audio:$clientMessageId",
+            onFailure = { reason ->
+                pendingAudioTimeouts.remove(clientMessageId)?.cancel()
+                offerEvent(WsMessageEvent.AsrResult(clientMessageId, false, null, reason))
+            },
+        )
     }
 
     fun requestRecentHistory(rounds: Int = 15) {
@@ -214,12 +232,24 @@ class WebSocketManager(
                 put("token", token)
             }
         }
-        send(frame.toString())
+        send(frame.toString(), label = "register")
     }
 
-    private fun send(text: String) {
+    private fun send(text: String, label: String = "frame", onFailure: ((String) -> Unit)? = null) {
         scope.launch {
-            webSocketSession?.send(Frame.Text(text))
+            val session = webSocketSession
+            if (session == null) {
+                log("ws tx dropped label=$label reason=NO_WEBSOCKET_SESSION")
+                onFailure?.invoke("NO_WEBSOCKET_SESSION")
+                return@launch
+            }
+            try {
+                session.send(Frame.Text(text))
+                log("ws tx label=$label ${summarizeJsonFrame(text)}")
+            } catch (e: Exception) {
+                log("ws tx failed label=$label error=${e.message}")
+                onFailure?.invoke("SEND_FAILED:${e.message ?: e::class.simpleName}")
+            }
         }
     }
 
@@ -229,7 +259,7 @@ class WebSocketManager(
             put("type", "ack")
             put("seq", seq)
         }
-        send(frame.toString())
+        send(frame.toString(), label = "ack:$seq")
     }
 
     private fun handleMessage(text: String) {
@@ -237,6 +267,7 @@ class WebSocketManager(
             val json = Json.parseToJsonElement(text)
             val obj = json as? kotlinx.serialization.json.JsonObject ?: return
             val type = obj["type"]?.jsonPrimitive?.content ?: return
+            log("ws rx ${summarizeJsonObject(obj)}")
 
             when (type) {
                 "registered" -> {
@@ -303,6 +334,9 @@ class WebSocketManager(
                     val success = obj["success"]?.jsonPrimitive?.content?.toBoolean() ?: false
                     val transcript = obj["text"]?.jsonPrimitive?.content
                     val error = obj["error"]?.jsonPrimitive?.content
+                    if (clientMessageId != null) {
+                        pendingAudioTimeouts.remove(clientMessageId)?.cancel()
+                    }
                     offerEvent(WsMessageEvent.AsrResult(clientMessageId, success, transcript, error))
                 }
                 "ack" -> {
@@ -319,6 +353,14 @@ class WebSocketManager(
                         WsMessageEvent.NewMessage(
                             ChatMessage("消息发送失败: $reason", timestamp(), "assistant")
                         )
+                    )
+                }
+                "ping" -> {
+                    send(
+                        buildJsonObject {
+                            put("type", "pong")
+                        }.toString(),
+                        label = "pong",
                     )
                 }
                 "pong" -> {}
@@ -341,7 +383,17 @@ class WebSocketManager(
                 }
             }
         } catch (e: Exception) {
-            // Log error
+            log("ws rx parse failed error=${e.message} raw=${text.take(240)}")
+        }
+    }
+
+    private fun scheduleAudioAsrTimeout(clientMessageId: String) {
+        pendingAudioTimeouts.remove(clientMessageId)?.cancel()
+        pendingAudioTimeouts[clientMessageId] = scope.launch {
+            delay(ASR_RESULT_TIMEOUT_MS)
+            pendingAudioTimeouts.remove(clientMessageId)
+            log("asr timeout id=$clientMessageId")
+            offerEvent(WsMessageEvent.AsrResult(clientMessageId, false, null, "ASR_TIMEOUT_NO_RESULT"))
         }
     }
 
@@ -353,6 +405,100 @@ class WebSocketManager(
 
     private fun timestamp(): String {
         return SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date())
+    }
+
+    private fun summarizeJsonFrame(text: String): String {
+        return runCatching {
+            val obj = Json.parseToJsonElement(text) as? JsonObject ?: return@runCatching "bytes=${text.length}"
+            summarizeJsonObject(obj)
+        }.getOrDefault("bytes=${text.length}")
+    }
+
+    private fun summarizeJsonObject(obj: JsonObject): String {
+        val type = obj.stringField("type")
+        val contentType = obj.stringField("content_type")
+        val clientMessageId = obj.stringField("client_message_id")
+        val error = obj.stringField("error") ?: obj.stringField("message")
+        val contentLength = obj["content"]?.jsonPrimitive?.contentOrNull?.length
+        return buildString {
+            append("type=${type ?: "-"}")
+            if (contentType != null) append(" contentType=$contentType")
+            if (clientMessageId != null) append(" id=$clientMessageId")
+            if (contentLength != null) append(" contentChars=$contentLength")
+            if (error != null) append(" error=$error")
+        }
+    }
+
+    private fun JsonObject.stringField(name: String): String? =
+        this[name]?.jsonPrimitive?.contentOrNull
+
+    private fun log(message: String) {
+        println("$LOG_TAG $message")
+    }
+
+    private companion object {
+        private const val LOG_TAG = "OpenClawWS"
+        private const val ASR_RESULT_TIMEOUT_MS = 30_000L
+    }
+}
+
+/**
+ * Lightweight WAV summary for diagnosing app → Router ASR mismatches.
+ */
+private object AudioPayloadInspector {
+    fun describe(data: ByteArray): String {
+        if (data.size < 44) return "invalid=too_short"
+        val riff = data.ascii(0, 4)
+        val wave = data.ascii(8, 4)
+        val fmt = data.ascii(12, 4)
+        val channels = data.uint16LE(22)
+        val sampleRate = data.uint32LE(24)
+        val bitsPerSample = data.uint16LE(34)
+        val dataMarker = data.ascii(36, 4)
+        val declaredDataSize = data.uint32LE(40)
+        val actualDataSize = data.size - 44
+        val durationMs = if (sampleRate > 0 && channels > 0 && bitsPerSample > 0) {
+            actualDataSize * 8L * 1_000L / (sampleRate.toLong() * channels.toLong() * bitsPerSample.toLong())
+        } else {
+            0L
+        }
+        val averageAbs = pcmAverageAbs(data, 44)
+        return "riff=$riff wave=$wave fmt=$fmt data=$dataMarker channels=$channels " +
+            "sampleRate=$sampleRate bits=$bitsPerSample declaredData=$declaredDataSize " +
+            "actualData=$actualDataSize durationMs=$durationMs avgAbs=$averageAbs"
+    }
+
+    private fun pcmAverageAbs(data: ByteArray, offset: Int): Int {
+        if (data.size <= offset + 1) return 0
+        val sampleCount = (data.size - offset) / 2
+        if (sampleCount <= 0) return 0
+        var total = 0L
+        for (index in 0 until sampleCount) {
+            val sampleOffset = offset + index * 2
+            val sample = (data[sampleOffset].toInt() and 0xFF) or (data[sampleOffset + 1].toInt() shl 8)
+            val signed = sample.toShort().toInt()
+            val absValue = if (signed == Short.MIN_VALUE.toInt()) 32768 else kotlin.math.abs(signed)
+            total += absValue
+        }
+        return (total / sampleCount).toInt()
+    }
+
+    private fun ByteArray.ascii(offset: Int, length: Int): String {
+        if (offset + length > size) return "-"
+        return copyOfRange(offset, offset + length).toString(Charsets.US_ASCII)
+    }
+
+    private fun ByteArray.uint16LE(offset: Int): Int {
+        if (offset + 1 >= size) return 0
+        return (this[offset].toInt() and 0xFF) or ((this[offset + 1].toInt() and 0xFF) shl 8)
+    }
+
+    private fun ByteArray.uint32LE(offset: Int): Long {
+        if (offset + 3 >= size) return 0
+        return (this[offset].toLong() and 0xFF) or
+            ((this[offset + 1].toLong() and 0xFF) shl 8) or
+            ((this[offset + 2].toLong() and 0xFF) shl 16) or
+            ((this[offset + 3].toLong() and 0xFF) shl 24)
     }
 }
 

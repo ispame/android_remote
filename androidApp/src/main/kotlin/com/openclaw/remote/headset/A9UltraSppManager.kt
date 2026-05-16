@@ -49,7 +49,7 @@ sealed class A9UltraSppState {
 class A9UltraSppManager(
     private val context: Context,
     private val onAudioReady: (ByteArray) -> Unit,
-    private val idleTimeoutMs: Long = 60_000L,
+    private val maxRecordingMs: Long = DEFAULT_MAX_RECORDING_MS,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val mainScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -60,12 +60,17 @@ class A9UltraSppManager(
     private val writeLock = Any()
 
     private var connectionJob: Job? = null
-    private var idleTimeoutJob: Job? = null
+    private var recordingTimeoutJob: Job? = null
     private var activeSocket: BluetoothSocket? = null
     private var activeOutput: OutputStream? = null
     private var activeDeviceName = "A9Ultra"
     private var productVerified = false
     private var recording = false
+    private var opusFrameLogCount = 0
+    private var suppressOpusUntilWake = false
+    private var capturedPcmMs = 0L
+    private var lastVoicePcmMs = 0L
+    private var voiceDetected = false
 
     private val _state = MutableStateFlow<A9UltraSppState>(A9UltraSppState.Idle)
     val state: StateFlow<A9UltraSppState> = _state
@@ -83,7 +88,8 @@ class A9UltraSppManager(
                 closeActiveSocket()
                 productVerified = false
                 recording = false
-                idleTimeoutJob?.cancel()
+                suppressOpusUntilWake = false
+                recordingTimeoutJob?.cancel()
                 if (isActive) delay(RECONNECT_DELAY_MS)
             }
         }
@@ -92,7 +98,7 @@ class A9UltraSppManager(
     fun stop() {
         connectionJob?.cancel()
         connectionJob = null
-        idleTimeoutJob?.cancel()
+        recordingTimeoutJob?.cancel()
         closeActiveSocket()
         _state.value = A9UltraSppState.Idle
     }
@@ -100,7 +106,8 @@ class A9UltraSppManager(
     fun setOpusRecording(enabled: Boolean) {
         send(ABMateSppCommand.OPUS_RECORDING, A9UltraSppPolicy.opusRecordingPayload(enabled))
         if (!enabled) {
-            finishSession(closeHeadset = false)
+            suppressOpusUntilWake = true
+            finishSession(closeHeadset = false, reason = "manual-off")
         }
     }
 
@@ -170,7 +177,7 @@ class A9UltraSppManager(
     }
 
     private fun handleFrame(frame: ABMateSppFrame) {
-        Log.d(TAG, "rx cmd=0x${frame.command.toString(16)} type=${frame.type} payload=${frame.payload.size}")
+        logIncomingFrame(frame)
         when (frame.command) {
             ABMateSppCommand.DEVICE_INFO.value,
             ABMateSppCommand.DEVICE_INFO_NOTIFY.value -> {
@@ -182,7 +189,13 @@ class A9UltraSppManager(
                     sendResponse(ABMateSppCommand.OPUS_RECORDING, A9UltraSppPolicy.successAckPayload(0x01))
                 }
                 A9UltraSppPolicy.parseOpusRecordingEnabled(frame)?.let { enabled ->
-                    if (enabled) startSession() else finishSession(closeHeadset = false)
+                    if (enabled) {
+                        suppressOpusUntilWake = false
+                        startSession(reason = "headset-opus-on")
+                    } else {
+                        suppressOpusUntilWake = true
+                        finishSession(closeHeadset = false, reason = "headset-opus-off")
+                    }
                 }
             }
             ABMateSppCommand.RECORDING_DATA.value -> {
@@ -191,47 +204,97 @@ class A9UltraSppManager(
         }
     }
 
+    private fun logIncomingFrame(frame: ABMateSppFrame) {
+        if (frame.command == ABMateSppCommand.RECORDING_DATA.value) {
+            opusFrameLogCount += 1
+            if (opusFrameLogCount <= 3 || opusFrameLogCount % 100 == 0) {
+                Log.d(TAG, "rx cmd=0x3c type=${frame.type} opusPayload=${frame.payload.size} frame=$opusFrameLogCount")
+            }
+            return
+        }
+        Log.d(
+            TAG,
+            "rx cmd=0x${frame.command.toString(16)} type=${frame.type} payload=${frame.payload.size} ${frame.payload.hexPrefix()}"
+        )
+    }
+
     private fun handleDeviceInfo(frame: ABMateSppFrame) {
         if (productVerified || frame.command != ABMateSppCommand.DEVICE_INFO.value) return
-        check(A9UltraSppPolicy.acceptsDeviceInfo(frame.payload)) {
-            "A9 PID/语音识别能力校验失败"
+        val tlvs = ABMateTlv.parse(frame.payload)
+        Log.i(
+            TAG,
+            "device info ${tlvs.joinToString(" ") { "0x${it.type.toString(16)}=${it.value.hexPrefix(16)}" }}"
+        )
+        val productId = tlvs.firstOrNull { it.type == 0x24 }?.value?.littleEndianUInt16OrNull()
+        val capabilities = tlvs.firstOrNull { it.type == 0xFE }?.value?.littleEndianUInt16OrNull()
+        val voiceSupported = capabilities?.let { (it and 0x0010) != 0 }
+        Log.i(
+            TAG,
+            "device gate pid=${productId?.let { "0x${it.toString(16)}" } ?: "-"} capabilities=${capabilities?.let { "0x${it.toString(16)}" } ?: "-"} voice=$voiceSupported"
+        )
+        check(A9UltraSppPolicy.acceptsSppDeviceInfo(frame.payload, activeDeviceName)) {
+            "A9 SPP 设备校验失败: pid=${productId?.let { "0x${it.toString(16)}" } ?: "missing"} name=$activeDeviceName"
         }
         productVerified = true
         _state.value = A9UltraSppState.Ready(activeDeviceName)
-        send(ABMateSppCommand.VOICE_RECOGNITION, A9UltraSppPolicy.voiceRecognitionEnablePayload)
-        Log.i(TAG, "A9Ultra SPP verified, voice recognition enabled")
+        if (voiceSupported == true) {
+            send(ABMateSppCommand.VOICE_RECOGNITION, A9UltraSppPolicy.voiceRecognitionEnablePayload)
+            Log.i(TAG, "A9Ultra SPP verified, voice recognition enabled")
+        } else {
+            Log.i(TAG, "A9Ultra SPP verified without AB Mate voice capability bit; waiting for SPP wake/opus")
+        }
     }
 
     private fun handleWakeEvent(event: A9UltraWakeEvent) {
         when (event) {
-            is A9UltraWakeEvent.Wake -> startSession()
-            A9UltraWakeEvent.Sleep -> finishSession(closeHeadset = true)
+            is A9UltraWakeEvent.Wake -> {
+                suppressOpusUntilWake = false
+                startSession(reason = "wake")
+            }
+            A9UltraWakeEvent.Sleep -> {
+                suppressOpusUntilWake = true
+                finishSession(closeHeadset = true, reason = "sleep")
+            }
         }
     }
 
     private fun handleOpusPacket(packet: A9UltraOpusPacket) {
-        if (!recording) startSession()
+        if (!recording) {
+            if (suppressOpusUntilWake) return
+            startSession(reason = "opus")
+        }
         val pcm = opusDecoder.decode(packet)
         if (pcm.isNotEmpty()) {
             pcmBuffer.write(pcm)
+            val level = A9UltraPcmVoiceActivity.analyzePcm16Le(pcm)
+            capturedPcmMs += level.durationMs
+            if (level.isVoice) {
+                voiceDetected = true
+                lastVoicePcmMs = capturedPcmMs
+            }
             _state.value = A9UltraSppState.Recording(activeDeviceName, pcmBuffer.size())
+            maybeFinishForVoiceActivity()
         }
-        scheduleIdleTimeout()
     }
 
-    private fun startSession() {
+    private fun startSession(reason: String) {
         if (!productVerified) return
         if (!recording) {
             recording = true
+            opusFrameLogCount = 0
+            capturedPcmMs = 0L
+            lastVoicePcmMs = 0L
+            voiceDetected = false
             pcmBuffer.reset()
             opusDecoder.reset()
             _state.value = A9UltraSppState.Recording(activeDeviceName, 0)
+            scheduleRecordingTimeout()
+            Log.i(TAG, "recording started reason=$reason")
         }
-        scheduleIdleTimeout()
     }
 
-    private fun finishSession(closeHeadset: Boolean) {
-        idleTimeoutJob?.cancel()
+    private fun finishSession(closeHeadset: Boolean, reason: String) {
+        recordingTimeoutJob?.cancel()
         if (closeHeadset) {
             send(ABMateSppCommand.OPUS_RECORDING, A9UltraSppPolicy.opusRecordingPayload(false))
         }
@@ -240,19 +303,46 @@ class A9UltraSppManager(
         _state.value = if (productVerified) A9UltraSppState.Ready(activeDeviceName) else A9UltraSppState.Idle
         val pcm = pcmBuffer.toByteArray()
         pcmBuffer.reset()
-        if (pcm.isEmpty()) return
+        if (pcm.isEmpty()) {
+            Log.i(TAG, "recording dropped reason=$reason empty=true")
+            return
+        }
         val wav = HeadsetWavEncoder.encodePcm16Mono16k(pcm)
+        Log.i(TAG, "recording finished reason=$reason pcm=${pcm.size} wav=${wav.size} voice=$voiceDetected")
         mainScope.launch {
             onAudioReady(wav)
         }
     }
 
-    private fun scheduleIdleTimeout() {
-        idleTimeoutJob?.cancel()
-        idleTimeoutJob = scope.launch {
-            delay(idleTimeoutMs)
+    private fun maybeFinishForVoiceActivity() {
+        val silenceMs = capturedPcmMs - lastVoicePcmMs
+        when {
+            voiceDetected && capturedPcmMs >= MIN_RECORDING_MS && silenceMs >= END_SILENCE_MS -> {
+                stopHeadsetRecording(reason = "speech-end")
+            }
+            !voiceDetected && capturedPcmMs >= NO_SPEECH_TIMEOUT_MS -> {
+                stopHeadsetRecording(reason = "no-speech")
+            }
+            capturedPcmMs >= maxRecordingMs -> {
+                stopHeadsetRecording(reason = "max-duration")
+            }
+        }
+    }
+
+    private fun stopHeadsetRecording(reason: String) {
+        suppressOpusUntilWake = true
+        send(ABMateSppCommand.OPUS_RECORDING, A9UltraSppPolicy.opusRecordingPayload(false))
+        finishSession(closeHeadset = false, reason = reason)
+    }
+
+    private fun scheduleRecordingTimeout() {
+        recordingTimeoutJob?.cancel()
+        recordingTimeoutJob = scope.launch {
+            delay(maxRecordingMs)
+            if (!recording) return@launch
+            suppressOpusUntilWake = true
             send(ABMateSppCommand.OPUS_RECORDING, A9UltraSppPolicy.opusRecordingPayload(false))
-            finishSession(closeHeadset = false)
+            finishSession(closeHeadset = false, reason = "max-timeout")
         }
     }
 
@@ -295,6 +385,10 @@ class A9UltraSppManager(
     companion object {
         private const val TAG = "A9UltraSPP"
         private const val RECONNECT_DELAY_MS = 3_000L
+        private const val MIN_RECORDING_MS = 900L
+        private const val END_SILENCE_MS = 1_400L
+        private const val NO_SPEECH_TIMEOUT_MS = 4_000L
+        private const val DEFAULT_MAX_RECORDING_MS = 12_000L
     }
 }
 

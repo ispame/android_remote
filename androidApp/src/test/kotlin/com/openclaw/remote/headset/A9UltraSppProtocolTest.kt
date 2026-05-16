@@ -62,6 +62,26 @@ class A9UltraSppProtocolTest {
     }
 
     @Test
+    fun sppCompatibilityAllowsKnownA9WhenPidIsMissingFromClassicSppResponse() {
+        val classicSppResponse = ABMateTlv.encode(
+            ABMateTlv.item(0xFE, byteArrayOf(0x01, 0x00)),
+            ABMateTlv.item(0xFF, byteArrayOf(0xFF.toByte())),
+            ABMateTlv.item(
+                0x05,
+                byteArrayOf(
+                    0x01, 0x01, 0x07,
+                    0x02, 0x01, 0x07,
+                    0x03, 0x01, 0x03,
+                    0x04, 0x01, 0x04,
+                ),
+            ),
+        )
+
+        assertTrue(A9UltraSppPolicy.acceptsSppDeviceInfo(classicSppResponse, "A9 Ultra"))
+        assertFalse(A9UltraSppPolicy.acceptsSppDeviceInfo(classicSppResponse, "iLucy"))
+    }
+
+    @Test
     fun wakeNotifyParsesFromAbMateFrame() {
         val bytes = byteArrayOf(0x03, 0x28, 0x03, 0x00, 0x03, 0x26, 0x01, 0x01)
         val frame = ABMateSppPacketParser().push(bytes).single()
@@ -109,6 +129,16 @@ class A9UltraSppProtocolTest {
         assertEquals(16, wav.readUInt16LE(34))
         assertEquals(4, wav.readUInt32LE(40))
     }
+
+    @Test
+    fun pcmVoiceActivityDetectsSpeechLikePcm() {
+        val silence = pcm16Le(samples = 1_600, value = 0)
+        val speech = pcm16Le(samples = 1_600, value = 1_000)
+
+        assertFalse(A9UltraPcmVoiceActivity.analyzePcm16Le(silence).isVoice)
+        assertTrue(A9UltraPcmVoiceActivity.analyzePcm16Le(speech).isVoice)
+        assertEquals(100, A9UltraPcmVoiceActivity.analyzePcm16Le(speech).durationMs)
+    }
 }
 
 private fun ByteArray.readUInt16LE(offset: Int): Int =
@@ -119,3 +149,11 @@ private fun ByteArray.readUInt32LE(offset: Int): Int =
         ((this[offset + 1].toInt() and 0xFF) shl 8) or
         ((this[offset + 2].toInt() and 0xFF) shl 16) or
         ((this[offset + 3].toInt() and 0xFF) shl 24)
+
+private fun pcm16Le(samples: Int, value: Int): ByteArray =
+    ByteArray(samples * 2).also { bytes ->
+        repeat(samples) { index ->
+            bytes[index * 2] = (value.toInt() and 0xFF).toByte()
+            bytes[index * 2 + 1] = ((value.toInt() ushr 8) and 0xFF).toByte()
+        }
+    }

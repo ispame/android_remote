@@ -5,6 +5,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -51,6 +52,7 @@ class MainActivity : ComponentActivity() {
 
         viewModel = ChatViewModel(settingsManager)
         headsetManager = A9UltraSppManager(this, onAudioReady = { audioData ->
+            Log.i("A9UltraSPP", "headset audio ready wav=${audioData.size}")
             viewModel.sendAudio(audioData)
         })
 

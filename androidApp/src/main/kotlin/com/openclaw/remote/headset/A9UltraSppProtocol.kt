@@ -179,6 +179,19 @@ object A9UltraSppPolicy {
         return productId == TARGET_PRODUCT_ID && capabilities != null && (capabilities and 0x0010) != 0
     }
 
+    fun acceptsSppDeviceInfo(payload: ByteArray, deviceName: String): Boolean {
+        val tlvs = ABMateTlv.parse(payload)
+        val productId = tlvs.firstOrNull { it.type == 0x24 }?.value?.littleEndianUInt16()
+        if (productId != null) return productId == TARGET_PRODUCT_ID
+
+        val looksLikeA9 = deviceName.contains("A9", ignoreCase = true) ||
+            deviceName.contains("Ultra", ignoreCase = true)
+        val hasSppProfileResponse = tlvs.any { it.type == 0xFE } &&
+            tlvs.any { it.type == 0xFF } &&
+            tlvs.any { it.type == 0x05 }
+        return looksLikeA9 && hasSppProfileResponse
+    }
+
     fun parseWakeEvent(frame: ABMateSppFrame): A9UltraWakeEvent? {
         if (frame.command != ABMateSppCommand.DEVICE_INFO_NOTIFY.value) return null
         val wakePayload = ABMateTlv.parse(frame.payload).firstOrNull { it.type == 0x26 }?.value ?: return null
@@ -245,11 +258,59 @@ object HeadsetWavEncoder {
     }
 }
 
-private fun Byte.asUInt8(): Int = toInt() and 0xFF
+data class A9UltraPcmLevel(
+    val averageAbs: Int,
+    val peakAbs: Int,
+    val durationMs: Long,
+) {
+    val isVoice: Boolean
+        get() = averageAbs >= A9UltraPcmVoiceActivity.VOICE_AVERAGE_ABS_THRESHOLD ||
+            peakAbs >= A9UltraPcmVoiceActivity.VOICE_PEAK_ABS_THRESHOLD
+}
+
+object A9UltraPcmVoiceActivity {
+    const val SAMPLE_RATE: Int = 16_000
+    const val BYTES_PER_SAMPLE: Int = 2
+    const val VOICE_AVERAGE_ABS_THRESHOLD: Int = 280
+    const val VOICE_PEAK_ABS_THRESHOLD: Int = 2_500
+
+    fun analyzePcm16Le(pcm: ByteArray): A9UltraPcmLevel {
+        val sampleCount = pcm.size / BYTES_PER_SAMPLE
+        if (sampleCount == 0) return A9UltraPcmLevel(0, 0, 0)
+
+        var totalAbs = 0L
+        var peakAbs = 0
+        for (index in 0 until sampleCount) {
+            val offset = index * BYTES_PER_SAMPLE
+            val sample = (pcm[offset].asUInt8() or (pcm[offset + 1].toInt() shl 8)).toShort().toInt()
+            val absValue = if (sample == Short.MIN_VALUE.toInt()) 32768 else kotlin.math.abs(sample)
+            totalAbs += absValue.toLong()
+            if (absValue > peakAbs) peakAbs = absValue
+        }
+
+        return A9UltraPcmLevel(
+            averageAbs = (totalAbs / sampleCount).toInt(),
+            peakAbs = peakAbs,
+            durationMs = sampleCount * 1_000L / SAMPLE_RATE,
+        )
+    }
+}
+
+fun Byte.asUInt8(): Int = toInt() and 0xFF
 
 private fun ByteArray.littleEndianUInt16(offset: Int = 0): Int? {
+    return littleEndianUInt16OrNull(offset)
+}
+
+fun ByteArray.littleEndianUInt16OrNull(offset: Int = 0): Int? {
     if (offset + 1 >= size) return null
     return (this[offset].asUInt8()) or (this[offset + 1].asUInt8() shl 8)
+}
+
+fun ByteArray.hexPrefix(limit: Int = 64): String {
+    if (isEmpty()) return "-"
+    val prefix = take(limit).joinToString(" ") { byte -> "%02X".format(byte.asUInt8()) }
+    return if (size > limit) "$prefix ..." else prefix
 }
 
 private fun ByteArrayOutputStream.writeAscii(value: String) {

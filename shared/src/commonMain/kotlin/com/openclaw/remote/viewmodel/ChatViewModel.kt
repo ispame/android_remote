@@ -192,7 +192,14 @@ class ChatViewModel(
     }
 
     fun sendAudio(audioData: ByteArray) {
-        if (_pairingState.value != PairingState.PAIRED) return
+        if (_pairingState.value != PairingState.PAIRED) {
+            _messages.value = _messages.value + ChatMessage(
+                "请先配对后端 Agent",
+                SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date()),
+                "assistant"
+            )
+            return
+        }
         wsManager?.sendAudio(audioData)
     }
 
