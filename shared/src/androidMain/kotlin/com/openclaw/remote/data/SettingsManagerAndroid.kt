@@ -20,6 +20,9 @@ class SettingsManagerAndroid(private val context: Context) : SettingsManager {
         private val PAIRED_BACKEND_LABEL = stringPreferencesKey("paired_backend_label")
         private val ASR_MODE = stringPreferencesKey("asr_mode")
         private val ASR_PROFILE_ID = stringPreferencesKey("asr_profile_id")
+        private val TTS_ENGINE = stringPreferencesKey("tts_engine")
+        private val MINIMAX_API_KEY = stringPreferencesKey("minimax_api_key")
+        private val MINIMAX_VOICE_ID = stringPreferencesKey("minimax_voice_id")
     }
 
     override val configFlow: Flow<GatewayConfig> = context.dataStore.data.map { prefs ->
@@ -32,6 +35,9 @@ class SettingsManagerAndroid(private val context: Context) : SettingsManager {
             pairedBackendLabel = prefs[PAIRED_BACKEND_LABEL],
             asrMode = prefs[ASR_MODE] ?: "router",
             asrProfileId = prefs[ASR_PROFILE_ID] ?: "",
+            ttsEngine = prefs[TTS_ENGINE] ?: "system",
+            minimaxApiKey = prefs[MINIMAX_API_KEY] ?: "",
+            minimaxVoiceId = prefs[MINIMAX_VOICE_ID] ?: "female_sunny_zh",
         )
     }
 
@@ -43,6 +49,9 @@ class SettingsManagerAndroid(private val context: Context) : SettingsManager {
             prefs[TOKEN] = config.token
             prefs[ASR_MODE] = config.asrMode
             prefs[ASR_PROFILE_ID] = config.asrProfileId
+            prefs[TTS_ENGINE] = config.ttsEngine
+            prefs[MINIMAX_API_KEY] = config.minimaxApiKey
+            prefs[MINIMAX_VOICE_ID] = config.minimaxVoiceId
             if (config.pairedBackendId != null) {
                 prefs[PAIRED_BACKEND_ID] = config.pairedBackendId
             } else {

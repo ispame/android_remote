@@ -33,6 +33,11 @@ kotlin {
                 implementation("io.ktor:ktor-client-okhttp:2.3.7")
             }
         }
+        val androidUnitTest by getting {
+            dependencies {
+                implementation(kotlin("test"))
+            }
+        }
     }
 }
 

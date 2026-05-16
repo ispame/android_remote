@@ -85,7 +85,7 @@ class MainActivity : ComponentActivity() {
                 val isLoadingHistory by viewModel.isLoadingHistory.collectAsState()
                 val hasMoreHistory by viewModel.hasMoreHistory.collectAsState()
                 val headsetState by headsetManager.state.collectAsState()
-                var config by remember { mutableStateOf(currentConfig) }
+                val config by settingsManager.configFlow.collectAsState(initial = currentConfig)
 
                 // 监听配置变化，重新初始化 TTS 引擎
                 LaunchedEffect(config.ttsEngine) {
@@ -194,6 +194,9 @@ class MainActivity : ComponentActivity() {
                             pairedBackendLabel = result.backendId,
                             asrMode = current.asrMode,
                             asrProfileId = current.asrProfileId,
+                            ttsEngine = current.ttsEngine,
+                            minimaxApiKey = current.minimaxApiKey,
+                            minimaxVoiceId = current.minimaxVoiceId,
                         )
                     )
                     delay(1000)

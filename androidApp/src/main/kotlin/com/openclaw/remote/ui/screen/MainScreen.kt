@@ -341,7 +341,8 @@ private fun TopBar(
     ) {
         val (statusColor, statusText) = when {
             pairingState == PairingState.PAIRED -> colors.onlineGreen to "已配对${pairedBackendLabel?.let { " · $it" } ?: ""}"
-            connectionState == ConnectionState.REGISTERED -> colors.accent to "已连接，请扫码"
+            pairingState == PairingState.PENDING -> colors.accent to "正在连接 Agent${pairedBackendLabel?.let { " · $it" } ?: ""}"
+            connectionState == ConnectionState.REGISTERED -> colors.accent to "Router 已连接，Agent 未配对"
             connectionState == ConnectionState.CONNECTED -> colors.accent to "连接中..."
             connectionState == ConnectionState.CONNECTING -> colors.accent to "连接中..."
             else -> colors.recordingRed to "未连接"

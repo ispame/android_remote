@@ -296,6 +296,79 @@ object A9UltraPcmVoiceActivity {
     }
 }
 
+enum class A9UltraOpusRecoveryDecision {
+    IgnoreDrain,
+    IgnoreSilence,
+    IgnoreAwaitingWake,
+    StartRecovery,
+}
+
+class A9UltraOpusRecoveryGate(
+    private val postStopDrainMs: Long = DEFAULT_POST_STOP_DRAIN_MS,
+) {
+    private enum class Mode {
+        Open,
+        AwaitingWake,
+        PostStopDrain,
+    }
+
+    private var mode = Mode.Open
+    private var enteredAtMs = 0L
+    var ignoredFrames: Int = 0
+        private set
+
+    val isSuppressing: Boolean
+        get() = mode != Mode.Open
+
+    fun open() {
+        mode = Mode.Open
+        enteredAtMs = 0L
+        ignoredFrames = 0
+    }
+
+    fun enterAwaitingWake(nowMs: Long) {
+        enter(Mode.AwaitingWake, nowMs)
+    }
+
+    fun enterPostStopDrain(nowMs: Long) {
+        enter(Mode.PostStopDrain, nowMs)
+    }
+
+    fun onSuppressedOpus(nowMs: Long, level: A9UltraPcmLevel): A9UltraOpusRecoveryDecision {
+        ignoredFrames += 1
+        return when (mode) {
+            Mode.Open -> if (level.isVoice) {
+                A9UltraOpusRecoveryDecision.StartRecovery
+            } else {
+                A9UltraOpusRecoveryDecision.IgnoreSilence
+            }
+            Mode.AwaitingWake -> A9UltraOpusRecoveryDecision.IgnoreAwaitingWake
+            Mode.PostStopDrain -> {
+                val elapsedMs = nowMs - enteredAtMs
+                when {
+                    elapsedMs < postStopDrainMs -> A9UltraOpusRecoveryDecision.IgnoreDrain
+                    level.isVoice -> {
+                        mode = Mode.Open
+                        enteredAtMs = 0L
+                        A9UltraOpusRecoveryDecision.StartRecovery
+                    }
+                    else -> A9UltraOpusRecoveryDecision.IgnoreSilence
+                }
+            }
+        }
+    }
+
+    private fun enter(nextMode: Mode, nowMs: Long) {
+        mode = nextMode
+        enteredAtMs = nowMs
+        ignoredFrames = 0
+    }
+
+    companion object {
+        const val DEFAULT_POST_STOP_DRAIN_MS: Long = 900L
+    }
+}
+
 fun Byte.asUInt8(): Int = toInt() and 0xFF
 
 private fun ByteArray.littleEndianUInt16(offset: Int = 0): Int? {

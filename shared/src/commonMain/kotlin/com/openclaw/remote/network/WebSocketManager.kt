@@ -35,6 +35,7 @@ class WebSocketManager(
     private val deviceId: String,
     private val deviceLabel: String,
     private val token: String = "",
+    private val preferredBackendId: String? = null,
     private val asrMode: String = "router",
     private val asrProfileId: String = "",
 ) {
@@ -61,6 +62,7 @@ class WebSocketManager(
 
     /** True when reconnecting with a previously paired backend (suppresses pairing message). */
     private var isRestoringPairing = false
+    private var autoPairEnabled = !preferredBackendId.isNullOrBlank()
 
     /** seq → callback to invoke when delivery is confirmed or failed. */
     private val pendingAcks = mutableMapOf<Int, (MessageStatus) -> Unit>()
@@ -104,12 +106,21 @@ class WebSocketManager(
             }
         } catch (e: Exception) {
             log("ws listen failed error=${e.message}")
-            _connectionState.value = ConnectionState.DISCONNECTED
-            _pairingState.value = PairingState.UNPAIRED
-            if (!intentionalDisconnect) {
+        } finally {
+            if (!intentionalDisconnect && webSocketSession === session) {
+                webSocketSession = null
+                _connectionState.value = ConnectionState.DISCONNECTED
+                _pairingState.value = PairingState.UNPAIRED
                 scheduleReconnect()
             }
         }
+    }
+
+    private fun markConnectionLost() {
+        if (intentionalDisconnect) return
+        _connectionState.value = ConnectionState.DISCONNECTED
+        _pairingState.value = PairingState.UNPAIRED
+        scheduleReconnect()
     }
 
     fun disconnect() {
@@ -226,6 +237,7 @@ class WebSocketManager(
 
     fun unpair() {
         if (registeredBackendId == null) return
+        autoPairEnabled = false
         val frame = buildJsonObject {
             put("type", "unpair")
             put("target_id", registeredBackendId)
@@ -289,13 +301,15 @@ class WebSocketManager(
                         _connectionState.value = ConnectionState.REGISTERED
                         reconnectAttempts = 0
                         cancelReconnect()
-                        offerEvent(WsMessageEvent.Registered(deviceId))
-                        // Restore pairing silently on reconnect if we had a paired backend
-                        val preferredBackendId = registeredBackendId
-                        if (preferredBackendId != null) {
+                        val autoPairBackendId = resolveAutoPairBackendId(
+                            configuredBackendId = preferredBackendId,
+                            registeredBackendId = registeredBackendId,
+                        ).takeIf { autoPairEnabled }
+                        if (autoPairBackendId != null) {
                             isRestoringPairing = true
-                            requestPair(preferredBackendId)
+                            requestPair(autoPairBackendId)
                         }
+                        offerEvent(WsMessageEvent.Registered(deviceId))
                     }
                 }
                 "pair_response" -> {
@@ -309,6 +323,7 @@ class WebSocketManager(
                         isRestoringPairing = false
                     } else {
                         _pairingState.value = PairingState.UNPAIRED
+                        isRestoringPairing = false
                         offerEvent(
                             WsMessageEvent.NewMessage(
                                 ChatMessage("配对请求被拒绝", timestamp(), "assistant")
@@ -382,6 +397,7 @@ class WebSocketManager(
                 "unpaired" -> {
                     val targetId = obj["target_id"]?.jsonPrimitive?.content ?: ""
                     if (targetId == registeredBackendId) {
+                        autoPairEnabled = false
                         registeredBackendId = null
                         _pairingState.value = PairingState.UNPAIRED
                         offerEvent(WsMessageEvent.Unpaired)
@@ -476,6 +492,11 @@ class WebSocketManager(
         private const val RECONNECT_BASE_DELAY_MS = 2_000L
         private const val RECONNECT_MAX_DELAY_MS = 30_000L
     }
+}
+
+internal fun resolveAutoPairBackendId(configuredBackendId: String?, registeredBackendId: String?): String? {
+    return registeredBackendId?.takeIf { it.isNotBlank() }
+        ?: configuredBackendId?.takeIf { it.isNotBlank() }
 }
 
 /**

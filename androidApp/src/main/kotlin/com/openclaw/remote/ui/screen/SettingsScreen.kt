@@ -417,9 +417,14 @@ private fun ConnectionStatusCard(
             "已配对${if (pairedBackendLabel != null) "：$pairedBackendLabel" else ""}",
             Icons.Default.Link
         )
+        pairingState == PairingState.PENDING -> Triple(
+            MaterialTheme.colorScheme.secondary,
+            "正在连接 Agent${if (pairedBackendLabel != null) "：$pairedBackendLabel" else ""}",
+            Icons.Default.Link
+        )
         connectionState == ConnectionState.CONNECTED || connectionState == ConnectionState.REGISTERED -> Triple(
             MaterialTheme.colorScheme.tertiary,
-            "连接成功，请扫码配对",
+            "Router 已连接，Agent 未配对",
             Icons.Default.Link
         )
         connectionState == ConnectionState.CONNECTING -> Triple(

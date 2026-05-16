@@ -63,8 +63,9 @@ class ChatViewModel(
             }
         }
 
-        if (config.pairedBackendId != null) {
-            _pairedBackendLabel.value = config.pairedBackendLabel
+        val configuredBackendLabel = config.pairedBackendLabel ?: config.pairedBackendId
+        if (configuredBackendLabel != null) {
+            _pairedBackendLabel.value = configuredBackendLabel
         }
 
         wsManager = WebSocketManager(
@@ -72,6 +73,7 @@ class ChatViewModel(
             deviceId = deviceId,
             deviceLabel = config.deviceLabel.ifEmpty { "我的设备" },
             token = config.token,
+            preferredBackendId = config.pairedBackendId,
             asrMode = config.asrMode,
             asrProfileId = config.asrProfileId,
         )
@@ -83,8 +85,13 @@ class ChatViewModel(
         viewModelScope.launch {
             wsManager!!.pairingState.collect { state ->
                 _pairingState.value = state
-                if (state != PairingState.PAIRED) {
-                    _pairedBackendLabel.value = null
+                when {
+                    state == PairingState.PENDING && configuredBackendLabel != null -> {
+                        _pairedBackendLabel.value = configuredBackendLabel
+                    }
+                    state != PairingState.PAIRED -> {
+                        _pairedBackendLabel.value = null
+                    }
                 }
             }
         }
@@ -92,11 +99,7 @@ class ChatViewModel(
         viewModelScope.launch {
             wsManager!!.messageChannel.receiveAsFlow().collect { event ->
                 when (event) {
-                    is WsMessageEvent.Registered -> {
-                        config.pairedBackendId?.let { backendId ->
-                            wsManager?.requestPair(backendId)
-                        }
-                    }
+                    is WsMessageEvent.Registered -> Unit
                     is WsMessageEvent.Paired -> {
                         _pairedBackendLabel.value = event.backendLabel
                         viewModelScope.launch {

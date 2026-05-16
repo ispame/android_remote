@@ -139,6 +139,52 @@ class A9UltraSppProtocolTest {
         assertTrue(A9UltraPcmVoiceActivity.analyzePcm16Le(speech).isVoice)
         assertEquals(100, A9UltraPcmVoiceActivity.analyzePcm16Le(speech).durationMs)
     }
+
+    @Test
+    fun postStopRecoveryIgnoresTailThenStartsOnLaterVoice() {
+        val gate = A9UltraOpusRecoveryGate(postStopDrainMs = 900)
+        gate.enterPostStopDrain(nowMs = 1_000)
+
+        assertEquals(
+            A9UltraOpusRecoveryDecision.IgnoreDrain,
+            gate.onSuppressedOpus(nowMs = 1_500, level = voiceLevel()),
+        )
+        assertEquals(
+            A9UltraOpusRecoveryDecision.IgnoreSilence,
+            gate.onSuppressedOpus(nowMs = 2_000, level = silenceLevel()),
+        )
+        assertEquals(
+            A9UltraOpusRecoveryDecision.StartRecovery,
+            gate.onSuppressedOpus(nowMs = 2_100, level = voiceLevel()),
+        )
+        assertFalse(gate.isSuppressing)
+    }
+
+    @Test
+    fun awaitingWakeDoesNotRecoverFromOpusVoice() {
+        val gate = A9UltraOpusRecoveryGate(postStopDrainMs = 900)
+        gate.enterAwaitingWake(nowMs = 1_000)
+
+        assertEquals(
+            A9UltraOpusRecoveryDecision.IgnoreAwaitingWake,
+            gate.onSuppressedOpus(nowMs = 5_000, level = voiceLevel()),
+        )
+        assertTrue(gate.isSuppressing)
+    }
+
+    @Test
+    fun postStopRecoveryKeepsSilenceSuppressedAfterDrain() {
+        val gate = A9UltraOpusRecoveryGate(postStopDrainMs = 900)
+        gate.enterPostStopDrain(nowMs = 1_000)
+
+        repeat(5) { index ->
+            assertEquals(
+                A9UltraOpusRecoveryDecision.IgnoreSilence,
+                gate.onSuppressedOpus(nowMs = 2_000 + index * 100L, level = silenceLevel()),
+            )
+        }
+        assertTrue(gate.isSuppressing)
+    }
 }
 
 private fun ByteArray.readUInt16LE(offset: Int): Int =
@@ -157,3 +203,7 @@ private fun pcm16Le(samples: Int, value: Int): ByteArray =
             bytes[index * 2 + 1] = ((value.toInt() ushr 8) and 0xFF).toByte()
         }
     }
+
+private fun silenceLevel(): A9UltraPcmLevel = A9UltraPcmLevel(averageAbs = 0, peakAbs = 0, durationMs = 100)
+
+private fun voiceLevel(): A9UltraPcmLevel = A9UltraPcmLevel(averageAbs = 1_000, peakAbs = 2_000, durationMs = 100)
