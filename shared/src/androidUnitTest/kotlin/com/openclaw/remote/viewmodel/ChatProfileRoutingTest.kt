@@ -2,6 +2,9 @@ package com.openclaw.remote.viewmodel
 
 import com.openclaw.remote.data.AgentPlatform
 import com.openclaw.remote.data.AgentProfile
+import com.openclaw.remote.data.AgentAvailabilityStatus
+import com.openclaw.remote.domain.ConnectionState
+import com.openclaw.remote.domain.PairingState
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -68,5 +71,40 @@ class ChatProfileRoutingTest {
         assertTrue(shouldIncrementUnreadCount("profile-hermes", "profile-openclaw", "assistant"))
         assertFalse(shouldIncrementUnreadCount("profile-openclaw", "profile-openclaw", "assistant"))
         assertFalse(shouldIncrementUnreadCount("profile-hermes", "profile-openclaw", "user"))
+    }
+
+    @Test
+    fun agentIsAvailableOnlyAfterCurrentSocketPairResponse() {
+        assertEquals(
+            AgentAvailabilityStatus.CONNECTING,
+            agentAvailabilityForStatus(
+                hasBackendId = true,
+                pairingState = PairingState.PAIRED,
+                connectionState = ConnectionState.REGISTERED,
+            ),
+        )
+        assertEquals(
+            AgentAvailabilityStatus.PAIRING,
+            agentAvailabilityForStatus(
+                hasBackendId = true,
+                pairingState = PairingState.PENDING,
+                connectionState = ConnectionState.REGISTERED,
+            ),
+        )
+        assertEquals(
+            AgentAvailabilityStatus.AVAILABLE,
+            agentAvailabilityForStatus(
+                hasBackendId = true,
+                pairingState = PairingState.PAIRED,
+                connectionState = ConnectionState.PAIRED,
+            ),
+        )
+    }
+
+    @Test
+    fun chatPayloadsCanSendOnlyAfterCurrentSocketPairResponse() {
+        assertFalse(canSendChatPayload(PairingState.PAIRED, ConnectionState.REGISTERED))
+        assertFalse(canSendChatPayload(PairingState.PENDING, ConnectionState.REGISTERED))
+        assertTrue(canSendChatPayload(PairingState.PAIRED, ConnectionState.PAIRED))
     }
 }

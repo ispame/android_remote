@@ -49,4 +49,65 @@ class WebSocketManagerTest {
             ),
         )
     }
+
+    @Test
+    fun transientDisconnectRequiresFreshPairResponseBeforePairedAgain() {
+        assertEquals(
+            PairingState.PENDING,
+            transientDisconnectPairingState(
+                pairingState = PairingState.PAIRED,
+                hasRestorablePairing = true,
+            ),
+        )
+    }
+
+    @Test
+    fun registeredDuringAutoRestoreDoesNotLookPairedUntilPairResponse() {
+        assertEquals(
+            ConnectionState.REGISTERED,
+            registeredConnectionState(pairingState = PairingState.PENDING),
+        )
+        assertEquals(
+            ConnectionState.PAIRED,
+            pairedConnectionState(),
+        )
+    }
+
+    @Test
+    fun reconnectingPairingCannotSendUserPayloads() {
+        assertEquals(false, canSendUserPayload(PairingState.PENDING, registeredBackendId = "bk_openclaw"))
+        assertEquals(false, canSendUserPayload(PairingState.PAIRED, registeredBackendId = null))
+        assertEquals(true, canSendUserPayload(PairingState.PAIRED, registeredBackendId = "bk_openclaw"))
+    }
+
+    @Test
+    fun repeatedConnectDoesNotCancelActiveOrScheduledReconnectWork() {
+        assertEquals(
+            true,
+            shouldIgnoreConnectRequest(
+                hasActiveSession = false,
+                connectAttemptInFlight = false,
+                reconnectScheduled = true,
+                intentionalDisconnect = false,
+            ),
+        )
+        assertEquals(
+            true,
+            shouldIgnoreConnectRequest(
+                hasActiveSession = true,
+                connectAttemptInFlight = false,
+                reconnectScheduled = false,
+                intentionalDisconnect = false,
+            ),
+        )
+        assertEquals(
+            false,
+            shouldIgnoreConnectRequest(
+                hasActiveSession = false,
+                connectAttemptInFlight = false,
+                reconnectScheduled = false,
+                intentionalDisconnect = true,
+            ),
+        )
+    }
 }

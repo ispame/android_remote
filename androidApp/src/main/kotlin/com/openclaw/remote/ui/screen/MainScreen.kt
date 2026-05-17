@@ -399,7 +399,7 @@ private fun TopBar(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         val (statusColor, statusText) = when {
-            pairingState == PairingState.PAIRED && connectionState == ConnectionState.REGISTERED ->
+            pairingState == PairingState.PAIRED && connectionState == ConnectionState.PAIRED ->
                 colors.onlineGreen to "已配对$pairedStatusSuffix"
             pairingState == PairingState.PAIRED ->
                 colors.accent to "重连中$pairedStatusSuffix"

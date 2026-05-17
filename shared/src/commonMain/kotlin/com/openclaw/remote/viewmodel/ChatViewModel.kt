@@ -340,16 +340,11 @@ class ChatViewModel(
         }
 
     fun availabilityStatus(profile: AgentProfile): AgentAvailabilityStatus {
-        if (profile.backendId.isBlank()) return AgentAvailabilityStatus.UNCONFIGURED
-        return when (pairingStateFor(profile)) {
-            PairingState.PENDING -> AgentAvailabilityStatus.PAIRING
-            PairingState.UNPAIRED -> AgentAvailabilityStatus.UNPAIRED
-            PairingState.PAIRED -> when (_connectionState.value) {
-                ConnectionState.REGISTERED, ConnectionState.PAIRED -> AgentAvailabilityStatus.AVAILABLE
-                ConnectionState.CONNECTING, ConnectionState.CONNECTED -> AgentAvailabilityStatus.CONNECTING
-                ConnectionState.DISCONNECTED -> AgentAvailabilityStatus.OFFLINE
-            }
-        }
+        return agentAvailabilityForStatus(
+            hasBackendId = profile.backendId.isNotBlank(),
+            pairingState = pairingStateFor(profile),
+            connectionState = _connectionState.value,
+        )
     }
 
     fun addLocalMessage(content: String, senderId: String = "assistant") {
@@ -364,7 +359,7 @@ class ChatViewModel(
     }
 
     fun sendText(text: String) {
-        if (_pairingState.value != PairingState.PAIRED) {
+        if (!canSendChatPayload(_pairingState.value, _connectionState.value)) {
             addLocalMessage(
                 "请先配对后端 Agent",
                 "assistant"
@@ -375,7 +370,7 @@ class ChatViewModel(
     }
 
     fun sendAudio(audioData: ByteArray) {
-        if (_pairingState.value != PairingState.PAIRED) {
+        if (!canSendChatPayload(_pairingState.value, _connectionState.value)) {
             addLocalMessage(
                 "请先配对后端 Agent",
                 "assistant"
@@ -557,3 +552,23 @@ internal fun shouldIncrementUnreadCount(
     !targetProfileId.isNullOrBlank() &&
         targetProfileId != activeProfileId &&
         senderId != "user"
+
+internal fun agentAvailabilityForStatus(
+    hasBackendId: Boolean,
+    pairingState: PairingState,
+    connectionState: ConnectionState,
+): AgentAvailabilityStatus {
+    if (!hasBackendId) return AgentAvailabilityStatus.UNCONFIGURED
+    return when (pairingState) {
+        PairingState.PENDING -> AgentAvailabilityStatus.PAIRING
+        PairingState.UNPAIRED -> AgentAvailabilityStatus.UNPAIRED
+        PairingState.PAIRED -> when (connectionState) {
+            ConnectionState.PAIRED -> AgentAvailabilityStatus.AVAILABLE
+            ConnectionState.CONNECTING, ConnectionState.CONNECTED, ConnectionState.REGISTERED -> AgentAvailabilityStatus.CONNECTING
+            ConnectionState.DISCONNECTED -> AgentAvailabilityStatus.OFFLINE
+        }
+    }
+}
+
+internal fun canSendChatPayload(pairingState: PairingState, connectionState: ConnectionState): Boolean =
+    pairingState == PairingState.PAIRED && connectionState == ConnectionState.PAIRED
