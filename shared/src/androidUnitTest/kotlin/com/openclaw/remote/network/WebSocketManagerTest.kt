@@ -1,5 +1,7 @@
 package com.openclaw.remote.network
 
+import com.openclaw.remote.domain.ConnectionState
+import com.openclaw.remote.domain.PairingState
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -33,6 +35,17 @@ class WebSocketManagerTest {
             resolveAutoPairBackendId(
                 configuredBackendId = " ",
                 registeredBackendId = null,
+            ),
+        )
+    }
+
+    @Test
+    fun transientDisconnectKeepsReconnectablePairedState() {
+        assertEquals(
+            ConnectionState.CONNECTING,
+            transientDisconnectConnectionState(
+                pairingState = PairingState.PAIRED,
+                hasRestorablePairing = true,
             ),
         )
     }

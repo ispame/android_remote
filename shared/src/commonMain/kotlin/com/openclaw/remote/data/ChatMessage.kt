@@ -16,6 +16,7 @@ data class ChatMessage(
     val status: MessageStatus? = null,
     val seq: Int? = null,
     val clientMessageId: String? = null,
+    val rawTimestamp: String? = null,
 )
 
 /**
