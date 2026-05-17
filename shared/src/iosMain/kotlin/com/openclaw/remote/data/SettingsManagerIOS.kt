@@ -9,8 +9,20 @@ class SettingsManagerIOS : SettingsManager {
     private val defaults = NSUserDefaults.standardUserDefaults()
 
     private val _configFlow = MutableStateFlow(loadConfig())
+    private val _profilesFlow = MutableStateFlow(makeState(loadConfig()))
+    private val _soundPlaybackEnabledFlow = MutableStateFlow(loadSoundPlaybackEnabled())
 
     override val configFlow: Flow<GatewayConfig> = _configFlow.asStateFlow()
+    override val profilesFlow: Flow<AgentProfilesState> = _profilesFlow.asStateFlow()
+    override val soundPlaybackEnabledFlow: Flow<Boolean> = _soundPlaybackEnabledFlow.asStateFlow()
+
+    private fun loadSoundPlaybackEnabled(): Boolean {
+        return if (defaults.objectForKey("sound_playback_enabled_v1") == null) {
+            true
+        } else {
+            defaults.boolForKey("sound_playback_enabled_v1")
+        }
+    }
 
     private fun loadConfig(): GatewayConfig {
         return GatewayConfig(
@@ -43,6 +55,24 @@ class SettingsManagerIOS : SettingsManager {
             defaults.removeObjectForKey("paired_backend_label")
         }
         _configFlow.value = config
+        _profilesFlow.value = makeState(config)
+    }
+
+    private fun makeState(config: GatewayConfig): AgentProfilesState {
+        val profile = AgentProfile(
+            id = config.profileId.ifBlank { "legacy-ios-profile" },
+            appClientId = config.deviceId,
+            platform = AgentPlatform.OPENCLAW,
+            displayName = config.pairedBackendLabel ?: AgentPlatform.OPENCLAW.defaultDisplayName,
+            gatewayUrl = config.gatewayUrl,
+            backendId = config.pairedBackendId.orEmpty(),
+            backendLabel = config.pairedBackendLabel,
+            token = config.token,
+            isPaired = config.pairedBackendId != null,
+            asrMode = config.asrMode,
+            asrProfileId = config.asrProfileId,
+        )
+        return AgentProfilesState(listOf(profile), profile.id)
     }
 
     override suspend fun updateConfig(config: GatewayConfig) {
@@ -64,10 +94,71 @@ class SettingsManagerIOS : SettingsManager {
         saveConfig(current.copy(gatewayUrl = url))
     }
 
-    override suspend fun updatePairedBackend(backendId: String?, backendLabel: String?) {
+    override suspend fun updatePairedBackend(backendId: String?, backendLabel: String?, profileId: String?) {
         val current = _configFlow.value
         saveConfig(current.copy(pairedBackendId = backendId, pairedBackendLabel = backendLabel))
     }
+
+    override suspend fun selectProfile(profileId: String) = Unit
+
+    override suspend fun saveProfile(profile: AgentProfile, select: Boolean): Boolean {
+        saveConfig(
+            _configFlow.value.copy(
+                profileId = profile.id,
+                gatewayUrl = profile.gatewayUrl,
+                token = profile.token,
+                pairedBackendId = profile.backendId.ifBlank { null },
+                pairedBackendLabel = profile.backendLabel,
+                asrMode = profile.asrMode,
+                asrProfileId = profile.asrProfileId,
+            )
+        )
+        return true
+    }
+
+    override suspend fun upsertScannedProfile(
+        gatewayUrl: String,
+        backendId: String,
+        token: String,
+        platform: AgentPlatform,
+        label: String?,
+    ): AgentProfile? {
+        val profile = AgentProfile(
+            id = _configFlow.value.profileId.ifBlank { "legacy-ios-profile" },
+            appClientId = _configFlow.value.deviceId,
+            platform = platform,
+            displayName = label ?: platform.defaultDisplayName,
+            gatewayUrl = gatewayUrl,
+            backendId = backendId,
+            backendLabel = label ?: backendId,
+            token = token,
+        )
+        saveProfile(profile, true)
+        return profile
+    }
+
+    override suspend fun deleteProfile(profileId: String) {
+        clearConfig()
+    }
+
+    override suspend fun clearProfile(profileId: String) {
+        clearConfig()
+    }
+
+    override suspend fun updateGlobalAsr(mode: String, profileId: String) {
+        val normalizedMode = if (mode == "backend") "backend" else "router"
+        val current = _configFlow.value
+        saveConfig(current.copy(asrMode = normalizedMode, asrProfileId = if (normalizedMode == "backend") "" else profileId))
+    }
+
+    override suspend fun updateSoundPlaybackEnabled(enabled: Boolean) {
+        defaults.setBool(enabled, forKey = "sound_playback_enabled_v1")
+        _soundPlaybackEnabledFlow.value = enabled
+    }
+
+    override suspend fun canAcceptProfile(gatewayUrl: String, backendId: String): Boolean = true
+
+    override suspend fun profileAcceptError(gatewayUrl: String, backendId: String): String? = null
 
     override suspend fun clearConfig() {
         defaults.removeObjectForKey("gateway_url")
@@ -78,6 +169,9 @@ class SettingsManagerIOS : SettingsManager {
         defaults.removeObjectForKey("paired_backend_label")
         defaults.removeObjectForKey("asr_mode")
         defaults.removeObjectForKey("asr_profile_id")
+        defaults.removeObjectForKey("sound_playback_enabled_v1")
         _configFlow.value = GatewayConfig()
+        _profilesFlow.value = makeState(_configFlow.value)
+        _soundPlaybackEnabledFlow.value = true
     }
 }
