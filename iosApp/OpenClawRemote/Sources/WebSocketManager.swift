@@ -764,10 +764,13 @@ final class WebSocketManager: ObservableObject {
     }
 
     private func sanitizeAssistantContent(_ content: String) -> String {
-        let marker = "[[reply_to_current]]"
-        guard content.hasPrefix(marker) else { return content }
-        let start = content.index(content.startIndex, offsetBy: marker.count)
-        return String(content[start...]).trimmingCharacters(in: .whitespacesAndNewlines)
+        let pattern = #"^\s*\[\[reply_to(?:_current| current)\]\]\s*"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
+            return content.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        let range = NSRange(content.startIndex..., in: content)
+        let sanitized = regex.stringByReplacingMatches(in: content, options: [], range: range, withTemplate: "")
+        return sanitized.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func displayableBackendContent(_ content: String) -> String? {

@@ -4,6 +4,7 @@ import com.openclaw.remote.data.ChatMessage
 import com.openclaw.remote.data.MessageStatus
 import com.openclaw.remote.domain.ConnectionState
 import com.openclaw.remote.domain.PairingState
+import com.openclaw.remote.viewmodel.historyChatMessage
 import io.ktor.client.*
 import io.ktor.client.plugins.websocket.*
 import io.ktor.websocket.*

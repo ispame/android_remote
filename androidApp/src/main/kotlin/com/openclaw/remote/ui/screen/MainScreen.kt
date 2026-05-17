@@ -356,6 +356,7 @@ private fun TopBar(
     onNavigateToSettings: () -> Unit,
     colors: MochiColors,
 ) {
+    val pairedStatusSuffix = pairedBackendLabel?.let { " · $it" } ?: ""
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -364,8 +365,12 @@ private fun TopBar(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         val (statusColor, statusText) = when {
-            pairingState == PairingState.PAIRED -> colors.onlineGreen to "已配对${pairedBackendLabel?.let { " · $it" } ?: ""}"
-            pairingState == PairingState.PENDING -> colors.accent to "正在连接 Agent${pairedBackendLabel?.let { " · $it" } ?: ""}"
+            pairingState == PairingState.PAIRED && connectionState == ConnectionState.REGISTERED ->
+                colors.onlineGreen to "已配对$pairedStatusSuffix"
+            pairingState == PairingState.PAIRED ->
+                colors.accent to "重连中$pairedStatusSuffix"
+            pairingState == PairingState.PENDING ->
+                colors.accent to "正在连接 Agent$pairedStatusSuffix"
             connectionState == ConnectionState.REGISTERED -> colors.accent to "Router 已连接，Agent 未配对"
             connectionState == ConnectionState.CONNECTED -> colors.accent to "连接中..."
             connectionState == ConnectionState.CONNECTING -> colors.accent to "连接中..."

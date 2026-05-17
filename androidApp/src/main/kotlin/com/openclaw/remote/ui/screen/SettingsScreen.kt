@@ -480,15 +480,21 @@ private fun ConnectionStatusCard(
     pairedBackendLabel: String?,
     onUnpair: () -> Unit
 ) {
+    val pairedStatusSuffix = if (pairedBackendLabel != null) "：$pairedBackendLabel" else ""
     val (statusColor, statusText, statusIcon) = when {
-        pairingState == PairingState.PAIRED -> Triple(
+        pairingState == PairingState.PAIRED && connectionState == ConnectionState.REGISTERED -> Triple(
             MaterialTheme.colorScheme.primary,
-            "已配对${if (pairedBackendLabel != null) "：$pairedBackendLabel" else ""}",
+            "已配对$pairedStatusSuffix",
+            Icons.Default.Link
+        )
+        pairingState == PairingState.PAIRED -> Triple(
+            MaterialTheme.colorScheme.secondary,
+            "重连中$pairedStatusSuffix",
             Icons.Default.Link
         )
         pairingState == PairingState.PENDING -> Triple(
             MaterialTheme.colorScheme.secondary,
-            "正在连接 Agent${if (pairedBackendLabel != null) "：$pairedBackendLabel" else ""}",
+            "正在连接 Agent$pairedStatusSuffix",
             Icons.Default.Link
         )
         connectionState == ConnectionState.CONNECTED || connectionState == ConnectionState.REGISTERED -> Triple(
