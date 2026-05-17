@@ -52,6 +52,7 @@ class A9UltraSppManager(
     private val onWake: () -> Unit = {},
     private val maxRecordingMs: Long = 300_000L,
     private val promptTonePlayer: HeadsetPromptTonePlayer = HeadsetPromptTonePlayer(),
+    private val observeCommand: (ABMateSppCommand, ByteArray) -> Unit = { _, _ -> },
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val mainScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -78,6 +79,9 @@ class A9UltraSppManager(
     private val _state = MutableStateFlow<A9UltraSppState>(A9UltraSppState.Idle)
     val state: StateFlow<A9UltraSppState> = _state
 
+    private val _standbyMode = MutableStateFlow(A9UltraStandbyMode.WAKE_WORD_REQUIRED)
+    val standbyMode: StateFlow<A9UltraStandbyMode> = _standbyMode
+
     fun start() {
         if (connectionJob?.isActive == true) return
         connectionJob = scope.launch {
@@ -91,7 +95,7 @@ class A9UltraSppManager(
                 closeActiveSocket()
                 productVerified = false
                 recording = false
-                openOpusGate()
+                enterAwaitingWake(reason = "connection-reset")
                 recordingTimeoutJob?.cancel()
                 if (isActive) delay(RECONNECT_DELAY_MS)
             }
@@ -112,6 +116,40 @@ class A9UltraSppManager(
             enterAwaitingWake(reason = "manual-off")
             finishSession(closeHeadset = false, reason = "manual-off")
         }
+    }
+
+    fun toggleStandbyMode() {
+        val nextMode = when (_standbyMode.value) {
+            A9UltraStandbyMode.WAKE_WORD_REQUIRED -> A9UltraStandbyMode.CONTINUOUS
+            A9UltraStandbyMode.CONTINUOUS -> A9UltraStandbyMode.WAKE_WORD_REQUIRED
+        }
+        Log.i(TAG, "standby toggle ${_standbyMode.value} -> $nextMode")
+        setStandbyMode(nextMode)
+    }
+
+    fun setStandbyMode(mode: A9UltraStandbyMode) {
+        when (mode) {
+            A9UltraStandbyMode.WAKE_WORD_REQUIRED -> {
+                rearmWakeWord(reason = "user-standby-wake")
+            }
+            A9UltraStandbyMode.CONTINUOUS -> {
+                if (recording) {
+                    openOpusGate()
+                } else {
+                    enterPostStopDrain(reason = "user-standby-continuous")
+                }
+            }
+        }
+    }
+
+    private fun rearmWakeWord(reason: String) {
+        Log.i(TAG, "rearm wake word reason=$reason recording=$recording")
+        send(ABMateSppCommand.OPUS_RECORDING, A9UltraSppPolicy.opusRecordingPayload(false))
+        if (recording) {
+            finishSession(closeHeadset = false, reason = reason)
+        }
+        send(ABMateSppCommand.VOICE_RECOGNITION, A9UltraSppPolicy.voiceRecognitionEnablePayload)
+        enterAwaitingWake(reason = reason)
     }
 
     @SuppressLint("MissingPermission")
@@ -249,6 +287,11 @@ class A9UltraSppManager(
         } else {
             Log.i(TAG, "A9Ultra SPP verified without AB Mate voice capability bit; waiting for SPP wake/opus")
         }
+        if (_standbyMode.value == A9UltraStandbyMode.CONTINUOUS) {
+            setStandbyMode(A9UltraStandbyMode.CONTINUOUS)
+        } else {
+            enterAwaitingWake(reason = "verified")
+        }
     }
 
     private fun logDeviceNotifyTlvs(frame: ABMateSppFrame) {
@@ -264,6 +307,7 @@ class A9UltraSppManager(
     private fun handleWakeEvent(event: A9UltraWakeEvent) {
         when (event) {
             is A9UltraWakeEvent.Wake -> {
+                Log.i(TAG, "wake notify received side=${event.side}")
                 mainScope.launch {
                     onWake()
                 }
@@ -272,6 +316,7 @@ class A9UltraSppManager(
                 startSession(reason = "wake")
             }
             A9UltraWakeEvent.Sleep -> {
+                Log.i(TAG, "sleep notify received")
                 enterAwaitingWake(reason = "sleep")
                 finishSession(closeHeadset = true, reason = "sleep")
             }
@@ -411,21 +456,25 @@ class A9UltraSppManager(
     private fun openOpusGate() {
         suppressOpusUntilWake = false
         opusRecoveryGate.open()
+        _standbyMode.value = opusRecoveryGate.standbyMode
     }
 
     private fun enterAwaitingWake(reason: String) {
         suppressOpusUntilWake = true
         opusRecoveryGate.enterAwaitingWake(System.currentTimeMillis())
+        _standbyMode.value = opusRecoveryGate.standbyMode
         Log.d(TAG, "opus suppress awaiting wake reason=$reason")
     }
 
     private fun enterPostStopDrain(reason: String) {
         suppressOpusUntilWake = true
         opusRecoveryGate.enterPostStopDrain(System.currentTimeMillis())
+        _standbyMode.value = opusRecoveryGate.standbyMode
         Log.d(TAG, "opus suppress post-stop drain reason=$reason")
     }
 
     private fun send(command: ABMateSppCommand, payload: ByteArray = ByteArray(0)) {
+        observeCommand(command, payload)
         send(command.value, ABMateSppFrameType.REQUEST, payload)
     }
 

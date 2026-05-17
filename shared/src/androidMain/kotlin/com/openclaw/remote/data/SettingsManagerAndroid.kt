@@ -17,6 +17,7 @@ private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(na
 class SettingsManagerAndroid(private val context: Context) : SettingsManager {
 
     companion object {
+        private const val LEGACY_PROFILE_ID = "legacy-android-profile"
         private val GATEWAY_URL = stringPreferencesKey("gateway_url")
         private val DEVICE_ID = stringPreferencesKey("device_id")
         private val BASE_DEVICE_ID = stringPreferencesKey("base_device_id_v1")
@@ -327,14 +328,15 @@ class SettingsManagerAndroid(private val context: Context) : SettingsManager {
     private fun Preferences.toGatewayConfig(): GatewayConfig {
         val state = toProfilesState()
         val selected = state.selectedProfile
+        val pairedBackendId = selected.backendId.takeIf { selected.isPaired && it.isNotBlank() }
         return GatewayConfig(
             profileId = selected.id,
             gatewayUrl = selected.gatewayUrl,
             deviceId = selected.appClientId,
             deviceLabel = this[DEVICE_LABEL] ?: "我的设备",
             token = selected.token,
-            pairedBackendId = selected.backendId.takeIf { it.isNotBlank() },
-            pairedBackendLabel = selected.backendLabel ?: selected.resolvedDisplayName,
+            pairedBackendId = pairedBackendId,
+            pairedBackendLabel = pairedBackendId?.let { selected.backendLabel ?: selected.resolvedDisplayName },
             asrMode = selected.asrMode.normalizedAsrMode(),
             asrProfileId = selected.asrProfileId,
             ttsEngine = this[TTS_ENGINE] ?: "system",
@@ -345,7 +347,7 @@ class SettingsManagerAndroid(private val context: Context) : SettingsManager {
 
     private fun Preferences.makeLegacyProfile(): AgentProfile =
         AgentProfile(
-            id = randomProfileId(),
+            id = this[SELECTED_AGENT_PROFILE_ID] ?: LEGACY_PROFILE_ID,
             appClientId = baseDeviceId(),
             platform = AgentPlatform.OPENCLAW,
             displayName = this[PAIRED_BACKEND_LABEL] ?: AgentPlatform.OPENCLAW.defaultDisplayName,

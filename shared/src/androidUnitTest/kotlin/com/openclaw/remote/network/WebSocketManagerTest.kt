@@ -81,6 +81,68 @@ class WebSocketManagerTest {
     }
 
     @Test
+    fun duplicatePairRequestsAreSkippedWhilePendingOrAlreadyPaired() {
+        assertEquals(
+            true,
+            shouldSkipPairRequest(
+                connectionState = ConnectionState.REGISTERED,
+                pairingState = PairingState.PENDING,
+                registeredBackendId = null,
+                pendingPairBackendId = "bk_openclaw",
+                requestedBackendId = "bk_openclaw",
+            ),
+        )
+        assertEquals(
+            true,
+            shouldSkipPairRequest(
+                connectionState = ConnectionState.PAIRED,
+                pairingState = PairingState.PAIRED,
+                registeredBackendId = "bk_openclaw",
+                pendingPairBackendId = null,
+                requestedBackendId = "bk_openclaw",
+            ),
+        )
+        assertEquals(
+            false,
+            shouldSkipPairRequest(
+                connectionState = ConnectionState.REGISTERED,
+                pairingState = PairingState.PENDING,
+                registeredBackendId = null,
+                pendingPairBackendId = "bk_openclaw",
+                requestedBackendId = "bk_hermes",
+            ),
+        )
+    }
+
+    @Test
+    fun staleSocketGenerationFramesAreIgnored() {
+        assertEquals(
+            true,
+            shouldProcessIncomingFrame(
+                intentionalDisconnect = false,
+                frameGeneration = 7,
+                currentGeneration = 7,
+            ),
+        )
+        assertEquals(
+            false,
+            shouldProcessIncomingFrame(
+                intentionalDisconnect = false,
+                frameGeneration = 6,
+                currentGeneration = 7,
+            ),
+        )
+        assertEquals(
+            false,
+            shouldProcessIncomingFrame(
+                intentionalDisconnect = true,
+                frameGeneration = 7,
+                currentGeneration = 7,
+            ),
+        )
+    }
+
+    @Test
     fun repeatedConnectDoesNotCancelActiveOrScheduledReconnectWork() {
         assertEquals(
             true,

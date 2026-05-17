@@ -3,7 +3,6 @@ package com.openclaw.remote.viewmodel
 import com.openclaw.remote.data.GatewayConfig
 import kotlin.test.Test
 import kotlin.test.assertFalse
-import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 
 class ChatViewModelConfigTest {
@@ -38,13 +37,15 @@ class ChatViewModelConfigTest {
     }
 
     @Test
-    fun connectionKeyChangesWhenConfiguredBackendChanges() {
+    fun connectionKeyIgnoresPairingTargetChanges() {
         val base = GatewayConfig(deviceId = "device-a", pairedBackendId = "bk_openclaw")
         val changedBackend = base.copy(pairedBackendId = "bk_other")
 
-        assertNotEquals(
-            base.toChatConnectionKey(effectiveDeviceId = base.deviceId),
-            changedBackend.toChatConnectionKey(effectiveDeviceId = changedBackend.deviceId),
+        assertFalse(
+            shouldReconnectForConfig(
+                previous = base.toChatConnectionKey(effectiveDeviceId = base.deviceId),
+                next = changedBackend.toChatConnectionKey(effectiveDeviceId = changedBackend.deviceId),
+            ),
         )
     }
 

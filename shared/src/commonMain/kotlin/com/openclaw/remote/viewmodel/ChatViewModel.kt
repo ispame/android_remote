@@ -13,6 +13,8 @@ import com.openclaw.remote.network.WebSocketManager
 import com.openclaw.remote.network.WsMessageEvent
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -59,6 +61,7 @@ class ChatViewModel(
     private var latestConfig = GatewayConfig()
     private var loadedHistoryKeys = emptySet<String>()
     private val profileStates = mutableMapOf<String, ChatProfileRuntimeState>()
+    private val connectionMutex = Mutex()
 
     init {
         viewModelScope.launch {
@@ -69,7 +72,9 @@ class ChatViewModel(
         viewModelScope.launch {
             settingsManager.configFlow.collect { config ->
                 latestConfig = config
-                reconnectIfNeeded(config)
+                connectionMutex.withLock {
+                    reconnectIfNeeded(config)
+                }
             }
         }
     }
@@ -186,8 +191,17 @@ class ChatViewModel(
                             if (profileId == _selectedProfileId.value) {
                                 _pairedBackendLabel.value = event.backendLabel
                             }
-                            viewModelScope.launch {
-                                settingsManager.updatePairedBackend(event.backendId, event.backendLabel, profileId)
+                            val selectedProfileAlreadyPersisted = _profiles.value
+                                .firstOrNull { it.id == profileId }
+                                ?.isPaired == true
+                            if (
+                                profileId != _selectedProfileId.value ||
+                                !selectedProfileAlreadyPersisted ||
+                                shouldPersistPairedBackend(latestConfig, event.backendId, event.backendLabel)
+                            ) {
+                                viewModelScope.launch {
+                                    settingsManager.updatePairedBackend(event.backendId, event.backendLabel, profileId)
+                                }
                             }
                             if (profileId == _selectedProfileId.value) {
                                 requestAutoHistorySync()
@@ -296,13 +310,15 @@ class ChatViewModel(
 
     fun connect() {
         viewModelScope.launch {
-            wsManager?.let { manager ->
-                manager.connect()
-                return@launch
+            connectionMutex.withLock {
+                wsManager?.let { manager ->
+                    manager.connect()
+                    return@withLock
+                }
+                val config = settingsManager.configFlow.first()
+                latestConfig = config
+                reconnectIfNeeded(config)
             }
-            val config = settingsManager.configFlow.first()
-            latestConfig = config
-            reconnectIfNeeded(config)
         }
     }
 
@@ -397,7 +413,10 @@ class ChatViewModel(
     }
 
     fun onCleared() {
+        wsManager?.disconnect()
+        wsManager = null
         activeManagerJobs.forEach { it.cancel() }
+        activeManagerJobs = emptyList()
         viewModelScope.cancel()
     }
 
@@ -476,7 +495,6 @@ internal data class ChatConnectionKey(
     val deviceId: String,
     val deviceLabel: String,
     val token: String,
-    val pairedBackendId: String?,
     val asrMode: String,
     val asrProfileId: String,
 )
@@ -488,7 +506,6 @@ internal fun GatewayConfig.toChatConnectionKey(effectiveDeviceId: String): ChatC
         deviceId = effectiveDeviceId,
         deviceLabel = deviceLabel,
         token = token,
-        pairedBackendId = pairedBackendId,
         asrMode = asrMode,
         asrProfileId = asrProfileId,
     )

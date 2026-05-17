@@ -145,6 +145,7 @@ class A9UltraSppProtocolTest {
         val gate = A9UltraOpusRecoveryGate(postStopDrainMs = 900)
         gate.enterPostStopDrain(nowMs = 1_000)
 
+        assertEquals(A9UltraStandbyMode.CONTINUOUS, gate.standbyMode)
         assertEquals(
             A9UltraOpusRecoveryDecision.IgnoreDrain,
             gate.onSuppressedOpus(nowMs = 1_500, level = voiceLevel()),
@@ -157,6 +158,7 @@ class A9UltraSppProtocolTest {
             A9UltraOpusRecoveryDecision.StartRecovery,
             gate.onSuppressedOpus(nowMs = 2_100, level = voiceLevel()),
         )
+        assertEquals(A9UltraStandbyMode.CONTINUOUS, gate.standbyMode)
         assertFalse(gate.isSuppressing)
     }
 
@@ -165,11 +167,24 @@ class A9UltraSppProtocolTest {
         val gate = A9UltraOpusRecoveryGate(postStopDrainMs = 900)
         gate.enterAwaitingWake(nowMs = 1_000)
 
+        assertEquals(A9UltraStandbyMode.WAKE_WORD_REQUIRED, gate.standbyMode)
         assertEquals(
             A9UltraOpusRecoveryDecision.IgnoreAwaitingWake,
             gate.onSuppressedOpus(nowMs = 5_000, level = voiceLevel()),
         )
+        assertEquals(A9UltraStandbyMode.WAKE_WORD_REQUIRED, gate.standbyMode)
         assertTrue(gate.isSuppressing)
+    }
+
+    @Test
+    fun openGateReportsContinuousStandbyMode() {
+        val gate = A9UltraOpusRecoveryGate(postStopDrainMs = 900)
+
+        assertEquals(A9UltraStandbyMode.CONTINUOUS, gate.standbyMode)
+        assertEquals(
+            A9UltraOpusRecoveryDecision.StartRecovery,
+            gate.onSuppressedOpus(nowMs = 5_000, level = voiceLevel()),
+        )
     }
 
     @Test
