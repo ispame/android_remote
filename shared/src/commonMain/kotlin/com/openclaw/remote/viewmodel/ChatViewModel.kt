@@ -1,5 +1,8 @@
 package com.openclaw.remote.viewmodel
 
+import com.openclaw.remote.data.AgentAvailabilityStatus
+import com.openclaw.remote.data.AgentProfile
+import com.openclaw.remote.data.AgentProfilesState
 import com.openclaw.remote.data.ChatMessage
 import com.openclaw.remote.data.GatewayConfig
 import com.openclaw.remote.data.MessageStatus
@@ -22,6 +25,15 @@ class ChatViewModel(
 ) {
     private val _messages = MutableStateFlow<List<ChatMessage>>(emptyList())
     val messages: StateFlow<List<ChatMessage>> = _messages.asStateFlow()
+
+    private val _profiles = MutableStateFlow<List<AgentProfile>>(emptyList())
+    val profiles: StateFlow<List<AgentProfile>> = _profiles.asStateFlow()
+
+    private val _selectedProfileId = MutableStateFlow("")
+    val selectedProfileId: StateFlow<String> = _selectedProfileId.asStateFlow()
+
+    private val _unreadCounts = MutableStateFlow<Map<String, Int>>(emptyMap())
+    val unreadCounts: StateFlow<Map<String, Int>> = _unreadCounts.asStateFlow()
 
     private val _connectionState = MutableStateFlow(ConnectionState.DISCONNECTED)
     val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
@@ -46,8 +58,14 @@ class ChatViewModel(
     private var activeManagerJobs: List<Job> = emptyList()
     private var latestConfig = GatewayConfig()
     private var loadedHistoryKeys = emptySet<String>()
+    private val profileStates = mutableMapOf<String, ChatProfileRuntimeState>()
 
     init {
+        viewModelScope.launch {
+            settingsManager.profilesFlow.collect { state ->
+                applyProfilesState(state)
+            }
+        }
         viewModelScope.launch {
             settingsManager.configFlow.collect { config ->
                 latestConfig = config
@@ -75,11 +93,45 @@ class ChatViewModel(
         return deviceId
     }
 
+    private fun applyProfilesState(state: AgentProfilesState) {
+        val previousSelectedId = _selectedProfileId.value
+        if (previousSelectedId.isNotBlank() && previousSelectedId != state.selectedProfileId) {
+            persistActiveRuntimeState(previousSelectedId)
+        }
+
+        val knownIds = state.profiles.map { it.id }.toSet()
+        profileStates.keys.retainAll(knownIds)
+        state.profiles.forEach { profile ->
+            val existing = profileStates[profile.id]
+            if (existing == null) {
+                profileStates[profile.id] = ChatProfileRuntimeState.fromProfile(profile)
+            } else {
+                profileStates[profile.id] = existing.withProfilePairing(profile)
+            }
+        }
+
+        _profiles.value = state.profiles
+        _selectedProfileId.value = state.selectedProfileId
+        _unreadCounts.value = _unreadCounts.value.filterKeys { it in knownIds } +
+            knownIds.associateWith { _unreadCounts.value[it] ?: 0 }
+
+        if (previousSelectedId != state.selectedProfileId) {
+            loadRuntimeState(state.selectedProfileId)
+        }
+    }
+
     private fun reconnect(config: GatewayConfig, deviceId: String, connectionKey: ChatConnectionKey) {
+        if (_selectedProfileId.value.isNotBlank()) {
+            persistActiveRuntimeState(_selectedProfileId.value)
+        }
         activeManagerJobs.forEach { it.cancel() }
         activeManagerJobs = emptyList()
         wsManager?.disconnect()
         activeConnectionKey = connectionKey
+        if (config.profileId.isNotBlank()) {
+            _selectedProfileId.value = config.profileId
+            loadRuntimeState(config.profileId)
+        }
 
         val configuredBackendLabel = config.pairedBackendLabel ?: config.pairedBackendId
         if (configuredBackendLabel != null) {
@@ -119,45 +171,78 @@ class ChatViewModel(
                     when (event) {
                         is WsMessageEvent.Registered -> Unit
                         is WsMessageEvent.Paired -> {
-                            _pairedBackendLabel.value = event.backendLabel
-                            if (shouldPersistPairedBackend(latestConfig, event.backendId, event.backendLabel)) {
-                                latestConfig = latestConfig.copy(
-                                    pairedBackendId = event.backendId,
+                            val profileId = resolveProfileIdForBackendId(
+                                profiles = _profiles.value,
+                                backendId = event.backendId,
+                                activeProfileId = _selectedProfileId.value,
+                            ) ?: return@collect
+                            updateProfileState(profileId) { state ->
+                                state.copy(
+                                    registeredBackendId = event.backendId,
                                     pairedBackendLabel = event.backendLabel,
+                                    pairingState = PairingState.PAIRED,
                                 )
-                                viewModelScope.launch {
-                                    settingsManager.updatePairedBackend(event.backendId, event.backendLabel)
-                                }
                             }
-                            requestAutoHistorySync()
+                            if (profileId == _selectedProfileId.value) {
+                                _pairedBackendLabel.value = event.backendLabel
+                            }
+                            viewModelScope.launch {
+                                settingsManager.updatePairedBackend(event.backendId, event.backendLabel, profileId)
+                            }
+                            if (profileId == _selectedProfileId.value) {
+                                requestAutoHistorySync()
+                            }
                         }
                         is WsMessageEvent.NewMessage -> {
                             val displayMessage = event.message.sanitizedForDisplay() ?: return@collect
-                            _messages.value = _messages.value + displayMessage
+                            val profileId = resolveProfileIdForBackendId(
+                                profiles = _profiles.value,
+                                backendId = event.backendId,
+                                activeProfileId = _selectedProfileId.value,
+                            ) ?: return@collect
+                            appendMessageToProfile(profileId, displayMessage)
                         }
                         is WsMessageEvent.HistoryResponse -> {
-                            _isLoadingHistory.value = false
+                            val profileId = resolveProfileIdForBackendId(
+                                profiles = _profiles.value,
+                                backendId = event.backendId,
+                                activeProfileId = _selectedProfileId.value,
+                            ) ?: return@collect
+                            val currentState = profileStates[profileId] ?: ChatProfileRuntimeState()
                             if (!event.error.isNullOrBlank()) {
-                                _hasMoreHistory.value = false
-                                return@collect
-                            }
-                            val mergeResult = mergeHistoryMessages(
-                                existingMessages = _messages.value,
-                                loadedHistoryKeys = loadedHistoryKeys,
-                                incomingMessages = event.messages,
-                            )
-                            _messages.value = mergeResult.messages
-                            loadedHistoryKeys = mergeResult.loadedHistoryKeys
-                            _hasMoreHistory.value = event.hasMore
-                        }
-                        is WsMessageEvent.AsrResult -> {
-                            if (!event.success && event.clientMessageId != null && event.error in hiddenAsrErrors) {
-                                _messages.value = _messages.value.filter { message ->
-                                    message.clientMessageId != event.clientMessageId
+                                updateProfileState(profileId) {
+                                    currentState.copy(isLoadingHistory = false, hasMoreHistory = false)
                                 }
                                 return@collect
                             }
-                            _messages.value = _messages.value.map { message ->
+                            val mergeResult = mergeHistoryMessages(
+                                existingMessages = currentState.messages,
+                                loadedHistoryKeys = currentState.loadedHistoryKeys,
+                                incomingMessages = event.messages,
+                            )
+                            updateProfileState(profileId) {
+                                currentState.copy(
+                                    messages = mergeResult.messages,
+                                    loadedHistoryKeys = mergeResult.loadedHistoryKeys,
+                                    isLoadingHistory = false,
+                                    hasMoreHistory = event.hasMore,
+                                )
+                            }
+                        }
+                        is WsMessageEvent.AsrResult -> {
+                            val profileId = profileIdForClientMessage(event.clientMessageId) ?: return@collect
+                            val currentState = profileStates[profileId] ?: ChatProfileRuntimeState()
+                            if (!event.success && event.clientMessageId != null && event.error in hiddenAsrErrors) {
+                                updateProfileState(profileId) {
+                                    currentState.copy(
+                                        messages = currentState.messages.filter { message ->
+                                            message.clientMessageId != event.clientMessageId
+                                        }
+                                    )
+                                }
+                                return@collect
+                            }
+                            val updatedMessages = currentState.messages.map { message ->
                                 if (event.clientMessageId != null && message.clientMessageId == event.clientMessageId) {
                                     message.copy(
                                         content = if (event.success) event.text.orEmpty() else "语音识别失败: ${event.error ?: "unknown"}",
@@ -167,24 +252,38 @@ class ChatViewModel(
                                     message
                                 }
                             }
+                            updateProfileState(profileId) { currentState.copy(messages = updatedMessages) }
                         }
                         is WsMessageEvent.Unpaired -> {
-                            _pairedBackendLabel.value = null
-                            loadedHistoryKeys = emptySet()
-                            viewModelScope.launch {
-                                settingsManager.updatePairedBackend(null, null)
+                            val profileId = resolveProfileIdForBackendId(
+                                profiles = _profiles.value,
+                                backendId = event.backendId,
+                                activeProfileId = _selectedProfileId.value,
+                            ) ?: return@collect
+                            updateProfileState(profileId) { state ->
+                                state.copy(
+                                    registeredBackendId = null,
+                                    pairedBackendLabel = null,
+                                    pairingState = PairingState.UNPAIRED,
+                                    loadedHistoryKeys = emptySet(),
+                                )
                             }
-                            _messages.value = _messages.value + ChatMessage(
-                                "已解除配对",
-                                SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date()),
-                                "assistant"
+                            viewModelScope.launch {
+                                settingsManager.updatePairedBackend(null, null, profileId)
+                            }
+                            appendMessageToProfile(
+                                profileId,
+                                ChatMessage(
+                                    "已解除配对",
+                                    SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date()),
+                                    "assistant"
+                                )
                             )
                         }
                         is WsMessageEvent.Error -> {
-                            _messages.value = _messages.value + ChatMessage(
+                            addLocalMessage(
                                 "错误 (${event.code}): ${event.message}",
-                                SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date()),
-                                "assistant"
+                                "assistant",
                             )
                         }
                     }
@@ -211,11 +310,63 @@ class ChatViewModel(
         wsManager?.requestPair(backendId)
     }
 
+    fun requestPair(profileId: String, backendId: String) {
+        updateProfileState(profileId) { state ->
+            state.copy(pairingState = PairingState.PENDING, pairedBackendLabel = backendId)
+        }
+        viewModelScope.launch {
+            if (profileId != _selectedProfileId.value) {
+                settingsManager.selectProfile(profileId)
+                delay(1000)
+            }
+            wsManager?.requestPair(backendId)
+        }
+    }
+
+    fun selectProfile(profileId: String) {
+        persistActiveRuntimeState(_selectedProfileId.value)
+        loadRuntimeState(profileId)
+        _unreadCounts.value = _unreadCounts.value + (profileId to 0)
+        viewModelScope.launch {
+            settingsManager.selectProfile(profileId)
+        }
+    }
+
+    fun pairingStateFor(profile: AgentProfile): PairingState =
+        if (profile.id == _selectedProfileId.value) {
+            _pairingState.value
+        } else {
+            profileStates[profile.id]?.pairingState ?: if (profile.isPaired) PairingState.PAIRED else PairingState.UNPAIRED
+        }
+
+    fun availabilityStatus(profile: AgentProfile): AgentAvailabilityStatus {
+        if (profile.backendId.isBlank()) return AgentAvailabilityStatus.UNCONFIGURED
+        return when (pairingStateFor(profile)) {
+            PairingState.PENDING -> AgentAvailabilityStatus.PAIRING
+            PairingState.UNPAIRED -> AgentAvailabilityStatus.UNPAIRED
+            PairingState.PAIRED -> when (_connectionState.value) {
+                ConnectionState.REGISTERED, ConnectionState.PAIRED -> AgentAvailabilityStatus.AVAILABLE
+                ConnectionState.CONNECTING, ConnectionState.CONNECTED -> AgentAvailabilityStatus.CONNECTING
+                ConnectionState.DISCONNECTED -> AgentAvailabilityStatus.OFFLINE
+            }
+        }
+    }
+
+    fun addLocalMessage(content: String, senderId: String = "assistant") {
+        appendMessageToProfile(
+            _selectedProfileId.value,
+            ChatMessage(
+                content,
+                SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date()),
+                senderId,
+            )
+        )
+    }
+
     fun sendText(text: String) {
         if (_pairingState.value != PairingState.PAIRED) {
-            _messages.value = _messages.value + ChatMessage(
+            addLocalMessage(
                 "请先配对后端 Agent",
-                SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date()),
                 "assistant"
             )
             return
@@ -225,9 +376,8 @@ class ChatViewModel(
 
     fun sendAudio(audioData: ByteArray) {
         if (_pairingState.value != PairingState.PAIRED) {
-            _messages.value = _messages.value + ChatMessage(
+            addLocalMessage(
                 "请先配对后端 Agent",
-                SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date()),
                 "assistant"
             )
             return
@@ -237,6 +387,9 @@ class ChatViewModel(
 
     fun loadMoreHistory() {
         _isLoadingHistory.value = true
+        updateProfileState(_selectedProfileId.value) { state ->
+            state.copy(isLoadingHistory = true)
+        }
         wsManager?.requestRecentHistory()
     }
 
@@ -253,6 +406,63 @@ class ChatViewModel(
         viewModelScope.cancel()
     }
 
+    private fun appendMessageToProfile(profileId: String, message: ChatMessage) {
+        if (profileId.isBlank()) {
+            _messages.value = _messages.value + message
+            return
+        }
+        val state = profileStates[profileId] ?: ChatProfileRuntimeState()
+        val updated = state.copy(messages = state.messages + message)
+        profileStates[profileId] = updated
+        if (profileId == _selectedProfileId.value) {
+            loadRuntimeState(profileId)
+        } else if (shouldIncrementUnreadCount(profileId, _selectedProfileId.value, message.senderId)) {
+            _unreadCounts.value = _unreadCounts.value + (profileId to ((_unreadCounts.value[profileId] ?: 0) + 1))
+        }
+    }
+
+    private fun updateProfileState(
+        profileId: String,
+        transform: (ChatProfileRuntimeState) -> ChatProfileRuntimeState,
+    ) {
+        if (profileId.isBlank()) return
+        val updated = transform(profileStates[profileId] ?: ChatProfileRuntimeState())
+        profileStates[profileId] = updated
+        if (profileId == _selectedProfileId.value) {
+            loadRuntimeState(profileId)
+        }
+    }
+
+    private fun persistActiveRuntimeState(profileId: String) {
+        if (profileId.isBlank()) return
+        profileStates[profileId] = ChatProfileRuntimeState(
+            registeredBackendId = latestConfig.pairedBackendId,
+            pairedBackendLabel = _pairedBackendLabel.value,
+            pairingState = _pairingState.value,
+            messages = _messages.value,
+            isLoadingHistory = _isLoadingHistory.value,
+            hasMoreHistory = _hasMoreHistory.value,
+            loadedHistoryKeys = loadedHistoryKeys,
+        )
+    }
+
+    private fun loadRuntimeState(profileId: String) {
+        val state = profileStates[profileId] ?: ChatProfileRuntimeState()
+        _messages.value = state.messages
+        _pairingState.value = state.pairingState
+        _pairedBackendLabel.value = state.pairedBackendLabel
+        _isLoadingHistory.value = state.isLoadingHistory
+        _hasMoreHistory.value = state.hasMoreHistory
+        loadedHistoryKeys = state.loadedHistoryKeys
+    }
+
+    private fun profileIdForClientMessage(clientMessageId: String?): String? {
+        if (clientMessageId == null) return null
+        return profileStates.entries.firstOrNull { (_, state) ->
+            state.messages.any { it.clientMessageId == clientMessageId }
+        }?.key
+    }
+
     private fun requestAutoHistorySync() {
         val now = System.currentTimeMillis()
         if (now - lastAutoHistoryRequestAt < 3000) return
@@ -266,6 +476,7 @@ class ChatViewModel(
 }
 
 internal data class ChatConnectionKey(
+    val profileId: String,
     val gatewayUrl: String,
     val deviceId: String,
     val deviceLabel: String,
@@ -277,6 +488,7 @@ internal data class ChatConnectionKey(
 
 internal fun GatewayConfig.toChatConnectionKey(effectiveDeviceId: String): ChatConnectionKey =
     ChatConnectionKey(
+        profileId = profileId,
         gatewayUrl = gatewayUrl,
         deviceId = effectiveDeviceId,
         deviceLabel = deviceLabel,
@@ -291,3 +503,57 @@ internal fun shouldReconnectForConfig(previous: ChatConnectionKey?, next: ChatCo
 
 internal fun shouldPersistPairedBackend(config: GatewayConfig, backendId: String?, backendLabel: String?): Boolean =
     config.pairedBackendId != backendId || config.pairedBackendLabel != backendLabel
+
+internal data class ChatProfileRuntimeState(
+    val registeredBackendId: String? = null,
+    val pairedBackendLabel: String? = null,
+    val pairingState: PairingState = PairingState.UNPAIRED,
+    val messages: List<ChatMessage> = emptyList(),
+    val isLoadingHistory: Boolean = false,
+    val hasMoreHistory: Boolean = true,
+    val loadedHistoryKeys: Set<String> = emptySet(),
+) {
+    fun withProfilePairing(profile: AgentProfile): ChatProfileRuntimeState {
+        if (profile.backendId.isBlank()) {
+            return copy(
+                registeredBackendId = null,
+                pairedBackendLabel = null,
+                pairingState = PairingState.UNPAIRED,
+            )
+        }
+        if (profile.isPaired || pairingState == PairingState.PAIRED) {
+            return copy(
+                registeredBackendId = profile.backendId,
+                pairedBackendLabel = profile.backendLabel ?: profile.resolvedDisplayName,
+                pairingState = PairingState.PAIRED,
+            )
+        }
+        return this
+    }
+
+    companion object {
+        fun fromProfile(profile: AgentProfile): ChatProfileRuntimeState =
+            ChatProfileRuntimeState().withProfilePairing(profile)
+    }
+}
+
+internal fun resolveProfileIdForBackendId(
+    profiles: List<AgentProfile>,
+    backendId: String?,
+    activeProfileId: String?,
+): String? {
+    val normalizedBackendId = backendId?.trim().orEmpty()
+    if (normalizedBackendId.isNotEmpty()) {
+        profiles.firstOrNull { it.backendId == normalizedBackendId }?.let { return it.id }
+    }
+    return activeProfileId?.takeIf { it.isNotBlank() }
+}
+
+internal fun shouldIncrementUnreadCount(
+    targetProfileId: String?,
+    activeProfileId: String?,
+    senderId: String,
+): Boolean =
+    !targetProfileId.isNullOrBlank() &&
+        targetProfileId != activeProfileId &&
+        senderId != "user"

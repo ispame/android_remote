@@ -49,6 +49,7 @@ sealed class A9UltraSppState {
 class A9UltraSppManager(
     private val context: Context,
     private val onAudioReady: (ByteArray) -> Unit,
+    private val onWake: () -> Unit = {},
     private val maxRecordingMs: Long = 300_000L,
     private val promptTonePlayer: HeadsetPromptTonePlayer = HeadsetPromptTonePlayer(),
 ) {
@@ -263,6 +264,9 @@ class A9UltraSppManager(
     private fun handleWakeEvent(event: A9UltraWakeEvent) {
         when (event) {
             is A9UltraWakeEvent.Wake -> {
+                mainScope.launch {
+                    onWake()
+                }
                 openOpusGate()
                 promptTonePlayer.play()
                 startSession(reason = "wake")

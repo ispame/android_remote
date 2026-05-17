@@ -246,10 +246,12 @@ class WebSocketManager(
     }
 
     fun requestRecentHistory(rounds: Int = 15) {
+        val backendId = registeredBackendId ?: return
         if (_pairingState.value != PairingState.PAIRED) return
         val frame = buildJsonObject {
             put("type", "history_request")
             put("app_id", deviceId)
+            put("target_backend_id", backendId)
             put("session_key", "current")
             put("limit", maxOf(1, rounds) * 2)
         }
@@ -356,15 +358,18 @@ class WebSocketManager(
                     val content = obj["content"]?.jsonPrimitive?.content ?: ""
                     val ts = obj["timestamp"]?.jsonPrimitive?.content ?: timestamp()
                     val seq = obj["seq"]?.jsonPrimitive?.content?.toIntOrNull()
+                    val backendId = obj["from"]?.jsonPrimitive?.contentOrNull ?: registeredBackendId
 
                     // Immediately ack this message so the sender (plugin) gets delivery confirmation
                     if (seq != null) {
                         sendAck(seq)
                     }
 
-                    offerEvent(WsMessageEvent.NewMessage(ChatMessage(content, ts, "assistant")))
+                    offerEvent(WsMessageEvent.NewMessage(ChatMessage(content, ts, "assistant"), backendId))
                 }
                 "history_response" -> {
+                    val backendId = obj["backend_id"]?.jsonPrimitive?.contentOrNull
+                        ?: obj["target_backend_id"]?.jsonPrimitive?.contentOrNull
                     val messages = obj["messages"]?.jsonArray?.mapNotNull { element ->
                         val item = element as? JsonObject ?: return@mapNotNull null
                         val content = item["content"]?.jsonPrimitive?.content ?: return@mapNotNull null
@@ -374,7 +379,7 @@ class WebSocketManager(
                     }.orEmpty()
                     val hasMore = obj["has_more"]?.jsonPrimitive?.content?.toBoolean() ?: false
                     val error = obj["error"]?.jsonPrimitive?.contentOrNull
-                    offerEvent(WsMessageEvent.HistoryResponse(messages, hasMore, error))
+                    offerEvent(WsMessageEvent.HistoryResponse(messages, hasMore, error, backendId))
                 }
                 "asr_result" -> {
                     val clientMessageId = obj["client_message_id"]?.jsonPrimitive?.content
@@ -417,7 +422,7 @@ class WebSocketManager(
                         autoPairEnabled = false
                         registeredBackendId = null
                         _pairingState.value = PairingState.UNPAIRED
-                        offerEvent(WsMessageEvent.Unpaired)
+                        offerEvent(WsMessageEvent.Unpaired(targetId))
                     }
                 }
                 "error" -> {

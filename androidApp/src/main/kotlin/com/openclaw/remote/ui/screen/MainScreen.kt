@@ -21,12 +21,15 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.automirrored.filled.VolumeOff
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.StopCircle
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -50,6 +53,8 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.openclaw.remote.audio.AudioRecorder
+import com.openclaw.remote.data.AgentAvailabilityStatus
+import com.openclaw.remote.data.AgentProfile
 import com.openclaw.remote.data.ChatMessage
 import com.openclaw.remote.domain.ConnectionState
 import com.openclaw.remote.domain.PairingState
@@ -64,14 +69,23 @@ fun MainScreen(
     connectionState: ConnectionState,
     pairingState: PairingState,
     pairedBackendLabel: String?,
+    profiles: List<AgentProfile> = emptyList(),
+    selectedProfileId: String = "",
+    profileStatuses: Map<String, AgentAvailabilityStatus> = emptyMap(),
+    unreadCounts: Map<String, Int> = emptyMap(),
     isDark: Boolean,
     isLoadingHistory: Boolean,
     hasMoreHistory: Boolean,
     headsetStatusLabel: String? = null,
+    soundPlaybackEnabled: Boolean = true,
+    isPlaybackSpeaking: Boolean = false,
     viewModel: ChatViewModel,
     audioRecorder: AudioRecorder,
     onToggleTheme: () -> Unit,
+    onToggleSoundPlayback: () -> Unit = {},
+    onInterruptPlayback: () -> Unit = {},
     onNavigateToSettings: () -> Unit = {},
+    onSelectProfile: (String) -> Unit = {},
 ) {
     val colors = MochiTheme.colors
     val clipboardManager = LocalClipboardManager.current
@@ -139,10 +153,19 @@ fun MainScreen(
                 connectionState = connectionState,
                 pairingState = pairingState,
                 pairedBackendLabel = pairedBackendLabel,
+                profiles = profiles,
+                selectedProfileId = selectedProfileId,
+                profileStatuses = profileStatuses,
+                unreadCounts = unreadCounts,
                 headsetStatusLabel = headsetStatusLabel,
+                soundPlaybackEnabled = soundPlaybackEnabled,
+                isPlaybackSpeaking = isPlaybackSpeaking,
                 isDark = isDark,
                 onToggleTheme = onToggleTheme,
+                onToggleSoundPlayback = onToggleSoundPlayback,
+                onInterruptPlayback = onInterruptPlayback,
                 onNavigateToSettings = onNavigateToSettings,
+                onSelectProfile = onSelectProfile,
                 colors = colors,
             )
 
@@ -261,6 +284,7 @@ fun MainScreen(
                 pairingState = pairingState,
                 quotedMessageSummary = quotedMessageSummary,
                 onCancelQuote = { quotedMessageSummary = null },
+                onInterruptCurrentPlayback = onInterruptPlayback,
                 recordingState = recordingState,
                 onMicTouchLocationChanged = { globalY ->
                     touchLocationY = globalY
@@ -278,6 +302,7 @@ fun MainScreen(
                 },
                 onSendText = { text ->
                     val outgoingText = quotedMessageSummary?.let { "> $it\n\n$text" } ?: text
+                    onInterruptPlayback()
                     viewModel.sendText(outgoingText)
                     quotedMessageSummary = null
                 },
@@ -350,10 +375,19 @@ private fun TopBar(
     connectionState: ConnectionState,
     pairingState: PairingState,
     pairedBackendLabel: String?,
+    profiles: List<AgentProfile>,
+    selectedProfileId: String,
+    profileStatuses: Map<String, AgentAvailabilityStatus>,
+    unreadCounts: Map<String, Int>,
     headsetStatusLabel: String?,
+    soundPlaybackEnabled: Boolean,
+    isPlaybackSpeaking: Boolean,
     isDark: Boolean,
     onToggleTheme: () -> Unit,
+    onToggleSoundPlayback: () -> Unit,
+    onInterruptPlayback: () -> Unit,
     onNavigateToSettings: () -> Unit,
+    onSelectProfile: (String) -> Unit,
     colors: MochiColors,
 ) {
     val pairedStatusSuffix = pairedBackendLabel?.let { " · $it" } ?: ""
@@ -376,25 +410,42 @@ private fun TopBar(
             connectionState == ConnectionState.CONNECTING -> colors.accent to "连接中..."
             else -> colors.recordingRed to "未连接"
         }
-        Column(
-            modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(2.dp),
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = "Boson Relay",
-                    fontSize = 13.sp,
-                    color = colors.textSecondary,
-                )
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            if (profiles.size >= 2) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    profiles.take(3).forEach { profile ->
+                        val itemStatus = profileStatuses[profile.id] ?: AgentAvailabilityStatus.UNPAIRED
+                        AgentChip(
+                            profile = profile,
+                            status = itemStatus,
+                            selected = profile.id == selectedProfileId,
+                            hasUnread = (unreadCounts[profile.id] ?: 0) > 0,
+                            colors = colors,
+                            onClick = { onSelectProfile(profile.id) },
+                        )
+                    }
+                }
+            } else {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = profiles.firstOrNull()?.resolvedDisplayName ?: "Boson Relay",
+                        fontSize = 13.sp,
+                        color = colors.textSecondary,
+                        maxLines = 1,
+                    )
 
-                Spacer(modifier = Modifier.width(8.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
 
-                Text(
-                    text = "• $statusText",
-                    fontSize = 11.sp,
-                    color = statusColor,
-                    maxLines = 1,
-                )
+                    Text(
+                        text = "• $statusText",
+                        fontSize = 11.sp,
+                        color = statusColor,
+                        maxLines = 1,
+                    )
+                }
             }
             if (!headsetStatusLabel.isNullOrBlank()) {
                 Text(
@@ -407,6 +458,32 @@ private fun TopBar(
         }
 
         Spacer(modifier = Modifier.width(8.dp))
+
+        AnimatedVisibility(visible = isPlaybackSpeaking) {
+            IconButton(
+                onClick = onInterruptPlayback,
+                modifier = Modifier.size(32.dp),
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.StopCircle,
+                    contentDescription = "打断当前播放",
+                    tint = colors.recordingRed,
+                    modifier = Modifier.size(20.dp),
+                )
+            }
+        }
+
+        IconButton(
+            onClick = onToggleSoundPlayback,
+            modifier = Modifier.size(32.dp),
+        ) {
+            Icon(
+                imageVector = if (soundPlaybackEnabled) Icons.AutoMirrored.Filled.VolumeUp else Icons.AutoMirrored.Filled.VolumeOff,
+                contentDescription = if (soundPlaybackEnabled) "切换到无声" else "切换到播放",
+                tint = if (soundPlaybackEnabled) colors.icon else colors.textSecondary,
+                modifier = Modifier.size(20.dp),
+            )
+        }
 
         Box(
             modifier = Modifier
@@ -437,6 +514,47 @@ private fun TopBar(
     }
 }
 
+@Composable
+private fun AgentChip(
+    profile: AgentProfile,
+    status: AgentAvailabilityStatus,
+    selected: Boolean,
+    hasUnread: Boolean,
+    colors: MochiColors,
+    onClick: () -> Unit,
+) {
+    val statusColor = when (status) {
+        AgentAvailabilityStatus.AVAILABLE -> colors.onlineGreen
+        AgentAvailabilityStatus.PAIRING, AgentAvailabilityStatus.CONNECTING -> colors.accent
+        AgentAvailabilityStatus.OFFLINE -> colors.recordingRed
+        AgentAvailabilityStatus.UNCONFIGURED, AgentAvailabilityStatus.UNPAIRED -> colors.textSecondary
+    }
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(if (selected) colors.primary else colors.inputBg)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 7.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Text(
+            text = "${profile.resolvedDisplayName}(${status.label})",
+            fontSize = 11.sp,
+            color = if (selected) colors.onPrimary else statusColor,
+            maxLines = 1,
+        )
+        if (!selected && hasUnread) {
+            Box(
+                modifier = Modifier
+                    .size(6.dp)
+                    .clip(CircleShape)
+                    .background(colors.recordingRed)
+            )
+        }
+    }
+}
+
 private enum class InputMode { VOICE, TEXT }
 
 @Composable
@@ -448,6 +566,7 @@ private fun InputArea(
     pairingState: PairingState = PairingState.UNPAIRED,
     quotedMessageSummary: String? = null,
     onCancelQuote: () -> Unit = {},
+    onInterruptCurrentPlayback: () -> Unit = {},
     onSendText: (String) -> Unit = { viewModel.sendText(it) },
     recordingState: VoiceRecordingState = VoiceRecordingState.IDLE,
     onMicTouchLocationChanged: (Float) -> Unit = {},
@@ -488,6 +607,7 @@ private fun InputArea(
                 isRecording = isRecording,
                 recordingState = recordingState,
                 onMicPress = {
+                    onInterruptCurrentPlayback()
                     if (!audioRecorder.isRecording.value) {
                         audioRecorder.startRecording()
                     }

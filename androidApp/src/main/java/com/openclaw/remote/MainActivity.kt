@@ -18,6 +18,8 @@ import com.openclaw.remote.data.GatewayConfig
 import com.openclaw.remote.data.SettingsManagerAndroid
 import com.openclaw.remote.headset.A9UltraSppManager
 import com.openclaw.remote.headset.AssistantSpeechTrigger
+import com.openclaw.remote.headset.BaseTtsEngine
+import com.openclaw.remote.headset.SoundPlaybackController
 import com.openclaw.remote.headset.TtsEngine
 import com.openclaw.remote.headset.TtsEngineFactory
 import com.openclaw.remote.ui.screen.MainScreen
@@ -28,7 +30,6 @@ import com.openclaw.remote.ui.screen.parseQRPack
 import com.openclaw.remote.ui.theme.MochiTheme
 import com.openclaw.remote.viewmodel.ChatViewModel
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -37,6 +38,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var settingsManager: SettingsManagerAndroid
     private lateinit var audioRecorder: AudioRecorderAndroid
     private lateinit var headsetManager: A9UltraSppManager
+    private lateinit var soundPlaybackController: SoundPlaybackController
     private var ttsEngine: TtsEngine? = null
     private var currentConfig: GatewayConfig = GatewayConfig()
     private val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main)
@@ -56,6 +58,14 @@ class MainActivity : ComponentActivity() {
         audioRecorder = AudioRecorderAndroid(this)
 
         viewModel = ChatViewModel(settingsManager)
+        soundPlaybackController = SoundPlaybackController(
+            ttsEngineProvider = { ttsEngine },
+            persistSoundPlaybackEnabled = { enabled ->
+                scope.launch {
+                    settingsManager.updateSoundPlaybackEnabled(enabled)
+                }
+            },
+        )
 
         // 初始化 TTS 引擎和配置
         scope.launch {
@@ -66,6 +76,8 @@ class MainActivity : ComponentActivity() {
         headsetManager = A9UltraSppManager(this, onAudioReady = { audioData ->
             Log.i("A9UltraSPP", "headset audio ready wav=${audioData.size}")
             viewModel.sendAudio(audioData)
+        }, onWake = {
+            soundPlaybackController.onHeadsetWake()
         })
 
         checkPermissions()
@@ -84,15 +96,30 @@ class MainActivity : ComponentActivity() {
                 val pairedBackendLabel by viewModel.pairedBackendLabel.collectAsState()
                 val isRecording by audioRecorder.isRecording.collectAsState()
                 val messages by viewModel.messages.collectAsState()
+                val profiles by viewModel.profiles.collectAsState()
+                val selectedProfileId by viewModel.selectedProfileId.collectAsState()
+                val unreadCounts by viewModel.unreadCounts.collectAsState()
                 val isLoadingHistory by viewModel.isLoadingHistory.collectAsState()
                 val hasMoreHistory by viewModel.hasMoreHistory.collectAsState()
                 val headsetState by headsetManager.state.collectAsState()
                 val config by settingsManager.configFlow.collectAsState(initial = currentConfig)
+                val soundPlaybackEnabled by settingsManager.soundPlaybackEnabledFlow.collectAsState(initial = true)
+                val playbackState by soundPlaybackController.state.collectAsState()
+
+                LaunchedEffect(soundPlaybackEnabled) {
+                    soundPlaybackController.syncSoundPlaybackEnabled(soundPlaybackEnabled)
+                }
 
                 // 监听配置变化，重新初始化 TTS 引擎
                 LaunchedEffect(config.ttsEngine) {
                     ttsEngine?.release()
-                    ttsEngine = TtsEngineFactory.create(config.ttsEngine, this@MainActivity)
+                    soundPlaybackController.markPlaybackFinished()
+                    ttsEngine = TtsEngineFactory.create(config.ttsEngine, this@MainActivity).also { engine ->
+                        (engine as? BaseTtsEngine)?.setCallbacks(
+                            onStart = { soundPlaybackController.markPlaybackStarted() },
+                            onDone = { soundPlaybackController.markPlaybackFinished() },
+                        )
+                    }
                 }
 
                 // 监听当前会话的新 assistant 回复，播放 TTS。历史消息和设置变更不重播。
@@ -100,7 +127,7 @@ class MainActivity : ComponentActivity() {
                     val msg = assistantSpeechTrigger.onMessagesChanged(messages) ?: return@LaunchedEffect
                     val apiKey = if (config.ttsEngine == "minimax") config.minimaxApiKey else null
                     val voiceId = if (config.ttsEngine == "minimax") config.minimaxVoiceId else null
-                    ttsEngine?.speak(msg.content, apiKey, voiceId)
+                    soundPlaybackController.speakAssistantReply(msg.content, apiKey, voiceId)
                 }
 
                 if (showQRScanner) {
@@ -116,13 +143,14 @@ class MainActivity : ComponentActivity() {
                 } else if (showSettings) {
                     SettingsScreen(
                         settingsManager = settingsManager,
+                        viewModel = viewModel,
                         connectionState = connectionState,
                         pairingState = pairingState,
                         pairedBackendLabel = pairedBackendLabel,
                         isDark = isDark,
                         onToggleTheme = { isDark = !isDark },
-                        onRequestPair = { backendId ->
-                            viewModel.requestPair(backendId)
+                        onRequestPair = { profileId, backendId ->
+                            viewModel.requestPair(profileId, backendId)
                             showSettings = false
                         },
                         onUnpair = {
@@ -138,14 +166,27 @@ class MainActivity : ComponentActivity() {
                         connectionState = connectionState,
                         pairingState = pairingState,
                         pairedBackendLabel = pairedBackendLabel,
+                        profiles = profiles,
+                        selectedProfileId = selectedProfileId,
+                        profileStatuses = profiles.associate { it.id to viewModel.availabilityStatus(it) },
+                        unreadCounts = unreadCounts,
                         isDark = isDark,
                         isLoadingHistory = isLoadingHistory,
                         hasMoreHistory = hasMoreHistory,
                         headsetStatusLabel = headsetState.label,
+                        soundPlaybackEnabled = playbackState.soundPlaybackEnabled,
+                        isPlaybackSpeaking = playbackState.isSpeaking,
                         viewModel = viewModel,
                         audioRecorder = audioRecorder,
                         onToggleTheme = { isDark = !isDark },
-                        onNavigateToSettings = { showSettings = true }
+                        onToggleSoundPlayback = {
+                            soundPlaybackController.setSoundPlaybackEnabled(!playbackState.soundPlaybackEnabled)
+                        },
+                        onInterruptPlayback = {
+                            soundPlaybackController.interruptCurrentPlayback()
+                        },
+                        onNavigateToSettings = { showSettings = true },
+                        onSelectProfile = { profileId -> viewModel.selectProfile(profileId) },
                     )
                 }
             }
@@ -184,28 +225,28 @@ class MainActivity : ComponentActivity() {
         when (result) {
             is QRParseResult.Success -> {
                 scope.launch {
-                    val current = settingsManager.configFlow.first()
-                    settingsManager.updateConfig(
-                        GatewayConfig(
-                            gatewayUrl = result.gatewayUrl,
-                            deviceId = current.deviceId,
-                            deviceLabel = current.deviceLabel.ifEmpty { "我的手机" },
-                            token = result.token,
-                            pairedBackendId = result.backendId,
-                            pairedBackendLabel = result.backendId,
-                            asrMode = current.asrMode,
-                            asrProfileId = current.asrProfileId,
-                            ttsEngine = current.ttsEngine,
-                            minimaxApiKey = current.minimaxApiKey,
-                            minimaxVoiceId = current.minimaxVoiceId,
-                        )
+                    val error = settingsManager.profileAcceptError(result.gatewayUrl, result.backendId)
+                    if (error != null) {
+                        viewModel.addLocalMessage(error)
+                        return@launch
+                    }
+                    val profile = settingsManager.upsertScannedProfile(
+                        gatewayUrl = result.gatewayUrl,
+                        backendId = result.backendId,
+                        token = result.token,
+                        platform = result.platform,
+                        label = result.label,
                     )
+                    if (profile == null) {
+                        viewModel.addLocalMessage("无法新增 Agent")
+                        return@launch
+                    }
                     delay(1000)
-                    viewModel.requestPair(result.backendId)
+                    viewModel.requestPair(profile.id, profile.backendId)
                 }
             }
             is QRParseResult.Error -> {
-                // Handle error
+                viewModel.addLocalMessage(result.message)
             }
         }
     }

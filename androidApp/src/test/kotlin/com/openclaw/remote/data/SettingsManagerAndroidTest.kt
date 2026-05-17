@@ -12,11 +12,12 @@ import org.robolectric.RobolectricTestRunner
 
 @RunWith(RobolectricTestRunner::class)
 class SettingsManagerAndroidTest {
+    private lateinit var context: Context
     private lateinit var manager: SettingsManagerAndroid
 
     @Before
     fun setUp() = runTest {
-        val context = ApplicationProvider.getApplicationContext<Context>()
+        context = ApplicationProvider.getApplicationContext()
         manager = SettingsManagerAndroid(context)
         manager.clearConfig()
     }
@@ -44,5 +45,20 @@ class SettingsManagerAndroidTest {
         assertEquals("minimax", config.ttsEngine)
         assertEquals("test-key", config.minimaxApiKey)
         assertEquals("female_sunny_zh", config.minimaxVoiceId)
+    }
+
+    @Test
+    fun soundPlaybackDefaultsToEnabledAndPersistsAcrossManagerInstances() = runTest {
+        assertEquals(true, manager.soundPlaybackEnabledFlow.first())
+
+        manager.updateSoundPlaybackEnabled(false)
+        val restoredMuted = SettingsManagerAndroid(context)
+
+        assertEquals(false, restoredMuted.soundPlaybackEnabledFlow.first())
+
+        restoredMuted.updateSoundPlaybackEnabled(true)
+        val restoredEnabled = SettingsManagerAndroid(context)
+
+        assertEquals(true, restoredEnabled.soundPlaybackEnabledFlow.first())
     }
 }
