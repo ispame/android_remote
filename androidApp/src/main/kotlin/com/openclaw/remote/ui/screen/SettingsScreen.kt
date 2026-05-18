@@ -2,6 +2,7 @@ package com.openclaw.remote.ui.screen
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,37 +16,36 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AddCircle
+import androidx.compose.material.icons.filled.ChatBubble
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.DarkMode
-import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.LinkOff
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.RemoveCircle
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.RadioButton
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -56,8 +56,13 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.openclaw.remote.data.AgentAvailabilityStatus
@@ -70,6 +75,8 @@ import com.openclaw.remote.domain.ConnectionState
 import com.openclaw.remote.domain.PairingState
 import com.openclaw.remote.headset.MiniMaxVoiceCatalog
 import com.openclaw.remote.headset.MiniMaxVoiceOption
+import com.openclaw.remote.ui.theme.MochiColors
+import com.openclaw.remote.ui.theme.MochiTheme
 import com.openclaw.remote.viewmodel.ChatViewModel
 import java.net.URL
 import java.util.UUID
@@ -134,6 +141,7 @@ fun SettingsScreen(
     onNavigateToQRScanner: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
+    val colors = MochiTheme.colors
     val config by settingsManager.configFlow.collectAsState(initial = GatewayConfig())
     val profilesState by settingsManager.profilesFlow.collectAsState(
         initial = AgentProfilesState.default(config.deviceId),
@@ -213,270 +221,517 @@ fun SettingsScreen(
     }
 
     Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("设置") },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
-                    }
-                },
-                actions = {
-                    IconButton(onClick = onToggleTheme) {
-                        Icon(
-                            imageVector = if (isDark) Icons.Filled.LightMode else Icons.Filled.DarkMode,
-                            contentDescription = if (isDark) "切换到浅色模式" else "切换到深色模式",
-                        )
-                    }
-                }
-            )
-        },
+        containerColor = colors.background,
         snackbarHost = { SnackbarHost(snackbarHostState) },
     ) { padding ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .verticalScroll(rememberScrollState())
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
+                .background(colors.background),
         ) {
-            ConnectionStatusCard(connectionState, pairingState, pairedBackendLabel, onUnpair)
+            SettingsTopBar(
+                isDark = isDark,
+                colors = colors,
+                onToggleTheme = onToggleTheme,
+                onBack = onBack,
+            )
 
-            Button(onClick = onNavigateToQRScanner, modifier = Modifier.fillMaxWidth()) {
-                Icon(Icons.Default.QrCodeScanner, contentDescription = null, modifier = Modifier.size(20.dp))
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("扫码或新增 Agent")
-            }
+            HorizontalDivider(color = colors.divider, thickness = 0.5.dp)
 
-            agentForms.forEachIndexed { index, form ->
-                val profile = profilesState.profiles.firstOrNull { it.id == form.id }
-                AgentFormCard(
-                    form = form,
-                    index = index,
-                    selected = form.id == profilesState.selectedProfileId,
-                    status = profile?.let(viewModel::availabilityStatus) ?: AgentAvailabilityStatus.UNPAIRED,
-                    onlyPersistedProfile = profilesState.profiles.size == 1 && !form.isDraft,
-                    onChange = { changed ->
-                        agentForms = agentForms.map { if (it.id == changed.id) changed else it }
-                    },
-                    onSelect = {
-                        if (!form.isDraft) viewModel.selectProfile(form.id)
-                    },
-                    onRemove = {
-                        scope.launch {
-                            if (form.isDraft) {
-                                agentForms = agentForms.filterNot { it.id == form.id }
-                            } else if (profilesState.profiles.size <= 1) {
-                                if (form.id == profilesState.selectedProfileId && form.isPaired) onUnpair()
-                                settingsManager.clearProfile(form.id)
-                            } else {
-                                if (form.id == profilesState.selectedProfileId && form.isPaired) onUnpair()
-                                settingsManager.deleteProfile(form.id)
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                ConnectionStatusCard(connectionState, pairingState, pairedBackendLabel, colors, onUnpair)
+
+                Button(
+                    onClick = onNavigateToQRScanner,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(8.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = colors.primary,
+                        contentColor = colors.onPrimary,
+                    ),
+                    contentPadding = PaddingValues(vertical = 12.dp),
+                ) {
+                    Icon(Icons.Default.QrCodeScanner, contentDescription = null, modifier = Modifier.size(20.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("扫码或新增 Agent", fontSize = 15.sp, fontWeight = FontWeight.Medium)
+                }
+
+                agentForms.forEachIndexed { index, form ->
+                    val profile = profilesState.profiles.firstOrNull { it.id == form.id }
+                    AgentFormCard(
+                        form = form,
+                        index = index,
+                        selected = form.id == profilesState.selectedProfileId,
+                        status = profile?.let(viewModel::availabilityStatus) ?: AgentAvailabilityStatus.UNPAIRED,
+                        onlyPersistedProfile = profilesState.profiles.size == 1 && !form.isDraft,
+                        colors = colors,
+                        onChange = { changed ->
+                            agentForms = agentForms.map { if (it.id == changed.id) changed else it }
+                        },
+                        onSelect = {
+                            if (!form.isDraft) viewModel.selectProfile(form.id)
+                        },
+                        onRemove = {
+                            scope.launch {
+                                if (form.isDraft) {
+                                    agentForms = agentForms.filterNot { it.id == form.id }
+                                } else if (profilesState.profiles.size <= 1) {
+                                    if (form.id == profilesState.selectedProfileId && form.isPaired) onUnpair()
+                                    settingsManager.clearProfile(form.id)
+                                } else {
+                                    if (form.id == profilesState.selectedProfileId && form.isPaired) onUnpair()
+                                    settingsManager.deleteProfile(form.id)
+                                }
                             }
-                        }
-                    },
-                    onPair = {
-                        scope.launch {
-                            if (form.backendId.isBlank()) {
-                                showMessage("请填写 Backend ID")
-                                return@launch
+                        },
+                        onPair = {
+                            scope.launch {
+                                if (form.backendId.isBlank()) {
+                                    showMessage("请填写 Backend ID")
+                                    return@launch
+                                }
+                                val saved = saveForm(form, select = true) ?: return@launch
+                                onRequestPair(saved.id, saved.backendId)
                             }
-                            val saved = saveForm(form, select = true) ?: return@launch
-                            onRequestPair(saved.id, saved.backendId)
+                        },
+                    )
+                }
+
+                AddAgentButton(
+                    enabled = agentForms.size < SettingsManager.MAX_AGENT_PROFILES,
+                    colors = colors,
+                    onClick = {
+                        if (agentForms.size >= SettingsManager.MAX_AGENT_PROFILES) {
+                            scope.launch { showMessage("最多支持 ${SettingsManager.MAX_AGENT_PROFILES} 个 Agent") }
+                        } else {
+                            val gateway = agentForms.firstOrNull { it.backendId.isNotBlank() }?.gatewayUrl
+                                ?: profilesState.selectedProfile.gatewayUrl
+                            agentForms = agentForms + AgentFormState.draft(gateway)
                         }
                     },
                 )
-            }
 
-            OutlinedButton(
-                onClick = {
-                    if (agentForms.size >= SettingsManager.MAX_AGENT_PROFILES) {
-                        scope.launch { showMessage("最多支持 ${SettingsManager.MAX_AGENT_PROFILES} 个 Agent") }
-                    } else {
-                        val gateway = agentForms.firstOrNull { it.backendId.isNotBlank() }?.gatewayUrl
-                            ?: profilesState.selectedProfile.gatewayUrl
-                        agentForms = agentForms + AgentFormState.draft(gateway)
-                    }
-                },
-                enabled = agentForms.size < SettingsManager.MAX_AGENT_PROFILES,
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Icon(Icons.Default.AddCircle, contentDescription = null, modifier = Modifier.size(20.dp))
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("新增 Agent")
-            }
+                HorizontalDivider(color = colors.divider, thickness = 0.5.dp)
 
-            HorizontalDivider()
-
-            SectionTitle("语音识别")
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                RadioButton(selected = asrMode != "backend", onClick = { asrMode = "router" })
-                Text("Router 识别", modifier = Modifier.weight(1f))
-                RadioButton(selected = asrMode == "backend", onClick = { asrMode = "backend" })
-                Text("Agent 识别")
-            }
-            if (asrMode != "backend") {
-                if (asrProfiles.isEmpty()) {
-                    OutlinedTextField(
-                        value = asrProfileId,
-                        onValueChange = { asrProfileId = it },
-                        label = { Text("Provider / Model Profile") },
-                        placeholder = { Text("默认 profile 或 volcengine-bigmodel") },
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                    )
-                } else {
-                    Box(modifier = Modifier.fillMaxWidth()) {
-                        OutlinedButton(
-                            onClick = { asrProfileMenuExpanded = true },
+                SectionTitle("语音识别", colors)
+                SegmentedControl(
+                    leftText = "Router 识别",
+                    rightText = "Agent 识别",
+                    leftSelected = asrMode != "backend",
+                    colors = colors,
+                    onSelectLeft = { asrMode = "router" },
+                    onSelectRight = { asrMode = "backend" },
+                )
+                if (asrMode != "backend") {
+                    if (asrProfiles.isEmpty()) {
+                        OutlinedTextField(
+                            value = asrProfileId,
+                            onValueChange = { asrProfileId = it },
+                            label = { Text("Provider / Model Profile") },
+                            placeholder = { Text("默认 profile 或 volcengine-bigmodel") },
                             modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            val selected = asrProfiles.firstOrNull { it.id == asrProfileId }
-                            Text(selected?.let { "${it.providerLabel} · ${it.modelLabel}" } ?: "选择 Provider / Model")
-                        }
-                        DropdownMenu(
-                            expanded = asrProfileMenuExpanded,
-                            onDismissRequest = { asrProfileMenuExpanded = false },
-                        ) {
-                            asrProfiles.forEach { profile ->
-                                DropdownMenuItem(
-                                    text = { Text("${profile.providerLabel} · ${profile.modelLabel}") },
-                                    onClick = {
-                                        asrProfileId = profile.id
-                                        asrProfileMenuExpanded = false
-                                    },
+                            singleLine = true,
+                            shape = RoundedCornerShape(8.dp),
+                            colors = mochiTextFieldColors(colors),
+                        )
+                    } else {
+                        Box(modifier = Modifier.fillMaxWidth()) {
+                            OutlinedButton(
+                                onClick = { asrProfileMenuExpanded = true },
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(8.dp),
+                            ) {
+                                val selected = asrProfiles.firstOrNull { it.id == asrProfileId }
+                                Text(
+                                    text = selected?.let { "${it.providerLabel} · ${it.modelLabel}" } ?: "选择 Provider / Model",
+                                    color = colors.textPrimary,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
                                 )
                             }
+                            DropdownMenu(
+                                expanded = asrProfileMenuExpanded,
+                                onDismissRequest = { asrProfileMenuExpanded = false },
+                            ) {
+                                asrProfiles.forEach { profile ->
+                                    DropdownMenuItem(
+                                        text = { Text("${profile.providerLabel} · ${profile.modelLabel}") },
+                                        onClick = {
+                                            asrProfileId = profile.id
+                                            asrProfileMenuExpanded = false
+                                        },
+                                    )
+                                }
+                            }
                         }
                     }
                 }
-            }
 
-            HorizontalDivider()
+                HorizontalDivider(color = colors.divider, thickness = 0.5.dp)
 
-            SectionTitle("语音合成 (TTS)")
-            Box(modifier = Modifier.fillMaxWidth()) {
-                OutlinedButton(onClick = { ttsEngineMenuExpanded = true }, modifier = Modifier.fillMaxWidth()) {
-                    Text(ttsEngines.firstOrNull { it.first == ttsEngine }?.second ?: "选择 TTS 引擎")
-                }
-                DropdownMenu(expanded = ttsEngineMenuExpanded, onDismissRequest = { ttsEngineMenuExpanded = false }) {
-                    ttsEngines.forEach { (id, label) ->
-                        DropdownMenuItem(
-                            text = { Text(label) },
-                            onClick = {
-                                ttsEngine = id
-                                ttsEngineMenuExpanded = false
-                            },
+                SectionTitle("语音合成 (TTS)", colors)
+                Box(modifier = Modifier.fillMaxWidth()) {
+                    OutlinedButton(
+                        onClick = { ttsEngineMenuExpanded = true },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(8.dp),
+                    ) {
+                        Text(
+                            text = ttsEngines.firstOrNull { it.first == ttsEngine }?.second ?: "选择 TTS 引擎",
+                            color = colors.textPrimary,
                         )
                     }
-                }
-            }
-            if (ttsEngine == "minimax") {
-                OutlinedTextField(
-                    value = minimaxApiKey,
-                    onValueChange = { minimaxApiKey = it },
-                    label = { Text("MiniMax API Key") },
-                    placeholder = { Text("输入你的 MiniMax API Key") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    visualTransformation = PasswordVisualTransformation(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                )
-                Box(modifier = Modifier.fillMaxWidth()) {
-                    OutlinedButton(onClick = { minimaxVoiceMenuExpanded = true }, modifier = Modifier.fillMaxWidth()) {
-                        Text(minimaxVoices.firstOrNull { it.id == minimaxVoiceId }?.let(::voiceLabel) ?: "选择 MiniMax 音色")
-                    }
-                    DropdownMenu(
-                        expanded = minimaxVoiceMenuExpanded,
-                        onDismissRequest = { minimaxVoiceMenuExpanded = false },
-                    ) {
-                        minimaxVoices.forEach { voice ->
+                    DropdownMenu(expanded = ttsEngineMenuExpanded, onDismissRequest = { ttsEngineMenuExpanded = false }) {
+                        ttsEngines.forEach { (id, label) ->
                             DropdownMenuItem(
-                                text = { Text(voiceLabel(voice)) },
+                                text = { Text(label) },
                                 onClick = {
-                                    minimaxVoiceId = voice.id
-                                    minimaxVoiceMenuExpanded = false
+                                    ttsEngine = id
+                                    ttsEngineMenuExpanded = false
                                 },
                             )
                         }
                     }
                 }
-                OutlinedButton(
+                if (ttsEngine == "minimax") {
+                    OutlinedTextField(
+                        value = minimaxApiKey,
+                        onValueChange = { minimaxApiKey = it },
+                        label = { Text("MiniMax API Key") },
+                        placeholder = { Text("输入你的 MiniMax API Key") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                        shape = RoundedCornerShape(8.dp),
+                        colors = mochiTextFieldColors(colors),
+                    )
+                    Box(modifier = Modifier.fillMaxWidth()) {
+                        OutlinedButton(
+                            onClick = { minimaxVoiceMenuExpanded = true },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(8.dp),
+                        ) {
+                            Text(
+                                text = minimaxVoices.firstOrNull { it.id == minimaxVoiceId }?.let(::voiceLabel) ?: "选择 MiniMax 音色",
+                                color = colors.textPrimary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        DropdownMenu(
+                            expanded = minimaxVoiceMenuExpanded,
+                            onDismissRequest = { minimaxVoiceMenuExpanded = false },
+                        ) {
+                            minimaxVoices.forEach { voice ->
+                                DropdownMenuItem(
+                                    text = { Text(voiceLabel(voice)) },
+                                    onClick = {
+                                        minimaxVoiceId = voice.id
+                                        minimaxVoiceMenuExpanded = false
+                                    },
+                                )
+                            }
+                        }
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            scope.launch {
+                                if (minimaxApiKey.isBlank()) {
+                                    showMessage("请先填写 MiniMax API Key")
+                                    return@launch
+                                }
+                                isRefreshingMiniMaxVoices = true
+                                runCatching { MiniMaxVoiceCatalog.fetchAvailableVoices(minimaxApiKey) }
+                                    .onSuccess {
+                                        fetchedMiniMaxVoices = it
+                                        showMessage("已刷新 ${it.size} 个 MiniMax 音色")
+                                    }
+                                    .onFailure { showMessage("刷新音色失败：${it.message ?: "unknown"}") }
+                                isRefreshingMiniMaxVoices = false
+                            }
+                        },
+                        enabled = !isRefreshingMiniMaxVoices,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(8.dp),
+                    ) {
+                        Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(20.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(if (isRefreshingMiniMaxVoices) "正在刷新音色..." else "从 MiniMax 刷新可用音色")
+                    }
+                }
+
+                HorizontalDivider(color = colors.divider, thickness = 0.5.dp)
+
+                SectionTitle("设备信息", colors)
+                OutlinedTextField(
+                    value = deviceLabel,
+                    onValueChange = { deviceLabel = it },
+                    label = { Text("设备名称") },
+                    placeholder = { Text("例如：我的手机") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    shape = RoundedCornerShape(8.dp),
+                    colors = mochiTextFieldColors(colors),
+                )
+
+                Button(
                     onClick = {
                         scope.launch {
-                            if (minimaxApiKey.isBlank()) {
-                                showMessage("请先填写 MiniMax API Key")
-                                return@launch
-                            }
-                            isRefreshingMiniMaxVoices = true
-                            runCatching { MiniMaxVoiceCatalog.fetchAvailableVoices(minimaxApiKey) }
-                                .onSuccess {
-                                    fetchedMiniMaxVoices = it
-                                    showMessage("已刷新 ${it.size} 个 MiniMax 音色")
+                            var ok = true
+                            agentForms.forEach { form ->
+                                val emptyDraft = form.isDraft &&
+                                    form.displayName.isBlank() &&
+                                    form.backendId.isBlank() &&
+                                    form.token.isBlank()
+                                if (!emptyDraft && saveForm(form, select = form.id == profilesState.selectedProfileId) == null) {
+                                    ok = false
                                 }
-                                .onFailure { showMessage("刷新音色失败：${it.message ?: "unknown"}") }
-                            isRefreshingMiniMaxVoices = false
+                            }
+                            settingsManager.updateDeviceLabel(deviceLabel)
+                            settingsManager.updateGlobalAsr(asrMode, asrProfileId)
+                            settingsManager.updateConfig(
+                                config.copy(
+                                    deviceLabel = deviceLabel.ifEmpty { "我的设备" },
+                                    asrMode = asrMode,
+                                    asrProfileId = if (asrMode == "backend") "" else asrProfileId,
+                                    ttsEngine = ttsEngine,
+                                    minimaxApiKey = minimaxApiKey,
+                                    minimaxVoiceId = minimaxVoiceId,
+                                )
+                            )
+                            if (ok) showMessage("设置已保存")
                         }
                     },
-                    enabled = !isRefreshingMiniMaxVoices,
                     modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(8.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = colors.primary,
+                        contentColor = colors.onPrimary,
+                    ),
+                    contentPadding = PaddingValues(vertical = 12.dp),
                 ) {
-                    Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(20.dp))
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(if (isRefreshingMiniMaxVoices) "正在刷新音色..." else "从 MiniMax 刷新可用音色")
+                    Text("保存", fontSize = 15.sp, fontWeight = FontWeight.Medium)
                 }
+
+                HelpCard(colors)
             }
-
-            HorizontalDivider()
-
-            SectionTitle("设备信息")
-            OutlinedTextField(
-                value = deviceLabel,
-                onValueChange = { deviceLabel = it },
-                label = { Text("设备名称") },
-                placeholder = { Text("例如：我的手机") },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-            )
-
-            Button(
-                onClick = {
-                    scope.launch {
-                        var ok = true
-                        agentForms.forEach { form ->
-                            val emptyDraft = form.isDraft &&
-                                form.displayName.isBlank() &&
-                                form.backendId.isBlank() &&
-                                form.token.isBlank()
-                            if (!emptyDraft && saveForm(form, select = form.id == profilesState.selectedProfileId) == null) {
-                                ok = false
-                            }
-                        }
-                        settingsManager.updateDeviceLabel(deviceLabel)
-                        settingsManager.updateGlobalAsr(asrMode, asrProfileId)
-                        settingsManager.updateConfig(
-                            config.copy(
-                                deviceLabel = deviceLabel.ifEmpty { "我的设备" },
-                                asrMode = asrMode,
-                                asrProfileId = if (asrMode == "backend") "" else asrProfileId,
-                                ttsEngine = ttsEngine,
-                                minimaxApiKey = minimaxApiKey,
-                                minimaxVoiceId = minimaxVoiceId,
-                            )
-                        )
-                        if (ok) showMessage("设置已保存")
-                    }
-                },
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Text("保存")
-            }
-
-            HelpCard()
         }
     }
 }
+
+@Composable
+private fun SettingsTopBar(
+    isDark: Boolean,
+    colors: MochiColors,
+    onToggleTheme: () -> Unit,
+    onBack: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(colors.surface)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(
+                text = "设置",
+                fontSize = 16.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = colors.textPrimary,
+            )
+            Text(
+                text = "Gateway 与配对",
+                fontSize = 11.sp,
+                color = colors.textSecondary,
+            )
+        }
+
+        SettingsIconButton(
+            imageVector = if (isDark) Icons.Filled.LightMode else Icons.Filled.DarkMode,
+            contentDescription = if (isDark) "切换到浅色模式" else "切换到深色模式",
+            tint = if (isDark) colors.accent else colors.primary,
+            background = if (isDark) colors.secondary.copy(alpha = 0.72f) else Color.Transparent,
+            onClick = onToggleTheme,
+        )
+        SettingsIconButton(
+            imageVector = Icons.Filled.ChatBubble,
+            contentDescription = "返回聊天",
+            tint = colors.icon,
+            background = colors.inputBg,
+            onClick = onBack,
+        )
+    }
+}
+
+@Composable
+private fun SettingsIconButton(
+    imageVector: ImageVector,
+    contentDescription: String,
+    tint: Color,
+    background: Color,
+    onClick: () -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .size(32.dp)
+            .clip(CircleShape)
+            .background(background)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            imageVector = imageVector,
+            contentDescription = contentDescription,
+            tint = tint,
+            modifier = Modifier.size(19.dp),
+        )
+    }
+}
+
+@Composable
+private fun AddAgentButton(
+    enabled: Boolean,
+    colors: MochiColors,
+    onClick: () -> Unit,
+) {
+    Box(
+        modifier = Modifier.fillMaxWidth(),
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(width = 52.dp, height = 40.dp)
+                .clip(CircleShape)
+                .background(if (enabled) colors.inputBg else colors.inputBorder.copy(alpha = 0.45f))
+                .border(0.5.dp, colors.inputBorder, CircleShape)
+                .clickable(enabled = enabled, onClick = onClick),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = Icons.Default.AddCircle,
+                contentDescription = "新增 Agent",
+                tint = if (enabled) colors.primary else colors.textSecondary.copy(alpha = 0.45f),
+                modifier = Modifier.size(24.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun SegmentedControl(
+    leftText: String,
+    rightText: String,
+    leftSelected: Boolean,
+    colors: MochiColors,
+    onSelectLeft: () -> Unit,
+    onSelectRight: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .background(colors.inputBg)
+            .border(1.dp, colors.inputBorder, RoundedCornerShape(8.dp))
+            .padding(3.dp),
+        horizontalArrangement = Arrangement.spacedBy(3.dp),
+    ) {
+        SegmentOption(
+            text = leftText,
+            selected = leftSelected,
+            colors = colors,
+            onClick = onSelectLeft,
+            modifier = Modifier.weight(1f),
+        )
+        SegmentOption(
+            text = rightText,
+            selected = !leftSelected,
+            colors = colors,
+            onClick = onSelectRight,
+            modifier = Modifier.weight(1f),
+        )
+    }
+}
+
+@Composable
+private fun SegmentOption(
+    text: String,
+    selected: Boolean,
+    colors: MochiColors,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier
+            .height(34.dp)
+            .clip(RoundedCornerShape(7.dp))
+            .background(if (selected) colors.primary else Color.Transparent)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = text,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Medium,
+            color = if (selected) colors.onPrimary else colors.textSecondary,
+            maxLines = 1,
+        )
+    }
+}
+
+@Composable
+private fun StatusPill(
+    text: String,
+    color: Color,
+) {
+    Text(
+        text = text,
+        fontSize = 11.sp,
+        fontWeight = FontWeight.Medium,
+        color = color,
+        maxLines = 1,
+        modifier = Modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(color.copy(alpha = 0.12f))
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+    )
+}
+
+private fun agentStatusColor(
+    status: AgentAvailabilityStatus,
+    colors: MochiColors,
+): Color {
+    return when (status) {
+        AgentAvailabilityStatus.AVAILABLE -> colors.onlineGreen
+        AgentAvailabilityStatus.PAIRING, AgentAvailabilityStatus.CONNECTING -> colors.accent
+        AgentAvailabilityStatus.OFFLINE -> colors.recordingRed
+        AgentAvailabilityStatus.UNCONFIGURED, AgentAvailabilityStatus.UNPAIRED -> colors.textSecondary
+    }
+}
+
+@Composable
+private fun mochiTextFieldColors(colors: MochiColors) = OutlinedTextFieldDefaults.colors(
+    focusedTextColor = colors.inputText,
+    unfocusedTextColor = colors.inputText,
+    cursorColor = colors.primary,
+    focusedBorderColor = colors.primary,
+    unfocusedBorderColor = colors.inputBorder,
+    focusedLabelColor = colors.primary,
+    unfocusedLabelColor = colors.textSecondary,
+    focusedContainerColor = colors.inputBg,
+    unfocusedContainerColor = colors.inputBg,
+    focusedPlaceholderColor = colors.inputPlaceholder,
+    unfocusedPlaceholderColor = colors.inputPlaceholder,
+)
 
 @Composable
 private fun AgentFormCard(
@@ -485,74 +740,126 @@ private fun AgentFormCard(
     selected: Boolean,
     status: AgentAvailabilityStatus,
     onlyPersistedProfile: Boolean,
+    colors: MochiColors,
     onChange: (AgentFormState) -> Unit,
     onSelect: () -> Unit,
     onRemove: () -> Unit,
     onPair: () -> Unit,
 ) {
-    Card(
+    val statusColor = agentStatusColor(status, colors)
+    Column(
         modifier = Modifier
             .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .background(colors.surface)
             .border(
                 width = if (selected) 1.5.dp else 0.5.dp,
-                color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
-                shape = MaterialTheme.shapes.medium,
-            ),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                color = if (selected) colors.primary else colors.divider,
+                shape = RoundedCornerShape(8.dp),
+            )
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                TextButton(onClick = onSelect, contentPadding = PaddingValues(horizontal = 0.dp)) {
-                    Text("Agent ${index + 1} · ${form.platform.label}")
-                }
-                Spacer(modifier = Modifier.weight(1f))
-                Text(status.label, fontSize = 12.sp, color = MaterialTheme.colorScheme.primary)
-                IconButton(onClick = onRemove) {
-                    Icon(
-                        Icons.Default.Delete,
-                        contentDescription = if (onlyPersistedProfile) "清空 Agent" else "删除 Agent",
-                        tint = MaterialTheme.colorScheme.error,
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable(onClick = onSelect)
+                    .padding(vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Icon(
+                    imageVector = if (selected) Icons.Filled.CheckCircle else Icons.Default.Link,
+                    contentDescription = if (selected) "当前 Agent" else "选择 Agent",
+                    tint = if (selected) colors.primary else colors.textPrimary,
+                    modifier = Modifier.size(17.dp),
+                )
+                Column {
+                    Text(
+                        text = "Agent ${index + 1}",
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = if (selected) colors.primary else colors.textPrimary,
+                    )
+                    Text(
+                        text = form.platform.label,
+                        fontSize = 11.sp,
+                        color = colors.textSecondary,
                     )
                 }
             }
-            OutlinedTextField(
-                value = form.displayName,
-                onValueChange = { onChange(form.copy(displayName = it)) },
-                label = { Text("Agent 名称") },
-                placeholder = { Text(form.platform.defaultDisplayName) },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
+
+            StatusPill(status.label, statusColor)
+
+            Spacer(modifier = Modifier.weight(1f))
+
+            SettingsIconButton(
+                imageVector = Icons.Filled.RemoveCircle,
+                contentDescription = if (onlyPersistedProfile) "清空 Agent" else "删除 Agent",
+                tint = colors.recordingRed,
+                background = colors.recordingRed.copy(alpha = 0.10f),
+                onClick = onRemove,
             )
-            OutlinedTextField(
-                value = form.gatewayUrl,
-                onValueChange = { onChange(form.copy(gatewayUrl = it)) },
-                label = { Text("Gateway URL") },
-                placeholder = { Text(AgentProfile.DEFAULT_GATEWAY_URL) },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-            )
-            OutlinedTextField(
-                value = form.backendId,
-                onValueChange = { onChange(form.copy(backendId = it)) },
-                label = { Text("Backend ID") },
-                placeholder = { Text("bk_xxx") },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-            )
-            OutlinedTextField(
-                value = form.token,
-                onValueChange = { onChange(form.copy(token = it)) },
-                label = { Text("Token") },
-                placeholder = { Text("配对 Token") },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-            )
-            Button(onClick = onPair, enabled = form.backendId.isNotBlank(), modifier = Modifier.fillMaxWidth()) {
-                Icon(Icons.Default.Link, contentDescription = null, modifier = Modifier.size(20.dp))
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("配对")
-            }
+        }
+
+        OutlinedTextField(
+            value = form.displayName,
+            onValueChange = { onChange(form.copy(displayName = it)) },
+            label = { Text("Agent 名称") },
+            placeholder = { Text(form.platform.defaultDisplayName) },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            shape = RoundedCornerShape(8.dp),
+            colors = mochiTextFieldColors(colors),
+        )
+        OutlinedTextField(
+            value = form.gatewayUrl,
+            onValueChange = { onChange(form.copy(gatewayUrl = it)) },
+            label = { Text("Gateway URL") },
+            placeholder = { Text(AgentProfile.DEFAULT_GATEWAY_URL) },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+            shape = RoundedCornerShape(8.dp),
+            colors = mochiTextFieldColors(colors),
+        )
+        OutlinedTextField(
+            value = form.backendId,
+            onValueChange = { onChange(form.copy(backendId = it)) },
+            label = { Text("Backend ID") },
+            placeholder = { Text("bk_xxx") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            shape = RoundedCornerShape(8.dp),
+            colors = mochiTextFieldColors(colors),
+        )
+        OutlinedTextField(
+            value = form.token,
+            onValueChange = { onChange(form.copy(token = it)) },
+            label = { Text("Token") },
+            placeholder = { Text("配对 Token") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            shape = RoundedCornerShape(8.dp),
+            colors = mochiTextFieldColors(colors),
+        )
+        Button(
+            onClick = onPair,
+            enabled = form.backendId.isNotBlank(),
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(8.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = colors.primary,
+                contentColor = colors.onPrimary,
+                disabledContainerColor = colors.textSecondary.copy(alpha = 0.30f),
+                disabledContentColor = colors.surface,
+            ),
+            contentPadding = PaddingValues(vertical = 12.dp),
+        ) {
+            Icon(Icons.Default.Link, contentDescription = null, modifier = Modifier.size(20.dp))
+            Spacer(modifier = Modifier.width(8.dp))
+            Text("配对", fontSize = 15.sp, fontWeight = FontWeight.Medium)
         }
     }
 }
@@ -562,122 +869,121 @@ private fun ConnectionStatusCard(
     connectionState: ConnectionState,
     pairingState: PairingState,
     pairedBackendLabel: String?,
+    colors: MochiColors,
     onUnpair: () -> Unit
 ) {
     val pairedStatusSuffix = if (pairedBackendLabel != null) "：$pairedBackendLabel" else ""
     val (statusColor, statusText, statusIcon) = when {
         pairingState == PairingState.PAIRED && connectionState == ConnectionState.REGISTERED -> Triple(
-            MaterialTheme.colorScheme.primary,
+            colors.primary,
             "已配对$pairedStatusSuffix",
             Icons.Default.Link
         )
         pairingState == PairingState.PAIRED -> Triple(
-            MaterialTheme.colorScheme.secondary,
+            colors.accent,
             "重连中$pairedStatusSuffix",
             Icons.Default.Link
         )
         pairingState == PairingState.PENDING -> Triple(
-            MaterialTheme.colorScheme.secondary,
+            colors.accent,
             "正在连接 Agent$pairedStatusSuffix",
             Icons.Default.Link
         )
         connectionState == ConnectionState.CONNECTED || connectionState == ConnectionState.REGISTERED -> Triple(
-            MaterialTheme.colorScheme.tertiary,
+            colors.accent,
             "Router 已连接，Agent 未配对",
             Icons.Default.Link
         )
         connectionState == ConnectionState.CONNECTING -> Triple(
-            MaterialTheme.colorScheme.secondary,
+            colors.accent,
             "连接中...",
             Icons.Default.Link
         )
         else -> Triple(
-            MaterialTheme.colorScheme.error,
+            colors.recordingRed,
             "未连接",
             Icons.Default.LinkOff
         )
     }
 
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = statusColor.copy(alpha = 0.1f)
-        )
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(statusColor.copy(alpha = 0.10f))
+            .border(0.5.dp, statusColor.copy(alpha = 0.16f), RoundedCornerShape(12.dp))
+            .padding(16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Icon(
-                imageVector = statusIcon,
-                contentDescription = null,
-                tint = statusColor,
-                modifier = Modifier.size(24.dp)
+        Icon(
+            imageVector = statusIcon,
+            contentDescription = null,
+            tint = statusColor,
+            modifier = Modifier.size(24.dp)
+        )
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(
+                text = "连接状态",
+                fontSize = 12.sp,
+                color = colors.textSecondary,
             )
-            Spacer(modifier = Modifier.width(12.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = "连接状态",
-                    fontSize = 12.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Spacer(modifier = Modifier.height(2.dp))
-                Text(
-                    text = statusText,
-                    fontSize = 14.sp,
-                    color = statusColor
-                )
-            }
-            if (pairingState == PairingState.PAIRED) {
-                TextButton(onClick = onUnpair) {
-                    Text("取消配对", color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
-                }
+            Text(
+                text = statusText,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Medium,
+                color = statusColor,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        if (pairingState == PairingState.PAIRED) {
+            TextButton(onClick = onUnpair) {
+                Text("取消配对", color = colors.recordingRed, fontSize = 12.sp)
             }
         }
     }
 }
 
 @Composable
-private fun SectionTitle(text: String) {
+private fun SectionTitle(text: String, colors: MochiColors) {
     Text(
         text = text,
         fontSize = 13.sp,
-        color = MaterialTheme.colorScheme.primary,
+        fontWeight = FontWeight.Medium,
+        color = colors.primary,
         modifier = Modifier.padding(top = 8.dp)
     )
 }
 
 @Composable
-private fun HelpCard() {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-        )
+private fun HelpCard(colors: MochiColors) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .background(colors.surface.copy(alpha = 0.60f))
+            .border(0.5.dp, colors.divider, RoundedCornerShape(8.dp))
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Text(
-                text = "使用说明",
-                fontSize = 14.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Text(
-                text = """
+        Text(
+            text = "使用说明",
+            fontSize = 14.sp,
+            fontWeight = FontWeight.Medium,
+            color = colors.textPrimary,
+        )
+        Text(
+            text = """
                     1. 扫描 Gateway Plugin 生成的二维码
                     2. 相同 Gateway + Backend ID 会覆盖旧 Agent
                     3. 新 Backend ID 会新增 Agent，最多 3 个
                     4. 在顶部 Agent 标签中切换会话
                 """.trimIndent(),
-                fontSize = 12.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                lineHeight = 18.sp
-            )
-        }
+            fontSize = 12.sp,
+            color = colors.textSecondary,
+            lineHeight = 18.sp
+        )
     }
 }
 

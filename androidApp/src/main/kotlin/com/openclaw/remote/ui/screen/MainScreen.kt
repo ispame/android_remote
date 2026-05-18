@@ -25,6 +25,7 @@ import androidx.compose.material.icons.automirrored.filled.VolumeOff
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DarkMode
+import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.Mic
@@ -40,6 +41,7 @@ import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.changedToUpIgnoreConsumed
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -49,7 +51,9 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.openclaw.remote.audio.AudioRecorder
@@ -390,127 +394,196 @@ private fun TopBar(
     onSelectProfile: (String) -> Unit,
     colors: MochiColors,
 ) {
-    val pairedStatusSuffix = pairedBackendLabel?.let { " · $it" } ?: ""
-    Row(
+    val selectedProfile = profiles.firstOrNull { it.id == selectedProfileId } ?: profiles.firstOrNull()
+    val selectedStatus = selectedProfile
+        ?.let { profileStatuses[it.id] }
+        ?: fallbackAvailabilityStatus(connectionState, pairingState)
+    Column(
         modifier = Modifier
             .fillMaxWidth()
             .background(colors.surface)
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
     ) {
-        val (statusColor, statusText) = when {
-            pairingState == PairingState.PAIRED && connectionState == ConnectionState.REGISTERED ->
-                colors.onlineGreen to "已配对$pairedStatusSuffix"
-            pairingState == PairingState.PAIRED ->
-                colors.accent to "重连中$pairedStatusSuffix"
-            pairingState == PairingState.PENDING ->
-                colors.accent to "正在连接 Agent$pairedStatusSuffix"
-            connectionState == ConnectionState.REGISTERED -> colors.accent to "Router 已连接，Agent 未配对"
-            connectionState == ConnectionState.CONNECTED -> colors.accent to "连接中..."
-            connectionState == ConnectionState.CONNECTING -> colors.accent to "连接中..."
-            else -> colors.recordingRed to "未连接"
-        }
-        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            if (profiles.size >= 2) {
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    profiles.take(3).forEach { profile ->
-                        val itemStatus = profileStatuses[profile.id] ?: AgentAvailabilityStatus.UNPAIRED
-                        AgentChip(
-                            profile = profile,
-                            status = itemStatus,
-                            selected = profile.id == selectedProfileId,
-                            hasUnread = (unreadCounts[profile.id] ?: 0) > 0,
-                            colors = colors,
-                            onClick = { onSelectProfile(profile.id) },
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(5.dp),
+            ) {
+                if (profiles.size >= 2) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        profiles.take(3).forEach { profile ->
+                            val itemStatus = profileStatuses[profile.id] ?: AgentAvailabilityStatus.UNPAIRED
+                            AgentChip(
+                                profile = profile,
+                                status = itemStatus,
+                                selected = profile.id == selectedProfileId,
+                                hasUnread = (unreadCounts[profile.id] ?: 0) > 0,
+                                colors = colors,
+                                onClick = { onSelectProfile(profile.id) },
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                    }
+                } else {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Text(
+                            text = "${selectedProfile?.resolvedDisplayName ?: "Agent"}(${selectedStatus.label})",
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Normal,
+                            color = availabilityColor(selectedStatus, colors),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false),
                         )
                     }
                 }
-            } else {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = profiles.firstOrNull()?.resolvedDisplayName ?: "Boson Relay",
-                        fontSize = 13.sp,
-                        color = colors.textSecondary,
-                        maxLines = 1,
-                    )
+            }
 
-                    Spacer(modifier = Modifier.width(8.dp))
+            Spacer(modifier = Modifier.width(8.dp))
 
-                    Text(
-                        text = "• $statusText",
-                        fontSize = 11.sp,
-                        color = statusColor,
-                        maxLines = 1,
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                AnimatedVisibility(visible = isPlaybackSpeaking) {
+                    MochiIconButton(
+                        imageVector = Icons.Filled.StopCircle,
+                        contentDescription = "打断当前播放",
+                        tint = colors.recordingRed,
+                        background = colors.recordingRed.copy(alpha = 0.12f),
+                        onClick = onInterruptPlayback,
                     )
                 }
-            }
-            if (!headsetStatusLabel.isNullOrBlank()) {
-                Text(
-                    text = "耳机 $headsetStatusLabel",
-                    fontSize = 10.sp,
-                    color = colors.textSecondary,
-                    maxLines = 1,
+
+                MochiIconButton(
+                    imageVector = if (soundPlaybackEnabled) Icons.AutoMirrored.Filled.VolumeUp else Icons.AutoMirrored.Filled.VolumeOff,
+                    contentDescription = if (soundPlaybackEnabled) "切换到无声" else "切换到播放",
+                    tint = if (soundPlaybackEnabled) colors.icon else colors.textSecondary,
+                    background = if (soundPlaybackEnabled) colors.inputBg else colors.inputBorder.copy(alpha = 0.65f),
+                    onClick = onToggleSoundPlayback,
+                )
+
+                MochiIconButton(
+                    imageVector = if (isDark) Icons.Filled.LightMode else Icons.Filled.DarkMode,
+                    contentDescription = if (isDark) "切换到浅色模式" else "切换到深色模式",
+                    tint = if (isDark) colors.accent else colors.primary,
+                    background = if (isDark) colors.secondary.copy(alpha = 0.72f) else Color.Transparent,
+                    onClick = onToggleTheme,
+                )
+
+                MochiIconButton(
+                    imageVector = Icons.Filled.Settings,
+                    contentDescription = "设置",
+                    tint = colors.icon,
+                    background = colors.inputBg,
+                    onClick = onNavigateToSettings,
                 )
             }
         }
 
-        Spacer(modifier = Modifier.width(8.dp))
-
-        AnimatedVisibility(visible = isPlaybackSpeaking) {
-            IconButton(
-                onClick = onInterruptPlayback,
-                modifier = Modifier.size(32.dp),
+        if (!headsetStatusLabel.isNullOrBlank()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(colors.inputBg)
+                    .padding(horizontal = 12.dp, vertical = 7.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Icon(
-                    imageVector = Icons.Filled.StopCircle,
-                    contentDescription = "打断当前播放",
-                    tint = colors.recordingRed,
-                    modifier = Modifier.size(20.dp),
+                    imageVector = Icons.Filled.Headphones,
+                    contentDescription = null,
+                    tint = colors.primary,
+                    modifier = Modifier.size(14.dp),
                 )
+                Text(
+                    text = "耳机 $headsetStatusLabel",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = colors.textSecondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                StatusDot(color = colors.primary)
             }
         }
+    }
+}
 
-        IconButton(
-            onClick = onToggleSoundPlayback,
-            modifier = Modifier.size(32.dp),
-        ) {
-            Icon(
-                imageVector = if (soundPlaybackEnabled) Icons.AutoMirrored.Filled.VolumeUp else Icons.AutoMirrored.Filled.VolumeOff,
-                contentDescription = if (soundPlaybackEnabled) "切换到无声" else "切换到播放",
-                tint = if (soundPlaybackEnabled) colors.icon else colors.textSecondary,
-                modifier = Modifier.size(20.dp),
-            )
-        }
+@Composable
+private fun MochiIconButton(
+    imageVector: ImageVector,
+    contentDescription: String,
+    tint: Color,
+    background: Color,
+    onClick: () -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .size(32.dp)
+            .clip(CircleShape)
+            .background(background)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            imageVector = imageVector,
+            contentDescription = contentDescription,
+            tint = tint,
+            modifier = Modifier.size(19.dp),
+        )
+    }
+}
 
-        Box(
-            modifier = Modifier
-                .size(32.dp)
-                .clip(CircleShape)
-                .clickable(onClick = onToggleTheme),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(
-                imageVector = if (isDark) Icons.Filled.LightMode else Icons.Filled.DarkMode,
-                contentDescription = if (isDark) "切换到浅色模式" else "切换到深色模式",
-                tint = if (isDark) Color(0xFFE8A87C) else Color(0xFFB85C38),
-                modifier = Modifier.size(20.dp),
-            )
-        }
+@Composable
+private fun StatusDot(color: Color) {
+    Box(
+        modifier = Modifier
+            .size(6.dp)
+            .clip(CircleShape)
+            .background(color)
+    )
+}
 
-        IconButton(
-            onClick = onNavigateToSettings,
-            modifier = Modifier.size(32.dp),
-        ) {
-            Icon(
-                imageVector = Icons.Filled.Settings,
-                contentDescription = "设置",
-                tint = colors.icon,
-                modifier = Modifier.size(20.dp),
-            )
-        }
+private fun availabilityColor(
+    status: AgentAvailabilityStatus,
+    colors: MochiColors,
+): Color {
+    return when (status) {
+        AgentAvailabilityStatus.AVAILABLE -> colors.onlineGreen
+        AgentAvailabilityStatus.PAIRING, AgentAvailabilityStatus.CONNECTING -> colors.accent
+        AgentAvailabilityStatus.OFFLINE -> colors.recordingRed
+        AgentAvailabilityStatus.UNCONFIGURED, AgentAvailabilityStatus.UNPAIRED -> colors.textSecondary
+    }
+}
+
+private fun fallbackAvailabilityStatus(
+    connectionState: ConnectionState,
+    pairingState: PairingState,
+): AgentAvailabilityStatus {
+    return when {
+        pairingState == PairingState.PAIRED &&
+            (connectionState == ConnectionState.REGISTERED || connectionState == ConnectionState.PAIRED) ->
+            AgentAvailabilityStatus.AVAILABLE
+        pairingState == PairingState.PAIRED || pairingState == PairingState.PENDING ->
+            AgentAvailabilityStatus.CONNECTING
+        connectionState == ConnectionState.CONNECTING || connectionState == ConnectionState.CONNECTED ->
+            AgentAvailabilityStatus.CONNECTING
+        connectionState == ConnectionState.REGISTERED ->
+            AgentAvailabilityStatus.UNPAIRED
+        else -> AgentAvailabilityStatus.OFFLINE
     }
 }
 
@@ -522,27 +595,32 @@ private fun AgentChip(
     hasUnread: Boolean,
     colors: MochiColors,
     onClick: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
-    val statusColor = when (status) {
-        AgentAvailabilityStatus.AVAILABLE -> colors.onlineGreen
-        AgentAvailabilityStatus.PAIRING, AgentAvailabilityStatus.CONNECTING -> colors.accent
-        AgentAvailabilityStatus.OFFLINE -> colors.recordingRed
-        AgentAvailabilityStatus.UNCONFIGURED, AgentAvailabilityStatus.UNPAIRED -> colors.textSecondary
-    }
+    val statusColor = availabilityColor(status, colors)
     Row(
-        modifier = Modifier
+        modifier = modifier
+            .height(28.dp)
             .clip(RoundedCornerShape(8.dp))
             .background(if (selected) colors.primary else colors.inputBg)
+            .border(
+                width = 0.5.dp,
+                color = if (selected) Color.Transparent else colors.inputBorder,
+                shape = RoundedCornerShape(8.dp),
+            )
             .clickable(onClick = onClick)
-            .padding(horizontal = 7.dp, vertical = 6.dp),
+            .padding(horizontal = 6.dp, vertical = 5.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         Text(
             text = "${profile.resolvedDisplayName}(${status.label})",
-            fontSize = 11.sp,
+            fontSize = 10.sp,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
             color = if (selected) colors.onPrimary else statusColor,
             maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
         )
         if (!selected && hasUnread) {
             Box(
@@ -668,17 +746,14 @@ private fun QuotePreviewBar(
             )
         }
 
-        IconButton(
+        InputIconButton(
+            imageVector = Icons.Filled.Close,
+            contentDescription = "取消引用",
+            colors = colors,
+            size = 28,
+            iconSize = 16,
             onClick = onCancel,
-            modifier = Modifier.size(28.dp),
-        ) {
-            Icon(
-                imageVector = Icons.Filled.Close,
-                contentDescription = "取消引用",
-                tint = colors.textSecondary,
-                modifier = Modifier.size(16.dp),
-            )
-        }
+        )
     }
 }
 
@@ -701,17 +776,12 @@ private fun TextInputRow(
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        IconButton(
+        InputIconButton(
+            imageVector = Icons.Filled.Mic,
+            contentDescription = "切换到语音",
+            colors = colors,
             onClick = onSwitchToVoice,
-            modifier = Modifier.size(44.dp),
-        ) {
-            Icon(
-                imageVector = Icons.Filled.Mic,
-                contentDescription = "切换到语音",
-                tint = colors.icon,
-                modifier = Modifier.size(22.dp),
-            )
-        }
+        )
 
         Spacer(modifier = Modifier.width(8.dp))
 
@@ -762,6 +832,33 @@ private fun TextInputRow(
 }
 
 @Composable
+private fun InputIconButton(
+    imageVector: ImageVector,
+    contentDescription: String,
+    colors: MochiColors,
+    size: Int = 44,
+    iconSize: Int = 22,
+    onClick: () -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .size(size.dp)
+            .clip(CircleShape)
+            .background(colors.inputBg)
+            .border(0.5.dp, colors.inputBorder, CircleShape)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            imageVector = imageVector,
+            contentDescription = contentDescription,
+            tint = colors.icon,
+            modifier = Modifier.size(iconSize.dp),
+        )
+    }
+}
+
+@Composable
 private fun SendButton(
     text: String,
     onClick: () -> Unit,
@@ -804,17 +901,12 @@ private fun VoiceInputRow(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            IconButton(
+            InputIconButton(
+                imageVector = Icons.Filled.Keyboard,
+                contentDescription = "切换到键盘",
+                colors = colors,
                 onClick = onSwitchToText,
-                modifier = Modifier.size(44.dp),
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.Keyboard,
-                    contentDescription = "切换到键盘",
-                    tint = colors.icon,
-                    modifier = Modifier.size(22.dp),
-                )
-            }
+            )
 
             Spacer(modifier = Modifier.weight(1f))
 

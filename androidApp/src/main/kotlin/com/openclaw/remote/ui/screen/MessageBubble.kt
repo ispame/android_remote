@@ -6,8 +6,12 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -57,12 +61,17 @@ fun MessageBubble(
         verticalAlignment = Alignment.Bottom,
     ) {
         if (isSelectionMode) {
-            Text(
-                text = if (isSelected) "●" else "○",
-                fontSize = 22.sp,
-                color = if (isSelected) colors.primary else colors.textSecondary,
+            Box(
                 modifier = Modifier.width(28.dp),
-            )
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = if (isSelected) Icons.Filled.CheckCircle else Icons.Filled.RadioButtonUnchecked,
+                    contentDescription = if (isSelected) "已选择" else "未选择",
+                    tint = if (isSelected) colors.primary else colors.textSecondary,
+                    modifier = Modifier.size(22.dp),
+                )
+            }
             Spacer(modifier = Modifier.width(4.dp))
         }
 
