@@ -25,7 +25,6 @@ class AssistantSpeechTrigger {
             return null
         }
 
-        hasSeenCurrentUserMessage = false
         return lastMessage
     }
 
