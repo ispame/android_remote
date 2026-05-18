@@ -49,4 +49,127 @@ class WebSocketManagerTest {
             ),
         )
     }
+
+    @Test
+    fun transientDisconnectRequiresFreshPairResponseBeforePairedAgain() {
+        assertEquals(
+            PairingState.PENDING,
+            transientDisconnectPairingState(
+                pairingState = PairingState.PAIRED,
+                hasRestorablePairing = true,
+            ),
+        )
+    }
+
+    @Test
+    fun registeredDuringAutoRestoreDoesNotLookPairedUntilPairResponse() {
+        assertEquals(
+            ConnectionState.REGISTERED,
+            registeredConnectionState(pairingState = PairingState.PENDING),
+        )
+        assertEquals(
+            ConnectionState.PAIRED,
+            pairedConnectionState(),
+        )
+    }
+
+    @Test
+    fun reconnectingPairingCannotSendUserPayloads() {
+        assertEquals(false, canSendUserPayload(PairingState.PENDING, registeredBackendId = "bk_openclaw"))
+        assertEquals(false, canSendUserPayload(PairingState.PAIRED, registeredBackendId = null))
+        assertEquals(true, canSendUserPayload(PairingState.PAIRED, registeredBackendId = "bk_openclaw"))
+    }
+
+    @Test
+    fun duplicatePairRequestsAreSkippedWhilePendingOrAlreadyPaired() {
+        assertEquals(
+            true,
+            shouldSkipPairRequest(
+                connectionState = ConnectionState.REGISTERED,
+                pairingState = PairingState.PENDING,
+                registeredBackendId = null,
+                pendingPairBackendId = "bk_openclaw",
+                requestedBackendId = "bk_openclaw",
+            ),
+        )
+        assertEquals(
+            true,
+            shouldSkipPairRequest(
+                connectionState = ConnectionState.PAIRED,
+                pairingState = PairingState.PAIRED,
+                registeredBackendId = "bk_openclaw",
+                pendingPairBackendId = null,
+                requestedBackendId = "bk_openclaw",
+            ),
+        )
+        assertEquals(
+            false,
+            shouldSkipPairRequest(
+                connectionState = ConnectionState.REGISTERED,
+                pairingState = PairingState.PENDING,
+                registeredBackendId = null,
+                pendingPairBackendId = "bk_openclaw",
+                requestedBackendId = "bk_hermes",
+            ),
+        )
+    }
+
+    @Test
+    fun staleSocketGenerationFramesAreIgnored() {
+        assertEquals(
+            true,
+            shouldProcessIncomingFrame(
+                intentionalDisconnect = false,
+                frameGeneration = 7,
+                currentGeneration = 7,
+            ),
+        )
+        assertEquals(
+            false,
+            shouldProcessIncomingFrame(
+                intentionalDisconnect = false,
+                frameGeneration = 6,
+                currentGeneration = 7,
+            ),
+        )
+        assertEquals(
+            false,
+            shouldProcessIncomingFrame(
+                intentionalDisconnect = true,
+                frameGeneration = 7,
+                currentGeneration = 7,
+            ),
+        )
+    }
+
+    @Test
+    fun repeatedConnectDoesNotCancelActiveOrScheduledReconnectWork() {
+        assertEquals(
+            true,
+            shouldIgnoreConnectRequest(
+                hasActiveSession = false,
+                connectAttemptInFlight = false,
+                reconnectScheduled = true,
+                intentionalDisconnect = false,
+            ),
+        )
+        assertEquals(
+            true,
+            shouldIgnoreConnectRequest(
+                hasActiveSession = true,
+                connectAttemptInFlight = false,
+                reconnectScheduled = false,
+                intentionalDisconnect = false,
+            ),
+        )
+        assertEquals(
+            false,
+            shouldIgnoreConnectRequest(
+                hasActiveSession = false,
+                connectAttemptInFlight = false,
+                reconnectScheduled = false,
+                intentionalDisconnect = true,
+            ),
+        )
+    }
 }

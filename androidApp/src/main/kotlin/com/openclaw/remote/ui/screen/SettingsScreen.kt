@@ -874,7 +874,7 @@ private fun ConnectionStatusCard(
 ) {
     val pairedStatusSuffix = if (pairedBackendLabel != null) "：$pairedBackendLabel" else ""
     val (statusColor, statusText, statusIcon) = when {
-        pairingState == PairingState.PAIRED && connectionState == ConnectionState.REGISTERED -> Triple(
+        pairingState == PairingState.PAIRED && connectionState == ConnectionState.PAIRED -> Triple(
             colors.primary,
             "已配对$pairedStatusSuffix",
             Icons.Default.Link

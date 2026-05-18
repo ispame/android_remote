@@ -40,6 +40,7 @@ class WebSocketManager(
     private val asrMode: String = "router",
     private val asrProfileId: String = "",
 ) {
+    private val instanceId = UUID.randomUUID().toString().take(8)
     private var webSocketSession: WebSocketSession? = null
     private val client = HttpClient {
         install(WebSockets)
@@ -49,13 +50,17 @@ class WebSocketManager(
     private val _connectionState = MutableStateFlow(ConnectionState.DISCONNECTED)
     val connectionState: StateFlow<ConnectionState> = _connectionState
 
-    private val _pairingState = MutableStateFlow(PairingState.UNPAIRED)
+    private val _pairingState = MutableStateFlow(
+        if (preferredBackendId.isNullOrBlank()) PairingState.UNPAIRED else PairingState.PENDING
+    )
     val pairingState: StateFlow<PairingState> = _pairingState
 
     private val _messageChannel = Channel<WsMessageEvent>(Channel.BUFFERED)
     val messageChannel = _messageChannel
 
     private var registeredBackendId: String? = null
+    private var restorableBackendId: String? = preferredBackendId?.takeIf { it.isNotBlank() }
+    private var pendingPairBackendId: String? = null
 
     private var reconnectAttempts = 0
     private var reconnectJob: Job? = null
@@ -72,6 +77,13 @@ class WebSocketManager(
     private val pendingAudioTimeouts = mutableMapOf<String, Job>()
 
     fun connect() {
+        if (shouldIgnoreConnectRequest(webSocketSession != null, connectAttemptInFlight, reconnectJob != null, intentionalDisconnect)) {
+            log(
+                "connect ignored active=${webSocketSession != null} " +
+                    "inFlight=$connectAttemptInFlight reconnectScheduled=${reconnectJob != null}"
+            )
+            return
+        }
         intentionalDisconnect = false
         cancelReconnect()
         reconnectAttempts = 0
@@ -83,6 +95,7 @@ class WebSocketManager(
         _connectionState.value = ConnectionState.CONNECTING
         connectAttemptInFlight = true
         val generation = ++socketGeneration
+        log("start socket generation=$generation")
 
         scope.launch {
             try {
@@ -93,6 +106,7 @@ class WebSocketManager(
                     return@launch
                 }
                 webSocketSession = session
+                log("socket connected generation=$generation")
                 _connectionState.value = ConnectionState.CONNECTED
                 sendRegister()
                 listenForMessages(session, generation)
@@ -118,13 +132,14 @@ class WebSocketManager(
         try {
             for (frame in session.incoming) {
                 when (frame) {
-                    is Frame.Text -> handleMessage(frame.readText())
+                    is Frame.Text -> handleMessage(frame.readText(), generation)
                     else -> {}
                 }
             }
         } catch (e: Exception) {
             log("ws listen failed error=${e.message}")
         } finally {
+            logSocketClosed(session, generation)
             if (!intentionalDisconnect && generation == socketGeneration && webSocketSession === session) {
                 handleTransientDisconnect(generation)
             }
@@ -133,10 +148,20 @@ class WebSocketManager(
 
     private fun handleTransientDisconnect(generation: Long) {
         if (intentionalDisconnect || generation != socketGeneration) return
+        restorableBackendId = resolveAutoPairBackendId(
+            configuredBackendId = preferredBackendId,
+            registeredBackendId = registeredBackendId ?: restorableBackendId,
+        )
+        registeredBackendId = null
+        pendingPairBackendId = null
         webSocketSession = null
+        _pairingState.value = transientDisconnectPairingState(
+            pairingState = _pairingState.value,
+            hasRestorablePairing = hasRestorablePairing(restorableBackendId, preferredBackendId),
+        )
         _connectionState.value = transientDisconnectConnectionState(
             pairingState = _pairingState.value,
-            hasRestorablePairing = hasRestorablePairing(registeredBackendId, preferredBackendId),
+            hasRestorablePairing = hasRestorablePairing(restorableBackendId, preferredBackendId),
         )
         scheduleReconnect()
     }
@@ -152,16 +177,42 @@ class WebSocketManager(
             pendingAudioTimeouts.values.forEach { it.cancel() }
             pendingAudioTimeouts.clear()
             registeredBackendId = null
+            pendingPairBackendId = null
+            restorableBackendId = preferredBackendId?.takeIf { it.isNotBlank() }
             _connectionState.value = ConnectionState.DISCONNECTED
             _pairingState.value = PairingState.UNPAIRED
         }
     }
 
     fun requestPair(backendId: String) {
-        if (_connectionState.value != ConnectionState.REGISTERED) {
+        val normalizedBackendId = backendId.trim()
+        if (normalizedBackendId.isEmpty()) {
             return
         }
+        if (
+            shouldSkipPairRequest(
+                connectionState = _connectionState.value,
+                pairingState = _pairingState.value,
+                registeredBackendId = registeredBackendId,
+                pendingPairBackendId = pendingPairBackendId,
+                requestedBackendId = normalizedBackendId,
+            )
+        ) {
+            log("pair request skipped backend=$normalizedBackendId state=${_connectionState.value}/${_pairingState.value}")
+            return
+        }
+        if (_connectionState.value != ConnectionState.REGISTERED) {
+            _pairingState.value = PairingState.PENDING
+            pendingPairBackendId = normalizedBackendId
+            log("pair request deferred backend=$normalizedBackendId state=${_connectionState.value}")
+            return
+        }
+        sendPairRequest(normalizedBackendId)
+    }
+
+    private fun sendPairRequest(backendId: String) {
         _pairingState.value = PairingState.PENDING
+        pendingPairBackendId = backendId
         val frame = buildJsonObject {
             put("type", "pair_request")
             put("target_backend_id", backendId)
@@ -170,11 +221,12 @@ class WebSocketManager(
     }
 
     fun cancelPair() {
+        pendingPairBackendId = null
         _pairingState.value = PairingState.UNPAIRED
     }
 
     fun sendText(text: String) {
-        if (_pairingState.value != PairingState.PAIRED || registeredBackendId == null) {
+        if (!canSendUserPayload(_pairingState.value, registeredBackendId)) {
             return
         }
         val frame = buildJsonObject {
@@ -195,7 +247,7 @@ class WebSocketManager(
     }
 
     fun sendAudio(audioData: ByteArray) {
-        if (_pairingState.value != PairingState.PAIRED || registeredBackendId == null) return
+        if (!canSendUserPayload(_pairingState.value, registeredBackendId)) return
         val base64Audio = Base64.encode(audioData)
         val clientMessageId = UUID.randomUUID().toString()
         val audioSummary = AudioPayloadInspector.describe(audioData)
@@ -267,6 +319,7 @@ class WebSocketManager(
         }
         send(frame.toString())
         registeredBackendId = null
+        pendingPairBackendId = null
         _pairingState.value = PairingState.UNPAIRED
     }
 
@@ -286,8 +339,8 @@ class WebSocketManager(
     private fun send(text: String, label: String = "frame", onFailure: ((String) -> Unit)? = null) {
         scope.launch {
             val session = webSocketSession
-            if (session == null) {
-                log("ws tx dropped label=$label reason=NO_WEBSOCKET_SESSION")
+            if (intentionalDisconnect || session == null) {
+                log("ws tx dropped label=$label reason=${if (intentionalDisconnect) "INTENTIONAL_DISCONNECT" else "NO_WEBSOCKET_SESSION"}")
                 onFailure?.invoke("NO_WEBSOCKET_SESSION")
                 return@launch
             }
@@ -310,7 +363,11 @@ class WebSocketManager(
         send(frame.toString(), label = "ack:$seq")
     }
 
-    private fun handleMessage(text: String) {
+    private fun handleMessage(text: String, generation: Long) {
+        if (!shouldProcessIncomingFrame(intentionalDisconnect, generation, socketGeneration)) {
+            log("ws rx ignored stale generation=$generation current=$socketGeneration")
+            return
+        }
         try {
             val json = Json.parseToJsonElement(text)
             val obj = json as? kotlinx.serialization.json.JsonObject ?: return
@@ -321,16 +378,18 @@ class WebSocketManager(
                 "registered" -> {
                     val success = obj["success"]?.jsonPrimitive?.content?.toBoolean() ?: false
                     if (success) {
-                        _connectionState.value = ConnectionState.REGISTERED
+                        _connectionState.value = registeredConnectionState(_pairingState.value)
                         reconnectAttempts = 0
                         cancelReconnect()
-                        val autoPairBackendId = resolveAutoPairBackendId(
+                        val pendingBackendId = pendingPairBackendId
+                        val restoreBackendId = resolveAutoPairBackendId(
                             configuredBackendId = preferredBackendId,
-                            registeredBackendId = registeredBackendId,
+                            registeredBackendId = restorableBackendId ?: registeredBackendId,
                         ).takeIf { autoPairEnabled }
+                        val autoPairBackendId = pendingBackendId ?: restoreBackendId
                         if (autoPairBackendId != null) {
-                            isRestoringPairing = true
-                            requestPair(autoPairBackendId)
+                            isRestoringPairing = pendingBackendId == null
+                            sendPairRequest(autoPairBackendId)
                         }
                         offerEvent(WsMessageEvent.Registered(deviceId))
                     }
@@ -341,10 +400,14 @@ class WebSocketManager(
                     val backendLabel = obj["backend_label"]?.jsonPrimitive?.content ?: backendId
                     if (approve) {
                         registeredBackendId = backendId
+                        restorableBackendId = backendId
+                        pendingPairBackendId = null
+                        _connectionState.value = pairedConnectionState()
                         _pairingState.value = PairingState.PAIRED
                         offerEvent(WsMessageEvent.Paired(backendId, backendLabel, isRestoringPairing))
                         isRestoringPairing = false
                     } else {
+                        pendingPairBackendId = null
                         _pairingState.value = PairingState.UNPAIRED
                         isRestoringPairing = false
                         offerEvent(
@@ -421,6 +484,8 @@ class WebSocketManager(
                     if (targetId == registeredBackendId) {
                         autoPairEnabled = false
                         registeredBackendId = null
+                        restorableBackendId = null
+                        pendingPairBackendId = null
                         _pairingState.value = PairingState.UNPAIRED
                         offerEvent(WsMessageEvent.Unpaired(targetId))
                     }
@@ -486,7 +551,19 @@ class WebSocketManager(
         this[name]?.jsonPrimitive?.contentOrNull
 
     private fun log(message: String) {
-        println("$LOG_TAG $message")
+        println("$LOG_TAG [$instanceId] $message")
+    }
+
+    private suspend fun logSocketClosed(session: WebSocketSession, generation: Long) {
+        val reason = runCatching {
+            withTimeoutOrNull(200) {
+                (session as? DefaultWebSocketSession)?.closeReason?.await()
+            }
+        }.getOrNull()
+        log(
+            "ws listen ended generation=$generation current=$socketGeneration " +
+                "intentional=$intentionalDisconnect closeReason=${reason?.let { "${it.code}:${it.message}" } ?: "-"}"
+        )
     }
 
     private fun scheduleReconnect() {
@@ -531,6 +608,56 @@ internal fun transientDisconnectConnectionState(
         ConnectionState.DISCONNECTED
     }
 }
+
+internal fun transientDisconnectPairingState(
+    pairingState: PairingState,
+    hasRestorablePairing: Boolean,
+): PairingState {
+    return if (pairingState == PairingState.PAIRED || pairingState == PairingState.PENDING || hasRestorablePairing) {
+        PairingState.PENDING
+    } else {
+        PairingState.UNPAIRED
+    }
+}
+
+internal fun registeredConnectionState(pairingState: PairingState): ConnectionState =
+    if (pairingState == PairingState.PAIRED) ConnectionState.PAIRED else ConnectionState.REGISTERED
+
+internal fun pairedConnectionState(): ConnectionState = ConnectionState.PAIRED
+
+internal fun canSendUserPayload(pairingState: PairingState, registeredBackendId: String?): Boolean =
+    pairingState == PairingState.PAIRED && !registeredBackendId.isNullOrBlank()
+
+internal fun shouldSkipPairRequest(
+    connectionState: ConnectionState,
+    pairingState: PairingState,
+    registeredBackendId: String?,
+    pendingPairBackendId: String?,
+    requestedBackendId: String,
+): Boolean {
+    val normalizedBackendId = requestedBackendId.trim()
+    return normalizedBackendId.isEmpty() ||
+        (connectionState == ConnectionState.PAIRED &&
+            pairingState == PairingState.PAIRED &&
+            registeredBackendId == normalizedBackendId) ||
+        (pairingState == PairingState.PENDING &&
+            pendingPairBackendId == normalizedBackendId)
+}
+
+internal fun shouldProcessIncomingFrame(
+    intentionalDisconnect: Boolean,
+    frameGeneration: Long,
+    currentGeneration: Long,
+): Boolean =
+    !intentionalDisconnect && frameGeneration == currentGeneration
+
+internal fun shouldIgnoreConnectRequest(
+    hasActiveSession: Boolean,
+    connectAttemptInFlight: Boolean,
+    reconnectScheduled: Boolean,
+    intentionalDisconnect: Boolean,
+): Boolean =
+    !intentionalDisconnect && (hasActiveSession || connectAttemptInFlight || reconnectScheduled)
 
 private fun hasRestorablePairing(registeredBackendId: String?, configuredBackendId: String?): Boolean {
     return !registeredBackendId.isNullOrBlank() || !configuredBackendId.isNullOrBlank()

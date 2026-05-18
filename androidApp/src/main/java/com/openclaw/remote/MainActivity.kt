@@ -30,6 +30,7 @@ import com.openclaw.remote.ui.screen.parseQRPack
 import com.openclaw.remote.ui.theme.MochiTheme
 import com.openclaw.remote.viewmodel.ChatViewModel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -102,6 +103,7 @@ class MainActivity : ComponentActivity() {
                 val isLoadingHistory by viewModel.isLoadingHistory.collectAsState()
                 val hasMoreHistory by viewModel.hasMoreHistory.collectAsState()
                 val headsetState by headsetManager.state.collectAsState()
+                val headsetStandbyMode by headsetManager.standbyMode.collectAsState()
                 val config by settingsManager.configFlow.collectAsState(initial = currentConfig)
                 val soundPlaybackEnabled by settingsManager.soundPlaybackEnabledFlow.collectAsState(initial = true)
                 val playbackState by soundPlaybackController.state.collectAsState()
@@ -174,6 +176,7 @@ class MainActivity : ComponentActivity() {
                         isLoadingHistory = isLoadingHistory,
                         hasMoreHistory = hasMoreHistory,
                         headsetStatusLabel = headsetState.label,
+                        headsetStandbyMode = headsetStandbyMode,
                         soundPlaybackEnabled = playbackState.soundPlaybackEnabled,
                         isPlaybackSpeaking = playbackState.isSpeaking,
                         viewModel = viewModel,
@@ -184,6 +187,9 @@ class MainActivity : ComponentActivity() {
                         },
                         onInterruptPlayback = {
                             soundPlaybackController.interruptCurrentPlayback()
+                        },
+                        onToggleHeadsetStandbyMode = {
+                            headsetManager.toggleStandbyMode()
                         },
                         onNavigateToSettings = { showSettings = true },
                         onSelectProfile = { profileId -> viewModel.selectProfile(profileId) },
@@ -207,6 +213,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         headsetManager.stop()
+        if (::viewModel.isInitialized) {
+            viewModel.onCleared()
+        }
+        scope.cancel()
         ttsEngine?.release()
         super.onDestroy()
     }

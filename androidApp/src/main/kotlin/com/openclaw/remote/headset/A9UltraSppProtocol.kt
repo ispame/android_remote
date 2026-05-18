@@ -303,6 +303,11 @@ enum class A9UltraOpusRecoveryDecision {
     StartRecovery,
 }
 
+enum class A9UltraStandbyMode(val label: String) {
+    WAKE_WORD_REQUIRED("等待唤醒词"),
+    CONTINUOUS("连续对话"),
+}
+
 class A9UltraOpusRecoveryGate(
     private val postStopDrainMs: Long = DEFAULT_POST_STOP_DRAIN_MS,
 ) {
@@ -319,6 +324,13 @@ class A9UltraOpusRecoveryGate(
 
     val isSuppressing: Boolean
         get() = mode != Mode.Open
+
+    val standbyMode: A9UltraStandbyMode
+        get() = when (mode) {
+            Mode.AwaitingWake -> A9UltraStandbyMode.WAKE_WORD_REQUIRED
+            Mode.Open,
+            Mode.PostStopDrain -> A9UltraStandbyMode.CONTINUOUS
+        }
 
     fun open() {
         mode = Mode.Open

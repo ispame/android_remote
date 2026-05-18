@@ -62,6 +62,7 @@ import com.openclaw.remote.data.AgentProfile
 import com.openclaw.remote.data.ChatMessage
 import com.openclaw.remote.domain.ConnectionState
 import com.openclaw.remote.domain.PairingState
+import com.openclaw.remote.headset.A9UltraStandbyMode
 import com.openclaw.remote.ui.theme.MochiColors
 import com.openclaw.remote.ui.theme.MochiTheme
 import com.openclaw.remote.viewmodel.ChatViewModel
@@ -81,6 +82,7 @@ fun MainScreen(
     isLoadingHistory: Boolean,
     hasMoreHistory: Boolean,
     headsetStatusLabel: String? = null,
+    headsetStandbyMode: A9UltraStandbyMode = A9UltraStandbyMode.WAKE_WORD_REQUIRED,
     soundPlaybackEnabled: Boolean = true,
     isPlaybackSpeaking: Boolean = false,
     viewModel: ChatViewModel,
@@ -88,6 +90,7 @@ fun MainScreen(
     onToggleTheme: () -> Unit,
     onToggleSoundPlayback: () -> Unit = {},
     onInterruptPlayback: () -> Unit = {},
+    onToggleHeadsetStandbyMode: () -> Unit = {},
     onNavigateToSettings: () -> Unit = {},
     onSelectProfile: (String) -> Unit = {},
 ) {
@@ -162,12 +165,14 @@ fun MainScreen(
                 profileStatuses = profileStatuses,
                 unreadCounts = unreadCounts,
                 headsetStatusLabel = headsetStatusLabel,
+                headsetStandbyMode = headsetStandbyMode,
                 soundPlaybackEnabled = soundPlaybackEnabled,
                 isPlaybackSpeaking = isPlaybackSpeaking,
                 isDark = isDark,
                 onToggleTheme = onToggleTheme,
                 onToggleSoundPlayback = onToggleSoundPlayback,
                 onInterruptPlayback = onInterruptPlayback,
+                onToggleHeadsetStandbyMode = onToggleHeadsetStandbyMode,
                 onNavigateToSettings = onNavigateToSettings,
                 onSelectProfile = onSelectProfile,
                 colors = colors,
@@ -384,12 +389,14 @@ private fun TopBar(
     profileStatuses: Map<String, AgentAvailabilityStatus>,
     unreadCounts: Map<String, Int>,
     headsetStatusLabel: String?,
+    headsetStandbyMode: A9UltraStandbyMode,
     soundPlaybackEnabled: Boolean,
     isPlaybackSpeaking: Boolean,
     isDark: Boolean,
     onToggleTheme: () -> Unit,
     onToggleSoundPlayback: () -> Unit,
     onInterruptPlayback: () -> Unit,
+    onToggleHeadsetStandbyMode: () -> Unit,
     onNavigateToSettings: () -> Unit,
     onSelectProfile: (String) -> Unit,
     colors: MochiColors,
@@ -467,6 +474,22 @@ private fun TopBar(
                 }
 
                 MochiIconButton(
+                    imageVector = Icons.Filled.Mic,
+                    contentDescription = if (headsetStandbyMode == A9UltraStandbyMode.CONTINUOUS) {
+                        "切换到唤醒词待机"
+                    } else {
+                        "切换到连续对话"
+                    },
+                    tint = if (headsetStandbyMode == A9UltraStandbyMode.CONTINUOUS) colors.accent else colors.textSecondary,
+                    background = if (headsetStandbyMode == A9UltraStandbyMode.CONTINUOUS) {
+                        colors.accent.copy(alpha = 0.12f)
+                    } else {
+                        colors.inputBg
+                    },
+                    onClick = onToggleHeadsetStandbyMode,
+                )
+
+                MochiIconButton(
                     imageVector = if (soundPlaybackEnabled) Icons.AutoMirrored.Filled.VolumeUp else Icons.AutoMirrored.Filled.VolumeOff,
                     contentDescription = if (soundPlaybackEnabled) "切换到无声" else "切换到播放",
                     tint = if (soundPlaybackEnabled) colors.icon else colors.textSecondary,
@@ -508,7 +531,7 @@ private fun TopBar(
                     modifier = Modifier.size(14.dp),
                 )
                 Text(
-                    text = "耳机 $headsetStatusLabel",
+                    text = "耳机 $headsetStatusLabel · ${headsetStandbyMode.label}",
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Medium,
                     color = colors.textSecondary,

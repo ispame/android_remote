@@ -52,6 +52,21 @@ class SettingsManagerAndroidProfilesTest {
     }
 
     @Test
+    fun legacyProfileIdIsStableBeforeProfilesArePersisted() = runTest {
+        val firstConfig = manager.configFlow.first()
+        val firstState = manager.profilesFlow.first()
+
+        manager.updateDeviceLabel("Pixel")
+
+        val secondConfig = manager.configFlow.first()
+        val secondState = manager.profilesFlow.first()
+
+        assertEquals(firstConfig.profileId, secondConfig.profileId)
+        assertEquals(firstState.selectedProfile.id, secondState.selectedProfile.id)
+        assertEquals(firstConfig.profileId, firstState.selectedProfile.id)
+    }
+
+    @Test
     fun scannedProfileReplacesEmptyInitialProfile() = runTest {
         val profile = manager.upsertScannedProfile(
             gatewayUrl = "wss://boson-tech.top/ws",
@@ -68,6 +83,7 @@ class SettingsManagerAndroidProfilesTest {
         assertEquals("bk_openclaw", state.selectedProfile.backendId)
         assertEquals("OpenClaw Agent", state.selectedProfile.displayName)
         assertFalse(state.selectedProfile.isPaired)
+        assertNull(manager.configFlow.first().pairedBackendId)
     }
 
     @Test
@@ -129,13 +145,21 @@ class SettingsManagerAndroidProfilesTest {
         val hermes = manager.upsertScannedProfile("wss://boson-tech.top/ws", "bk_hermes", "t2", AgentPlatform.HERMES, "Hermes")
 
         manager.selectProfile(openclaw!!.id)
+        var config = manager.configFlow.first()
+        assertNull(config.pairedBackendId)
+        assertEquals("t1", config.token)
+
+        manager.updatePairedBackend("bk_openclaw", "OpenClaw", openclaw.id)
         assertEquals("bk_openclaw", manager.configFlow.first().pairedBackendId)
 
         manager.selectProfile(hermes!!.id)
-        val config = manager.configFlow.first()
+        config = manager.configFlow.first()
 
-        assertEquals("bk_hermes", config.pairedBackendId)
+        assertNull(config.pairedBackendId)
         assertEquals("t2", config.token)
         assertEquals(hermes.id, config.profileId)
+
+        manager.updatePairedBackend("bk_hermes", "Hermes", hermes.id)
+        assertEquals("bk_hermes", manager.configFlow.first().pairedBackendId)
     }
 }
