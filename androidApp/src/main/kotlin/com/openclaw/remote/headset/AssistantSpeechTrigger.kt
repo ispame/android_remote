@@ -7,25 +7,44 @@ class AssistantSpeechTrigger {
     private var lastObservedMessageKey: String? = null
     private val spokenAssistantKeys = mutableSetOf<String>()
 
-    fun onMessagesChanged(messages: List<ChatMessage>): ChatMessage? {
-        val lastMessage = messages.lastOrNull() ?: return null
-        val key = lastMessage.speechKey()
-        if (lastObservedMessageKey == key) return null
-        lastObservedMessageKey = key
-
-        if (lastMessage.senderId == "user") {
-            hasSeenCurrentUserMessage = true
-            return null
+    fun onMessagesChanged(messages: List<ChatMessage>): List<ChatMessage> {
+        if (messages.isEmpty()) return emptyList()
+        val previousKey = lastObservedMessageKey
+        val lastKey = messages.last().speechKey()
+        if (previousKey == lastKey) return emptyList()
+        if (previousKey == null) {
+            if (messages.last().senderId == "user") {
+                hasSeenCurrentUserMessage = true
+            }
+            lastObservedMessageKey = lastKey
+            return emptyList()
         }
 
-        if (lastMessage.senderId != "assistant" || lastMessage.content.isBlank()) {
-            return null
-        }
-        if (!hasSeenCurrentUserMessage || !spokenAssistantKeys.add(key)) {
-            return null
+        val startIndex = messages.indexOfLast { it.speechKey() == previousKey }
+        if (startIndex < 0) {
+            lastObservedMessageKey = lastKey
+            return emptyList()
         }
 
-        return lastMessage
+        val messagesToSpeak = mutableListOf<ChatMessage>()
+        messages.drop(startIndex + 1).forEach { message ->
+            val key = message.speechKey()
+            if (message.senderId == "user") {
+                hasSeenCurrentUserMessage = true
+                return@forEach
+            }
+            if (
+                message.senderId == "assistant" &&
+                message.content.isNotBlank() &&
+                hasSeenCurrentUserMessage &&
+                spokenAssistantKeys.add(key)
+            ) {
+                messagesToSpeak += message
+            }
+        }
+
+        lastObservedMessageKey = lastKey
+        return messagesToSpeak
     }
 
     private fun ChatMessage.speechKey(): String =

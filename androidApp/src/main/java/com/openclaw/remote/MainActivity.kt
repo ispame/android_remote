@@ -41,6 +41,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var headsetManager: A9UltraSppManager
     private lateinit var soundPlaybackController: SoundPlaybackController
     private var ttsEngine: TtsEngine? = null
+    private var systemFallbackTtsEngine: TtsEngine? = null
     private var currentConfig: GatewayConfig = GatewayConfig()
     private val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main)
 
@@ -61,6 +62,8 @@ class MainActivity : ComponentActivity() {
         viewModel = ChatViewModel(settingsManager)
         soundPlaybackController = SoundPlaybackController(
             ttsEngineProvider = { ttsEngine },
+            fallbackTtsEngineProvider = { systemFallbackTtsEngine },
+            shouldUseFallback = { error -> shouldFallbackToSystemTts(error) },
             persistSoundPlaybackEnabled = { enabled ->
                 scope.launch {
                     settingsManager.updateSoundPlaybackEnabled(enabled)
@@ -114,22 +117,32 @@ class MainActivity : ComponentActivity() {
 
                 // 监听配置变化，重新初始化 TTS 引擎
                 LaunchedEffect(config.ttsEngine) {
-                    ttsEngine?.release()
-                    soundPlaybackController.markPlaybackFinished()
-                    ttsEngine = TtsEngineFactory.create(config.ttsEngine, this@MainActivity).also { engine ->
-                        (engine as? BaseTtsEngine)?.setCallbacks(
-                            onStart = { soundPlaybackController.markPlaybackStarted() },
-                            onDone = { soundPlaybackController.markPlaybackFinished() },
-                        )
+                    val fallbackEngine = ensureSystemFallbackTtsEngine()
+                    val nextEngine = if (config.ttsEngine == "minimax") {
+                        TtsEngineFactory.create(config.ttsEngine, this@MainActivity).also(::configureTtsCallbacks)
+                    } else {
+                        fallbackEngine
+                    }
+                    if (ttsEngine !== nextEngine) {
+                        soundPlaybackController.interruptCurrentPlayback()
+                        ttsEngine
+                            ?.takeIf { it !== systemFallbackTtsEngine }
+                            ?.release()
+                        ttsEngine = nextEngine
                     }
                 }
 
                 // 监听当前会话的新 assistant 回复，播放 TTS。历史消息和设置变更不重播。
                 LaunchedEffect(messages) {
-                    val msg = assistantSpeechTrigger.onMessagesChanged(messages) ?: return@LaunchedEffect
+                    val replies = assistantSpeechTrigger.onMessagesChanged(messages)
+                    if (replies.isEmpty()) return@LaunchedEffect
                     val apiKey = if (config.ttsEngine == "minimax") config.minimaxApiKey else null
                     val voiceId = if (config.ttsEngine == "minimax") config.minimaxVoiceId else null
-                    soundPlaybackController.speakAssistantReply(msg.content, apiKey, voiceId)
+                    soundPlaybackController.enqueueAssistantReplies(
+                        texts = replies.map { it.content },
+                        apiKey = apiKey,
+                        voiceId = voiceId,
+                    )
                 }
 
                 if (showQRScanner) {
@@ -217,8 +230,45 @@ class MainActivity : ComponentActivity() {
             viewModel.onCleared()
         }
         scope.cancel()
-        ttsEngine?.release()
+        ttsEngine
+            ?.takeIf { it !== systemFallbackTtsEngine }
+            ?.release()
+        systemFallbackTtsEngine?.release()
         super.onDestroy()
+    }
+
+    private fun ensureSystemFallbackTtsEngine(): TtsEngine {
+        return systemFallbackTtsEngine ?: TtsEngineFactory.create("system", this).also { engine ->
+            configureTtsCallbacks(engine)
+            systemFallbackTtsEngine = engine
+        }
+    }
+
+    private fun configureTtsCallbacks(engine: TtsEngine) {
+        (engine as? BaseTtsEngine)?.setCallbacks(
+            onStart = { soundPlaybackController.markPlaybackStarted() },
+            onDone = { soundPlaybackController.markPlaybackFinished() },
+            onError = { error -> soundPlaybackController.markPlaybackFailed(error) },
+        )
+    }
+
+    private fun shouldFallbackToSystemTts(error: Throwable): Boolean {
+        if (currentConfig.ttsEngine != "minimax") return false
+        val message = generateSequence(error) { it.cause }
+            .joinToString(separator = " ") { it.message.orEmpty() }
+            .lowercase()
+        val fallbackSignals = listOf(
+            "usage limit",
+            "provider error",
+            "api key",
+            "minimax api error",
+            "empty response",
+            "rejected",
+            "failed",
+            "audio",
+            "playback",
+        )
+        return message.isBlank() || fallbackSignals.any { signal -> message.contains(signal) }
     }
 
     private fun handleIntent(intent: Intent?) {

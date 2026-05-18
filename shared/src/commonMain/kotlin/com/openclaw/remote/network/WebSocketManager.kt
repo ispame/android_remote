@@ -493,9 +493,23 @@ class WebSocketManager(
                 "error" -> {
                     val code = obj["code"]?.jsonPrimitive?.content ?: "unknown"
                     val msg = obj["message"]?.jsonPrimitive?.content ?: "未知错误"
+                    val wasPairing = _pairingState.value == PairingState.PENDING
+                    if (wasPairing) {
+                        val recovery = recoverPairingAfterRouterError(
+                            pairingState = _pairingState.value,
+                            pendingPairBackendId = pendingPairBackendId,
+                        )
+                        pendingPairBackendId = recovery.pendingPairBackendId
+                        _pairingState.value = recovery.pairingState
+                        isRestoringPairing = false
+                    }
                     offerEvent(
                         WsMessageEvent.NewMessage(
-                            ChatMessage("错误 ($code): $msg", timestamp(), "assistant")
+                            ChatMessage(
+                                if (wasPairing) "配对失败 ($code): $msg" else "错误 ($code): $msg",
+                                timestamp(),
+                                "assistant",
+                            )
                         )
                     )
                 }
@@ -658,6 +672,21 @@ internal fun shouldIgnoreConnectRequest(
     intentionalDisconnect: Boolean,
 ): Boolean =
     !intentionalDisconnect && (hasActiveSession || connectAttemptInFlight || reconnectScheduled)
+
+internal data class PairingErrorRecovery(
+    val pairingState: PairingState,
+    val pendingPairBackendId: String?,
+)
+
+internal fun recoverPairingAfterRouterError(
+    pairingState: PairingState,
+    pendingPairBackendId: String?,
+): PairingErrorRecovery =
+    if (pairingState == PairingState.PENDING && !pendingPairBackendId.isNullOrBlank()) {
+        PairingErrorRecovery(PairingState.UNPAIRED, null)
+    } else {
+        PairingErrorRecovery(pairingState, pendingPairBackendId)
+    }
 
 private fun hasRestorablePairing(registeredBackendId: String?, configuredBackendId: String?): Boolean {
     return !registeredBackendId.isNullOrBlank() || !configuredBackendId.isNullOrBlank()

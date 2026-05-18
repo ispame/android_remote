@@ -36,12 +36,11 @@ class MiniMaxTtsEngine(context: Context) : BaseTtsEngine(context) {
     private var currentTrack: AudioTrack? = null
     private var speakJob: Job? = null
 
-    override fun speak(text: String, apiKey: String?, voiceId: String?) {
-        if (text.isBlank()) return
+    override fun speak(text: String, apiKey: String?, voiceId: String?): Boolean {
+        if (text.isBlank()) return false
         if (apiKey.isNullOrBlank()) {
             Log.e(TAG, "MiniMax API key is empty")
-            onSpeakDone?.invoke()
-            return
+            return false
         }
 
         speakJob?.cancel()
@@ -64,10 +63,12 @@ class MiniMaxTtsEngine(context: Context) : BaseTtsEngine(context) {
                 throw e
             } catch (e: Exception) {
                 Log.e(TAG, "MiniMax TTS failed", e)
-            } finally {
-                if (didStart) onSpeakDone?.invoke()
+                if (didStart) onSpeakError?.invoke(e)
+                return@launch
             }
+            if (didStart) onSpeakDone?.invoke()
         }
+        return true
     }
 
     private suspend fun fetchTtsAudio(text: String, apiKey: String, voiceId: String): ByteArray = withContext(Dispatchers.IO) {
@@ -225,6 +226,7 @@ class MiniMaxTtsEngine(context: Context) : BaseTtsEngine(context) {
             throw e
         } catch (e: Exception) {
             Log.e(TAG, "MP3 playback failed", e)
+            throw e
         } finally {
             try {
                 track?.stop()

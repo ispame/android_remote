@@ -35,7 +35,7 @@ class SystemTtsEngine(context: Context) : BaseTtsEngine(context) {
 
                     override fun onError(utteranceId: String?) {
                         Log.e(TAG, "TTS error")
-                        onSpeakDone?.invoke()
+                        onSpeakError?.invoke(IllegalStateException("System TTS error utteranceId=$utteranceId"))
                     }
                 })
 
@@ -47,19 +47,25 @@ class SystemTtsEngine(context: Context) : BaseTtsEngine(context) {
         }
     }
 
-    override fun speak(text: String, apiKey: String?, voiceId: String?) {
+    override fun speak(text: String, apiKey: String?, voiceId: String?): Boolean {
         if (!initialized) {
             Log.w(TAG, "TTS not initialized")
-            return
+            return false
         }
-        if (text.isBlank()) return
+        if (text.isBlank()) return false
 
         val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
         audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
         audioManager.isSpeakerphoneOn = false
 
-        tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "system_tts_${System.currentTimeMillis()}")
+        val result = tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "system_tts_${System.currentTimeMillis()}")
+            ?: TextToSpeech.ERROR
+        if (result == TextToSpeech.ERROR) {
+            Log.e(TAG, "System TTS speak rejected")
+            return false
+        }
         Log.d(TAG, "System TTS speaking")
+        return true
     }
 
     override fun stop() {
