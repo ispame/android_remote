@@ -67,6 +67,17 @@ class ChatProfileRoutingTest {
     }
 
     @Test
+    fun unknownBackendDoesNotFallBackToActiveProfile() {
+        assertNull(
+            resolveProfileIdForBackendId(
+                profiles = profiles,
+                backendId = "bk_unknown",
+                activeProfileId = "profile-openclaw",
+            ),
+        )
+    }
+
+    @Test
     fun unreadOnlyIncrementsForAssistantMessagesOutsideActiveProfile() {
         assertTrue(shouldIncrementUnreadCount("profile-hermes", "profile-openclaw", "assistant"))
         assertFalse(shouldIncrementUnreadCount("profile-openclaw", "profile-openclaw", "assistant"))
@@ -74,30 +85,54 @@ class ChatProfileRoutingTest {
     }
 
     @Test
-    fun agentIsAvailableOnlyAfterCurrentSocketPairResponse() {
+    fun agentAvailabilityUsesSimpleUserFacingLabels() {
         assertEquals(
-            AgentAvailabilityStatus.CONNECTING,
+            "未配对",
+            agentAvailabilityForStatus(
+                hasBackendId = false,
+                pairingState = PairingState.UNPAIRED,
+                connectionState = ConnectionState.DISCONNECTED,
+            ).label,
+        )
+        assertEquals(
+            "未配对",
+            agentAvailabilityForStatus(
+                hasBackendId = true,
+                pairingState = PairingState.UNPAIRED,
+                connectionState = ConnectionState.PAIRED,
+            ).label,
+        )
+        assertEquals(
+            "连接中",
             agentAvailabilityForStatus(
                 hasBackendId = true,
                 pairingState = PairingState.PAIRED,
-                connectionState = ConnectionState.REGISTERED,
-            ),
+                connectionState = ConnectionState.CONNECTING,
+            ).label,
         )
         assertEquals(
-            AgentAvailabilityStatus.PAIRING,
+            "连接中",
             agentAvailabilityForStatus(
                 hasBackendId = true,
                 pairingState = PairingState.PENDING,
                 connectionState = ConnectionState.REGISTERED,
-            ),
+            ).label,
         )
         assertEquals(
-            AgentAvailabilityStatus.AVAILABLE,
+            "可用",
+            agentAvailabilityForStatus(
+                hasBackendId = true,
+                pairingState = PairingState.PAIRED,
+                connectionState = ConnectionState.REGISTERED,
+            ).label,
+        )
+        assertEquals(
+            "可用",
             agentAvailabilityForStatus(
                 hasBackendId = true,
                 pairingState = PairingState.PAIRED,
                 connectionState = ConnectionState.PAIRED,
-            ),
+            ).label,
         )
     }
 

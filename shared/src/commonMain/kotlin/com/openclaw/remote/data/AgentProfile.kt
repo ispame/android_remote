@@ -31,12 +31,12 @@ enum class AgentPlatform(
 }
 
 enum class AgentAvailabilityStatus(val label: String) {
-    UNCONFIGURED("未配置"),
+    UNCONFIGURED("未配对"),
     UNPAIRED("未配对"),
     PAIRING("连接中"),
     CONNECTING("连接中"),
-    AVAILABLE("在线"),
-    OFFLINE("离线"),
+    AVAILABLE("可用"),
+    OFFLINE("连接中"),
 }
 
 data class AgentProfile(

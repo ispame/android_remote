@@ -81,7 +81,7 @@ class WebSocketManagerTest {
     }
 
     @Test
-    fun duplicatePairRequestsAreSkippedWhilePendingOrAlreadyPaired() {
+    fun duplicatePairRequestsAreSkippedOnlyWhilePending() {
         assertEquals(
             true,
             shouldSkipPairRequest(
@@ -93,7 +93,7 @@ class WebSocketManagerTest {
             ),
         )
         assertEquals(
-            true,
+            false,
             shouldSkipPairRequest(
                 connectionState = ConnectionState.PAIRED,
                 pairingState = PairingState.PAIRED,
@@ -119,6 +119,21 @@ class WebSocketManagerTest {
         val recovery = recoverPairingAfterRouterError(
             pairingState = PairingState.PENDING,
             pendingPairBackendId = "main",
+            code = "TARGET_NOT_FOUND",
+            message = "Backend not found: main",
+        )
+
+        assertEquals(PairingState.UNPAIRED, recovery.pairingState)
+        assertNull(recovery.pendingPairBackendId)
+    }
+
+    @Test
+    fun backendUnavailableErrorClearsStalePairedState() {
+        val recovery = recoverPairingAfterRouterError(
+            pairingState = PairingState.PAIRED,
+            pendingPairBackendId = null,
+            code = "CLIENT_NOT_FOUND",
+            message = "Backend offline",
         )
 
         assertEquals(PairingState.UNPAIRED, recovery.pairingState)

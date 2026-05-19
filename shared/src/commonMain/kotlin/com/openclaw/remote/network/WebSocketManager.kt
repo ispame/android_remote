@@ -62,6 +62,9 @@ class WebSocketManager(
     private var restorableBackendId: String? = preferredBackendId?.takeIf { it.isNotBlank() }
     private var pendingPairBackendId: String? = null
 
+    val currentRegisteredBackendId: String?
+        get() = registeredBackendId
+
     private var reconnectAttempts = 0
     private var reconnectJob: Job? = null
     @Volatile private var intentionalDisconnect = false
@@ -186,6 +189,11 @@ class WebSocketManager(
 
     fun requestPair(backendId: String) {
         val normalizedBackendId = backendId.trim()
+        log(
+            "pair request requested backend=$normalizedBackendId " +
+                "state=${_connectionState.value}/${_pairingState.value} " +
+                "pending=${pendingPairBackendId ?: "-"} registered=${registeredBackendId ?: "-"}"
+        )
         if (normalizedBackendId.isEmpty()) {
             return
         }
@@ -201,7 +209,7 @@ class WebSocketManager(
             log("pair request skipped backend=$normalizedBackendId state=${_connectionState.value}/${_pairingState.value}")
             return
         }
-        if (_connectionState.value != ConnectionState.REGISTERED) {
+        if (_connectionState.value != ConnectionState.REGISTERED && _connectionState.value != ConnectionState.PAIRED) {
             _pairingState.value = PairingState.PENDING
             pendingPairBackendId = normalizedBackendId
             log("pair request deferred backend=$normalizedBackendId state=${_connectionState.value}")
@@ -217,7 +225,12 @@ class WebSocketManager(
             put("type", "pair_request")
             put("target_backend_id", backendId)
         }
-        send(frame.toString())
+        log(
+            "pair request send backend=$backendId " +
+                "state=${_connectionState.value}/${_pairingState.value} " +
+                "pending=${pendingPairBackendId ?: "-"} registered=${registeredBackendId ?: "-"}"
+        )
+        send(frame.toString(), label = "pair_request")
     }
 
     fun cancelPair() {
@@ -494,13 +507,20 @@ class WebSocketManager(
                     val code = obj["code"]?.jsonPrimitive?.content ?: "unknown"
                     val msg = obj["message"]?.jsonPrimitive?.content ?: "未知错误"
                     val wasPairing = _pairingState.value == PairingState.PENDING
-                    if (wasPairing) {
-                        val recovery = recoverPairingAfterRouterError(
-                            pairingState = _pairingState.value,
-                            pendingPairBackendId = pendingPairBackendId,
-                        )
+                    val recovery = recoverPairingAfterRouterError(
+                        pairingState = _pairingState.value,
+                        pendingPairBackendId = pendingPairBackendId,
+                        code = code,
+                        message = msg,
+                    )
+                    if (recovery.pairingState != _pairingState.value || recovery.pendingPairBackendId != pendingPairBackendId) {
                         pendingPairBackendId = recovery.pendingPairBackendId
                         _pairingState.value = recovery.pairingState
+                        registeredBackendId = null
+                        restorableBackendId = null
+                        if (_connectionState.value == ConnectionState.PAIRED) {
+                            _connectionState.value = ConnectionState.REGISTERED
+                        }
                         isRestoringPairing = false
                     }
                     offerEvent(
@@ -550,13 +570,28 @@ class WebSocketManager(
         val type = obj.stringField("type")
         val contentType = obj.stringField("content_type")
         val clientMessageId = obj.stringField("client_message_id")
+        val clientId = obj.stringField("client_id")
+        val label = obj.stringField("label")
+        val targetBackendId = obj.stringField("target_backend_id")
+        val backendId = obj.stringField("backend_id")
+        val targetAppId = obj.stringField("target_app_id")
+        val approve = obj["approve"]?.jsonPrimitive?.contentOrNull
+        val code = obj.stringField("code")
         val error = obj.stringField("error") ?: obj.stringField("message")
         val contentLength = obj["content"]?.jsonPrimitive?.contentOrNull?.length
         return buildString {
             append("type=${type ?: "-"}")
+            if (clientId != null) append(" client_id=$clientId")
+            if (label != null) append(" label=$label")
+            if (obj["token"] != null) append(" tokenPresent=true")
+            if (targetBackendId != null) append(" target_backend_id=$targetBackendId")
+            if (backendId != null) append(" backend_id=$backendId")
+            if (targetAppId != null) append(" target_app_id=$targetAppId")
+            if (approve != null) append(" approve=$approve")
             if (contentType != null) append(" contentType=$contentType")
             if (clientMessageId != null) append(" id=$clientMessageId")
             if (contentLength != null) append(" contentChars=$contentLength")
+            if (code != null) append(" code=$code")
             if (error != null) append(" error=$error")
         }
     }
@@ -651,9 +686,6 @@ internal fun shouldSkipPairRequest(
 ): Boolean {
     val normalizedBackendId = requestedBackendId.trim()
     return normalizedBackendId.isEmpty() ||
-        (connectionState == ConnectionState.PAIRED &&
-            pairingState == PairingState.PAIRED &&
-            registeredBackendId == normalizedBackendId) ||
         (pairingState == PairingState.PENDING &&
             pendingPairBackendId == normalizedBackendId)
 }
@@ -681,12 +713,26 @@ internal data class PairingErrorRecovery(
 internal fun recoverPairingAfterRouterError(
     pairingState: PairingState,
     pendingPairBackendId: String?,
+    code: String,
+    message: String,
 ): PairingErrorRecovery =
-    if (pairingState == PairingState.PENDING && !pendingPairBackendId.isNullOrBlank()) {
+    if (
+        (pairingState == PairingState.PENDING && !pendingPairBackendId.isNullOrBlank()) ||
+        isBackendUnavailableRouterError(code, message)
+    ) {
         PairingErrorRecovery(PairingState.UNPAIRED, null)
     } else {
         PairingErrorRecovery(pairingState, pendingPairBackendId)
     }
+
+internal fun isBackendUnavailableRouterError(code: String, message: String): Boolean {
+    val normalizedCode = code.trim().uppercase()
+    val normalizedMessage = message.trim().lowercase()
+    return normalizedCode == "TARGET_NOT_FOUND" ||
+        normalizedCode == "CLIENT_NOT_FOUND" ||
+        "backend not found" in normalizedMessage ||
+        "backend offline" in normalizedMessage
+}
 
 private fun hasRestorablePairing(registeredBackendId: String?, configuredBackendId: String?): Boolean {
     return !registeredBackendId.isNullOrBlank() || !configuredBackendId.isNullOrBlank()

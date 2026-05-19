@@ -712,8 +712,7 @@ private fun agentStatusColor(
 ): Color {
     return when (status) {
         AgentAvailabilityStatus.AVAILABLE -> colors.onlineGreen
-        AgentAvailabilityStatus.PAIRING, AgentAvailabilityStatus.CONNECTING -> colors.accent
-        AgentAvailabilityStatus.OFFLINE -> colors.recordingRed
+        AgentAvailabilityStatus.PAIRING, AgentAvailabilityStatus.CONNECTING, AgentAvailabilityStatus.OFFLINE -> colors.accent
         AgentAvailabilityStatus.UNCONFIGURED, AgentAvailabilityStatus.UNPAIRED -> colors.textSecondary
     }
 }
@@ -872,36 +871,30 @@ private fun ConnectionStatusCard(
     colors: MochiColors,
     onUnpair: () -> Unit
 ) {
-    val pairedStatusSuffix = if (pairedBackendLabel != null) "：$pairedBackendLabel" else ""
-    val (statusColor, statusText, statusIcon) = when {
-        pairingState == PairingState.PAIRED && connectionState == ConnectionState.REGISTERED -> Triple(
+    val statusText = settingsConnectionStatusText(connectionState, pairingState, pairedBackendLabel)
+    val (statusColor, statusIcon) = when {
+        pairingState == PairingState.PAIRED && connectionState == ConnectionState.PAIRED -> Pair(
             colors.primary,
-            "已配对$pairedStatusSuffix",
             Icons.Default.Link
         )
-        pairingState == PairingState.PAIRED -> Triple(
+        pairingState == PairingState.PAIRED -> Pair(
             colors.accent,
-            "重连中$pairedStatusSuffix",
             Icons.Default.Link
         )
-        pairingState == PairingState.PENDING -> Triple(
+        pairingState == PairingState.PENDING -> Pair(
             colors.accent,
-            "正在连接 Agent$pairedStatusSuffix",
             Icons.Default.Link
         )
-        connectionState == ConnectionState.CONNECTED || connectionState == ConnectionState.REGISTERED -> Triple(
+        connectionState == ConnectionState.CONNECTED || connectionState == ConnectionState.REGISTERED -> Pair(
             colors.accent,
-            "Router 已连接，Agent 未配对",
             Icons.Default.Link
         )
-        connectionState == ConnectionState.CONNECTING -> Triple(
+        connectionState == ConnectionState.CONNECTING -> Pair(
             colors.accent,
-            "连接中...",
             Icons.Default.Link
         )
-        else -> Triple(
+        else -> Pair(
             colors.recordingRed,
-            "未连接",
             Icons.Default.LinkOff
         )
     }
@@ -942,6 +935,23 @@ private fun ConnectionStatusCard(
                 Text("取消配对", color = colors.recordingRed, fontSize = 12.sp)
             }
         }
+    }
+}
+
+internal fun settingsConnectionStatusText(
+    connectionState: ConnectionState,
+    pairingState: PairingState,
+    pairedBackendLabel: String?,
+): String {
+    val pairedStatusSuffix = if (pairedBackendLabel != null) "：$pairedBackendLabel" else ""
+    return when {
+        pairingState == PairingState.PAIRED && connectionState == ConnectionState.PAIRED -> "已配对$pairedStatusSuffix"
+        pairingState == PairingState.PAIRED -> "重连中$pairedStatusSuffix"
+        pairingState == PairingState.PENDING -> "正在连接 Agent$pairedStatusSuffix"
+        connectionState == ConnectionState.CONNECTED || connectionState == ConnectionState.REGISTERED ->
+            "Router 已连接，Agent 未配对"
+        connectionState == ConnectionState.CONNECTING -> "连接中..."
+        else -> "未连接"
     }
 }
 

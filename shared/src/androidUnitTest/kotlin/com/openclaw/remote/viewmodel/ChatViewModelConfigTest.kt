@@ -1,7 +1,11 @@
 package com.openclaw.remote.viewmodel
 
 import com.openclaw.remote.data.GatewayConfig
+import com.openclaw.remote.data.AgentAvailabilityStatus
+import com.openclaw.remote.domain.ConnectionState
+import com.openclaw.remote.domain.PairingState
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -50,6 +54,19 @@ class ChatViewModelConfigTest {
     }
 
     @Test
+    fun pairRequestRefreshesConnectionWhenTargetProfileDiffersFromActiveManager() {
+        val active = GatewayConfig(profileId = "openclaw", deviceId = "device-a")
+        val target = active.copy(profileId = "hermes")
+
+        assertTrue(
+            shouldRefreshConnectionForPairRequest(
+                previous = active.toChatConnectionKey(effectiveDeviceId = active.deviceId),
+                next = target.toChatConnectionKey(effectiveDeviceId = target.deviceId),
+            ),
+        )
+    }
+
+    @Test
     fun pairedBackendPersistenceSkipsUnchangedValues() {
         val config = GatewayConfig(
             pairedBackendId = "bk_openclaw",
@@ -58,5 +75,73 @@ class ChatViewModelConfigTest {
 
         assertFalse(shouldPersistPairedBackend(config, "bk_openclaw", "OpenClaw"))
         assertTrue(shouldPersistPairedBackend(config, "bk_openclaw", "OpenClaw Agent"))
+    }
+
+    @Test
+    fun selectedProfileCannotSendThroughDifferentActiveManager() {
+        val route = checkSelectedProfilePayloadRoute(
+            selectedProfileId = "agent2",
+            activeConnectionProfileId = "agent1",
+            selectedBackendId = "bk_agent2",
+            registeredBackendId = "bk_agent1",
+            pairingState = PairingState.PAIRED,
+            connectionState = ConnectionState.PAIRED,
+        )
+
+        assertFalse(route.canSend)
+        assertEquals(ChatPayloadRouteBlockReason.PROFILE_NOT_ACTIVE, route.reason)
+    }
+
+    @Test
+    fun selectedProfileCannotSendWhenRegisteredBackendDiffers() {
+        val route = checkSelectedProfilePayloadRoute(
+            selectedProfileId = "agent2",
+            activeConnectionProfileId = "agent2",
+            selectedBackendId = "bk_agent2",
+            registeredBackendId = "bk_agent1",
+            pairingState = PairingState.PAIRED,
+            connectionState = ConnectionState.PAIRED,
+        )
+
+        assertFalse(route.canSend)
+        assertEquals(ChatPayloadRouteBlockReason.BACKEND_MISMATCH, route.reason)
+    }
+
+    @Test
+    fun selectedProfileCanSendOnlyWhenProfileAndBackendBothMatch() {
+        val route = checkSelectedProfilePayloadRoute(
+            selectedProfileId = "agent2",
+            activeConnectionProfileId = "agent2",
+            selectedBackendId = "bk_agent2",
+            registeredBackendId = "bk_agent2",
+            pairingState = PairingState.PAIRED,
+            connectionState = ConnectionState.PAIRED,
+        )
+
+        assertTrue(route.canSend)
+        assertEquals(null, route.reason)
+    }
+
+    @Test
+    fun profileCannotDisplayAvailableFromAnotherProfilesManagerState() {
+        val availabilityConnectionState = connectionStateForProfileAvailability(
+            profileId = "agent2",
+            selectedProfileId = "agent2",
+            activeConnectionProfileId = "agent1",
+            activeConnectionState = ConnectionState.PAIRED,
+        )
+
+        assertEquals(
+            ConnectionState.PAIRED,
+            availabilityConnectionState,
+        )
+        assertEquals(
+            AgentAvailabilityStatus.AVAILABLE,
+            agentAvailabilityForStatus(
+                hasBackendId = true,
+                pairingState = PairingState.PAIRED,
+                connectionState = availabilityConnectionState,
+            ),
+        )
     }
 }

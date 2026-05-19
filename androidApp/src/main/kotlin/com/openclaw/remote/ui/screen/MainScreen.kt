@@ -586,8 +586,7 @@ private fun availabilityColor(
 ): Color {
     return when (status) {
         AgentAvailabilityStatus.AVAILABLE -> colors.onlineGreen
-        AgentAvailabilityStatus.PAIRING, AgentAvailabilityStatus.CONNECTING -> colors.accent
-        AgentAvailabilityStatus.OFFLINE -> colors.recordingRed
+        AgentAvailabilityStatus.PAIRING, AgentAvailabilityStatus.CONNECTING, AgentAvailabilityStatus.OFFLINE -> colors.accent
         AgentAvailabilityStatus.UNCONFIGURED, AgentAvailabilityStatus.UNPAIRED -> colors.textSecondary
     }
 }
@@ -606,7 +605,7 @@ private fun fallbackAvailabilityStatus(
             AgentAvailabilityStatus.CONNECTING
         connectionState == ConnectionState.REGISTERED ->
             AgentAvailabilityStatus.UNPAIRED
-        else -> AgentAvailabilityStatus.OFFLINE
+        else -> AgentAvailabilityStatus.UNPAIRED
     }
 }
 
