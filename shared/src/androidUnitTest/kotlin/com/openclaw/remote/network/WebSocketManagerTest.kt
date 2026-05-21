@@ -81,6 +81,64 @@ class WebSocketManagerTest {
     }
 
     @Test
+    fun historyRequestCanTargetExplicitPairedBackendAfterRegister() {
+        assertEquals(
+            "bk_hermes",
+            resolveHistoryRequestTarget(
+                registeredBackendId = "bk_openclaw",
+                requestedBackendId = " bk_hermes ",
+            ),
+        )
+        assertEquals(
+            true,
+            canSendHistoryRequest(
+                connectionState = ConnectionState.REGISTERED,
+                pairingState = PairingState.UNPAIRED,
+                registeredBackendId = null,
+                requestedBackendId = "bk_hermes",
+            ),
+        )
+        assertEquals(
+            false,
+            canSendHistoryRequest(
+                connectionState = ConnectionState.CONNECTING,
+                pairingState = PairingState.UNPAIRED,
+                registeredBackendId = null,
+                requestedBackendId = "bk_hermes",
+            ),
+        )
+    }
+
+    @Test
+    fun implicitHistoryRequestStillRequiresCurrentPairing() {
+        assertEquals(
+            "bk_openclaw",
+            resolveHistoryRequestTarget(
+                registeredBackendId = "bk_openclaw",
+                requestedBackendId = null,
+            ),
+        )
+        assertEquals(
+            true,
+            canSendHistoryRequest(
+                connectionState = ConnectionState.PAIRED,
+                pairingState = PairingState.PAIRED,
+                registeredBackendId = "bk_openclaw",
+                requestedBackendId = null,
+            ),
+        )
+        assertEquals(
+            false,
+            canSendHistoryRequest(
+                connectionState = ConnectionState.REGISTERED,
+                pairingState = PairingState.UNPAIRED,
+                registeredBackendId = "bk_openclaw",
+                requestedBackendId = null,
+            ),
+        )
+    }
+
+    @Test
     fun duplicatePairRequestsAreSkippedOnlyWhilePending() {
         assertEquals(
             true,

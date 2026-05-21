@@ -22,6 +22,8 @@ import com.openclaw.remote.headset.BaseTtsEngine
 import com.openclaw.remote.headset.SoundPlaybackController
 import com.openclaw.remote.headset.TtsEngine
 import com.openclaw.remote.headset.TtsEngineFactory
+import com.openclaw.remote.headset.supportsLedLightControl
+import com.openclaw.remote.headset.supportsStandbyControl
 import com.openclaw.remote.ui.screen.MainScreen
 import com.openclaw.remote.ui.screen.QRParseResult
 import com.openclaw.remote.ui.screen.SettingsScreen
@@ -102,14 +104,16 @@ class MainActivity : ComponentActivity() {
                 val messages by viewModel.messages.collectAsState()
                 val profiles by viewModel.profiles.collectAsState()
                 val selectedProfileId by viewModel.selectedProfileId.collectAsState()
-                val unreadCounts by viewModel.unreadCounts.collectAsState()
                 val isLoadingHistory by viewModel.isLoadingHistory.collectAsState()
                 val hasMoreHistory by viewModel.hasMoreHistory.collectAsState()
                 val headsetState by headsetManager.state.collectAsState()
                 val headsetStandbyMode by headsetManager.standbyMode.collectAsState()
+                val headsetLedLightEnabled by headsetManager.ledLightEnabled.collectAsState()
                 val config by settingsManager.configFlow.collectAsState(initial = currentConfig)
                 val soundPlaybackEnabled by settingsManager.soundPlaybackEnabledFlow.collectAsState(initial = true)
                 val playbackState by soundPlaybackController.state.collectAsState()
+                val showHeadsetStandbyControl = headsetState.supportsStandbyControl()
+                val showHeadsetLedLightControl = headsetState.supportsLedLightControl()
 
                 LaunchedEffect(soundPlaybackEnabled) {
                     soundPlaybackController.syncSoundPlaybackEnabled(soundPlaybackEnabled)
@@ -184,12 +188,14 @@ class MainActivity : ComponentActivity() {
                         profiles = profiles,
                         selectedProfileId = selectedProfileId,
                         profileStatuses = profiles.associate { it.id to viewModel.availabilityStatus(it) },
-                        unreadCounts = unreadCounts,
                         isDark = isDark,
                         isLoadingHistory = isLoadingHistory,
                         hasMoreHistory = hasMoreHistory,
                         headsetStatusLabel = headsetState.label,
                         headsetStandbyMode = headsetStandbyMode,
+                        showHeadsetStandbyControl = showHeadsetStandbyControl,
+                        headsetLedLightEnabled = headsetLedLightEnabled,
+                        showHeadsetLedLightControl = showHeadsetLedLightControl,
                         soundPlaybackEnabled = playbackState.soundPlaybackEnabled,
                         isPlaybackSpeaking = playbackState.isSpeaking,
                         viewModel = viewModel,
@@ -203,6 +209,14 @@ class MainActivity : ComponentActivity() {
                         },
                         onToggleHeadsetStandbyMode = {
                             headsetManager.toggleStandbyMode()
+                        },
+                        onToggleHeadsetLedLight = { enabled ->
+                            headsetManager.setLedLightEnabled(enabled)
+                        },
+                        onSpeakMessage = { text ->
+                            val apiKey = if (config.ttsEngine == "minimax") config.minimaxApiKey else null
+                            val voiceId = if (config.ttsEngine == "minimax") config.minimaxVoiceId else null
+                            soundPlaybackController.speakManualText(text, apiKey, voiceId)
                         },
                         onNavigateToSettings = { showSettings = true },
                         onSelectProfile = { profileId -> viewModel.selectProfile(profileId) },

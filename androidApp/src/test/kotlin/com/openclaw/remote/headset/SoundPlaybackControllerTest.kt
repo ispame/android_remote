@@ -22,6 +22,43 @@ class SoundPlaybackControllerTest {
     }
 
     @Test
+    fun manualSpeechPlaysWhenSoundPlaybackIsMutedWithoutChangingPreference() {
+        val engine = FakeTtsEngine()
+        val persisted = mutableListOf<Boolean>()
+        val controller = SoundPlaybackController(
+            ttsEngineProvider = { engine },
+            initialSoundPlaybackEnabled = false,
+            persistSoundPlaybackEnabled = { persisted += it },
+        )
+
+        val didSpeak = controller.speakManualText(" 手动朗读 ", apiKey = "key", voiceId = "voice")
+
+        assertTrue(didSpeak)
+        assertEquals(listOf("手动朗读"), engine.spokenTexts)
+        assertFalse(controller.state.value.soundPlaybackEnabled)
+        assertTrue(controller.state.value.isSpeaking)
+        assertTrue(persisted.isEmpty())
+    }
+
+    @Test
+    fun manualSpeechInterruptsCurrentPlaybackAndClearsQueuedReplies() {
+        val engine = FakeTtsEngine()
+        val controller = SoundPlaybackController(ttsEngineProvider = { engine })
+        controller.enqueueAssistantReplies(listOf("第一段", "第二段"), apiKey = null, voiceId = null)
+
+        val didSpeak = controller.speakManualText("插播朗读", apiKey = null, voiceId = null)
+
+        assertTrue(didSpeak)
+        assertEquals(1, engine.stopCount)
+        assertEquals(listOf("第一段", "插播朗读"), engine.spokenTexts)
+
+        controller.markPlaybackFinished()
+
+        assertFalse(controller.state.value.isSpeaking)
+        assertEquals(listOf("第一段", "插播朗读"), engine.spokenTexts)
+    }
+
+    @Test
     fun queuedAssistantRepliesPlayOneAtATimeInOrder() {
         val engine = FakeTtsEngine()
         val controller = SoundPlaybackController(ttsEngineProvider = { engine })

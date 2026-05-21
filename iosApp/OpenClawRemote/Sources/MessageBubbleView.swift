@@ -9,6 +9,7 @@ struct MessageBubbleView: View {
     let onCopy: () -> Void
     let onQuote: () -> Void
     let onSelect: () -> Void
+    let onSpeak: () -> Void
     let onApprovalCommand: (String) -> Void
 
     private var usesWideLayout: Bool {
@@ -81,6 +82,9 @@ struct MessageBubbleView: View {
             }
             Button(action: onQuote) {
                 Label("引用", systemImage: "quote.bubble")
+            }
+            Button(action: onSpeak) {
+                Label("朗读", systemImage: "speaker.wave.2")
             }
             Button(action: onSelect) {
                 Label("选择", systemImage: "checkmark.circle")

@@ -46,6 +46,18 @@ class SoundPlaybackController(
         return true
     }
 
+    fun speakManualText(text: String, apiKey: String?, voiceId: String?): Boolean {
+        val request = text.trim()
+            .takeIf { it.isNotEmpty() }
+            ?.let { SpeechRequest(text = it, apiKey = apiKey, voiceId = voiceId) }
+            ?: return false
+
+        interruptCurrentPlayback()
+        queue.add(request)
+        startNextIfIdle()
+        return currentRequest != null
+    }
+
     fun interruptCurrentPlayback() {
         queue.clear()
         currentRequest = null

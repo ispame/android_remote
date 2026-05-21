@@ -310,17 +310,30 @@ class WebSocketManager(
         )
     }
 
-    fun requestRecentHistory(rounds: Int = 15) {
-        val backendId = registeredBackendId ?: return
-        if (_pairingState.value != PairingState.PAIRED) return
+    fun requestRecentHistory(rounds: Int = 15, backendId: String? = null): Boolean {
+        val targetBackendId = resolveHistoryRequestTarget(
+            registeredBackendId = registeredBackendId,
+            requestedBackendId = backendId,
+        ) ?: return false
+        if (
+            !canSendHistoryRequest(
+                connectionState = _connectionState.value,
+                pairingState = _pairingState.value,
+                registeredBackendId = registeredBackendId,
+                requestedBackendId = backendId,
+            )
+        ) {
+            return false
+        }
         val frame = buildJsonObject {
             put("type", "history_request")
             put("app_id", deviceId)
-            put("target_backend_id", backendId)
+            put("target_backend_id", targetBackendId)
             put("session_key", "current")
             put("limit", maxOf(1, rounds) * 2)
         }
         send(frame.toString())
+        return true
     }
 
     fun unpair() {
@@ -676,6 +689,25 @@ internal fun pairedConnectionState(): ConnectionState = ConnectionState.PAIRED
 
 internal fun canSendUserPayload(pairingState: PairingState, registeredBackendId: String?): Boolean =
     pairingState == PairingState.PAIRED && !registeredBackendId.isNullOrBlank()
+
+internal fun resolveHistoryRequestTarget(
+    registeredBackendId: String?,
+    requestedBackendId: String?,
+): String? =
+    requestedBackendId?.trim()?.takeIf { it.isNotEmpty() }
+        ?: registeredBackendId?.trim()?.takeIf { it.isNotEmpty() }
+
+internal fun canSendHistoryRequest(
+    connectionState: ConnectionState,
+    pairingState: PairingState,
+    registeredBackendId: String?,
+    requestedBackendId: String?,
+): Boolean {
+    val hasExplicitTarget = !requestedBackendId.isNullOrBlank()
+    val hasImplicitPairedTarget = pairingState == PairingState.PAIRED && !registeredBackendId.isNullOrBlank()
+    return (connectionState == ConnectionState.REGISTERED || connectionState == ConnectionState.PAIRED) &&
+        (hasExplicitTarget || hasImplicitPairedTarget)
+}
 
 internal fun shouldSkipPairRequest(
     connectionState: ConnectionState,

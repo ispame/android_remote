@@ -18,6 +18,7 @@
 		7C346FFD960C00641EA59882 /* HeadsetConversationController.swift in Sources */ = {isa = PBXBuildFile; fileRef = FBEAEB450F34C85C45512B3F /* HeadsetConversationController.swift */; };
 		84555F3D52D94EAD8EF65390 /* HeadsetPromptTonePlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 923D6E33C9894D0588D65828 /* HeadsetPromptTonePlayer.swift */; };
 		895CCA6DF685313BBF44A9A8 /* MessageBubbleView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7373BB88261A2851504B020F /* MessageBubbleView.swift */; };
+		C0E64E557C1D4B2DB5E0A28F /* MessageSpeechController.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD74A7436B024AF6A06F3C11 /* MessageSpeechController.swift */; };
 		916447AB25FB0B3836E6DCBE /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 4CE1DF8496D56DC00F4FE1A9 /* LaunchScreen.storyboard */; };
 		953448EA4BD143E79D81431D /* AudioRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = D8723AA06B30B5639AC2D8FF /* AudioRecorder.swift */; };
 		97BCF21F9FEFBE50BB814EDC /* MainScreenView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0485DBA11E12B632C6AA47D7 /* MainScreenView.swift */; };
@@ -51,6 +52,7 @@
 		9AE326C19603471699AC7DEA /* Pods-OpenClawRemote.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-OpenClawRemote.release.xcconfig"; path = "Target Support Files/Pods-OpenClawRemote/Pods-OpenClawRemote.release.xcconfig"; sourceTree = "<group>"; };
 		A609FE540C0EE0FA6D377651 /* QRScannerScreenView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QRScannerScreenView.swift; sourceTree = "<group>"; };
 		ACC1BA8D2A85A4A40055F08E /* MochiTypography.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MochiTypography.swift; sourceTree = "<group>"; };
+		AD74A7436B024AF6A06F3C11 /* MessageSpeechController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageSpeechController.swift; sourceTree = "<group>"; };
 		BF27902A11DB4EFB0E211233 /* WebSocketManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebSocketManager.swift; sourceTree = "<group>"; };
 		CFF62CA2DACEAB18522B07FE /* A9UltraBLEManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = A9UltraBLEManager.swift; sourceTree = "<group>"; };
 		D8723AA06B30B5639AC2D8FF /* AudioRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioRecorder.swift; sourceTree = "<group>"; };
@@ -115,6 +117,7 @@
 				2DD481DC8CD7C44EB62100B1 /* InputAreaView.swift */,
 				0485DBA11E12B632C6AA47D7 /* MainScreenView.swift */,
 				7373BB88261A2851504B020F /* MessageBubbleView.swift */,
+				AD74A7436B024AF6A06F3C11 /* MessageSpeechController.swift */,
 				0C60717D2A2A02F7B79A6551 /* MochiColors.swift */,
 				ACC1BA8D2A85A4A40055F08E /* MochiTypography.swift */,
 				F7A4D618EC6F318502FD22F9 /* Models.swift */,
@@ -270,6 +273,7 @@
 				1B5B33DFF38C672BE1947434 /* InputAreaView.swift in Sources */,
 				97BCF21F9FEFBE50BB814EDC /* MainScreenView.swift in Sources */,
 				895CCA6DF685313BBF44A9A8 /* MessageBubbleView.swift in Sources */,
+				C0E64E557C1D4B2DB5E0A28F /* MessageSpeechController.swift in Sources */,
 				E356817A883ABBDA11B4B2EB /* MochiColors.swift in Sources */,
 				C1B553EB17B6EEFF9EC66F56 /* MochiTypography.swift in Sources */,
 				E28515B792A354E3C6609424 /* Models.swift in Sources */,

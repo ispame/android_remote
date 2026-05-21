@@ -56,4 +56,12 @@ class ChatMessageDisplayTest {
         assertTrue(result.messages.isEmpty())
         assertEquals(setOf(stableHistoryKey(historyMessage)), result.loadedHistoryKeys)
     }
+
+    @Test
+    fun allAsrFailuresDropOptimisticMessage() {
+        assertTrue(shouldDropAsrFailureMessage("ASR_AUDIO_EMPTY"))
+        assertTrue(shouldDropAsrFailureMessage("ASR_EMPTY_TRANSCRIPT"))
+        assertTrue(shouldDropAsrFailureMessage("ASR_PROVIDER_CLOSED"))
+        assertTrue(shouldDropAsrFailureMessage(null))
+    }
 }

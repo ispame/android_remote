@@ -27,6 +27,7 @@ enum class ABMateSppCommand(val value: Int) {
     KEY_SETTINGS(0x22),
     DEVICE_INFO(0x27),
     DEVICE_INFO_NOTIFY(0x28),
+    LED_LIGHT(0x2E),
     VOICE_RECOGNITION(0x34),
     OPUS_RECORDING(0x3B),
     RECORDING_DATA(0x3C),
@@ -162,9 +163,13 @@ object A9UltraSppPolicy {
         ABMateTlv.empty(0xFF),
         ABMateTlv.empty(0x05),
         ABMateTlv.empty(0x1C),
+        ABMateTlv.empty(0x0F),
     )
 
     val voiceRecognitionEnablePayload: ByteArray = byteArrayOf(0x01)
+
+    fun ledLightPayload(enabled: Boolean): ByteArray =
+        byteArrayOf(if (enabled) 0x01 else 0x00)
 
     fun opusRecordingPayload(enabled: Boolean): ByteArray =
         ABMateTlv.encode(ABMateTlv.item(0x01, if (enabled) 0x01 else 0x00))
@@ -201,6 +206,20 @@ object A9UltraSppPolicy {
             return A9UltraWakeEvent.Wake(side)
         }
         return A9UltraWakeEvent.Sleep
+    }
+
+    fun parseLedLightEnabled(frame: ABMateSppFrame): Boolean? {
+        if (frame.command != ABMateSppCommand.DEVICE_INFO.value &&
+            frame.command != ABMateSppCommand.DEVICE_INFO_NOTIFY.value
+        ) {
+            return null
+        }
+        return ABMateTlv.parse(frame.payload)
+            .firstOrNull { it.type == 0x0F }
+            ?.value
+            ?.firstOrNull()
+            ?.asUInt8()
+            ?.let { it == 0x01 }
     }
 
     fun parseOpusRecordingEnabled(frame: ABMateSppFrame): Boolean? {

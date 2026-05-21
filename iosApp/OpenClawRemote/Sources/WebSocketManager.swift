@@ -16,6 +16,10 @@ private struct ProfileRuntimeState {
     var lastAutoHistoryRequestAt: Date?
 }
 
+func shouldDropAsrFailureMessage(_ error: String?) -> Bool {
+    true
+}
+
 final class WebSocketManager: ObservableObject {
     private var webSocketTask: URLSessionWebSocketTask?
     private let session = URLSession(configuration: .default)
@@ -62,7 +66,6 @@ final class WebSocketManager: ObservableObject {
     private var loadedHistoryKeys = Set<String>()
     private var oldestHistoryTimestamp: String?
     private var lastAutoHistoryRequestAt: Date?
-    private let hiddenAsrErrors: Set<String> = ["ASR_AUDIO_EMPTY", "ASR_EMPTY_TRANSCRIPT"]
 
     init(deviceId: String, deviceLabel: String, token: String) {
         self.deviceId = deviceId
@@ -742,25 +745,38 @@ final class WebSocketManager: ObservableObject {
         guard let profileId else { return }
         var state = profileId == activeProfileId ? currentRuntimeStateSnapshot() : (profileStates[profileId] ?? ProfileRuntimeState())
         guard let idx = state.messages.firstIndex(where: { $0.clientMessageId == clientMessageId }) else { return }
-        if !success, let error, hiddenAsrErrors.contains(error) {
-            state.messages = state.messages.filter { $0.clientMessageId != clientMessageId }
-            saveRuntimeState(state, profileId: profileId)
+        if !success {
+            logAsrFailure(profileId: profileId, clientMessageId: clientMessageId, error: error)
+            if shouldDropAsrFailureMessage(error) {
+                state.messages = state.messages.filter { $0.clientMessageId != clientMessageId }
+                saveRuntimeState(state, profileId: profileId)
+            }
             return
         }
         let old = state.messages[idx]
         var updatedMessages = state.messages
         updatedMessages[idx] = ChatMessage(
             id: old.id,
-            content: success ? (text ?? "") : "语音识别失败: \(error ?? "unknown")",
+            content: text ?? "",
             timestamp: old.timestamp,
             rawTimestamp: old.rawTimestamp,
             senderId: old.senderId,
-            status: success ? .delivered : .failed,
+            status: .delivered,
             seq: old.seq,
             clientMessageId: old.clientMessageId
         )
         state.messages = updatedMessages
         saveRuntimeState(state, profileId: profileId)
+    }
+
+    private func logAsrFailure(profileId: String, clientMessageId: String, error: String?) {
+        let normalizedError = error?.trimmingCharacters(in: .whitespacesAndNewlines)
+        print(
+            "OpenClawRemote asr failed " +
+            "profileId=\(profileId.isEmpty ? "-" : profileId) " +
+            "clientMessageId=\(clientMessageId.isEmpty ? "-" : clientMessageId) " +
+            "error=\((normalizedError?.isEmpty == false) ? normalizedError! : "unknown")"
+        )
     }
 
     private func sanitizeAssistantContent(_ content: String) -> String {
