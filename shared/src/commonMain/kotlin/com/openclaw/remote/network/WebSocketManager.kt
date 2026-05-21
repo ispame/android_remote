@@ -4,7 +4,7 @@ import com.openclaw.remote.data.ChatMessage
 import com.openclaw.remote.data.MessageStatus
 import com.openclaw.remote.domain.ConnectionState
 import com.openclaw.remote.domain.PairingState
-import com.openclaw.remote.viewmodel.historyChatMessage
+import com.openclaw.remote.viewmodel.chatMessageFromPayload
 import io.ktor.client.*
 import io.ktor.client.plugins.websocket.*
 import io.ktor.websocket.*
@@ -445,7 +445,6 @@ class WebSocketManager(
                 }
                 "message" -> {
                     val content = obj["content"]?.jsonPrimitive?.content ?: ""
-                    val ts = obj["timestamp"]?.jsonPrimitive?.content ?: timestamp()
                     val seq = obj["seq"]?.jsonPrimitive?.content?.toIntOrNull()
                     val backendId = obj["from"]?.jsonPrimitive?.contentOrNull ?: registeredBackendId
 
@@ -454,7 +453,17 @@ class WebSocketManager(
                         sendAck(seq)
                     }
 
-                    offerEvent(WsMessageEvent.NewMessage(ChatMessage(content, ts, "assistant"), backendId))
+                    offerEvent(
+                        WsMessageEvent.NewMessage(
+                            chatMessageFromPayload(
+                                content = content,
+                                role = "assistant",
+                                item = obj,
+                                fallbackTimestamp = timestamp(),
+                            ),
+                            backendId,
+                        )
+                    )
                 }
                 "history_response" -> {
                     val backendId = obj["backend_id"]?.jsonPrimitive?.contentOrNull
@@ -463,8 +472,7 @@ class WebSocketManager(
                         val item = element as? JsonObject ?: return@mapNotNull null
                         val content = item["content"]?.jsonPrimitive?.content ?: return@mapNotNull null
                         val role = item["role"]?.jsonPrimitive?.content ?: "assistant"
-                        val rawTimestamp = item["timestamp"]?.jsonPrimitive?.content ?: timestamp()
-                        historyChatMessage(content, role, rawTimestamp)
+                        chatMessageFromPayload(content, role, item)
                     }.orEmpty()
                     val hasMore = obj["has_more"]?.jsonPrimitive?.content?.toBoolean() ?: false
                     val error = obj["error"]?.jsonPrimitive?.contentOrNull

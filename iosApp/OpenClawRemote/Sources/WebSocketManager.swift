@@ -631,7 +631,13 @@ final class WebSocketManager: ObservableObject {
         }
         let backendId = json["from"] as? String ?? registeredBackendId ?? ""
         let profileId = profileId(forBackendId: backendId) ?? activeProfileId
-        appendMessage(content, senderId: "assistant", profileId: profileId)
+        let message = HistoryMessagePayload.chatMessage(
+            content: content,
+            role: "assistant",
+            item: json,
+            fallbackTimestamp: timestamp()
+        )
+        appendMessage(message, profileId: profileId)
     }
 
     private func handleUnpaired(_ json: [String: Any]) {
@@ -692,7 +698,6 @@ final class WebSocketManager: ObservableObject {
         let parsed = items.compactMap { item -> ChatMessage? in
             guard let content = item["content"] as? String else { return nil }
             let role = item["role"] as? String ?? "assistant"
-            let timestamp = item["timestamp"] as? String ?? self.timestamp()
             let normalizedRole = role.lowercased()
             let displayContent: String
             if normalizedRole == "user" || normalizedRole == "human" {
@@ -702,7 +707,7 @@ final class WebSocketManager: ObservableObject {
                 guard let sanitized = self.displayableBackendContent(content) else { return nil }
                 displayContent = sanitized
             }
-            return HistoryMessagePayload(content: displayContent, role: role, timestamp: timestamp).chatMessage
+            return HistoryMessagePayload.chatMessage(content: displayContent, role: role, item: item)
         }
 
         if parsed.isEmpty {
@@ -722,8 +727,8 @@ final class WebSocketManager: ObservableObject {
         state.oldestHistoryTimestamp = (state.messages + parsed)
             .compactMap { $0.rawTimestamp }
             .min { lhs, rhs in
-                let lhsTime = ISO8601DateFormatter().date(from: lhs)?.timeIntervalSince1970 ?? 0
-                let rhsTime = ISO8601DateFormatter().date(from: rhs)?.timeIntervalSince1970 ?? 0
+                let lhsTime = HistoryMessagePayload.date(from: lhs)?.timeIntervalSince1970 ?? 0
+                let rhsTime = HistoryMessagePayload.date(from: rhs)?.timeIntervalSince1970 ?? 0
                 return lhsTime < rhsTime
             }
         if !newMessages.isEmpty {

@@ -69,19 +69,89 @@ struct HistoryMessagePayload {
     let role: String
     let timestamp: String
 
+    static func chatMessage(
+        content: String,
+        role: String,
+        item: [String: Any],
+        fallbackTimestamp: String = ""
+    ) -> ChatMessage {
+        let rawTimestamp = timestamp(from: item) ?? fallbackTimestamp.trimmingCharacters(in: .whitespacesAndNewlines)
+        return HistoryMessagePayload(content: content, role: role, timestamp: rawTimestamp).chatMessage
+    }
+
+    static func timestamp(from item: [String: Any]) -> String? {
+        for key in ["timestamp", "created_at", "createdAt", "sent_at", "sentAt", "message_time", "messageTime", "time"] {
+            if let value = normalizedTimestampValue(item[key]) {
+                return value
+            }
+        }
+        return nil
+    }
+
+    private static func normalizedTimestampValue(_ value: Any?) -> String? {
+        if let value = value as? String {
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty { return nil }
+            if let numeric = Double(trimmed), let timestamp = isoTimestamp(fromEpoch: numeric) {
+                return timestamp
+            }
+            return trimmed
+        }
+
+        if let value = value as? NSNumber {
+            return isoTimestamp(fromEpoch: value.doubleValue)
+        }
+
+        if let value = value as? Date {
+            return isoFormatter.string(from: value)
+        }
+
+        if let value = value as? [String: Any] {
+            for key in ["$date", "date", "value", "iso"] {
+                if let timestamp = normalizedTimestampValue(value[key]) {
+                    return timestamp
+                }
+            }
+        }
+
+        return nil
+    }
+
+    private static func isoTimestamp(fromEpoch value: Double) -> String? {
+        guard value > 100_000_000 else { return nil }
+        let seconds = value > 1_000_000_000_000 ? value / 1000 : value
+        return isoFormatter.string(from: Date(timeIntervalSince1970: seconds))
+    }
+
+    private static let isoFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+
+    private static let isoFormatterWithoutFractionalSeconds: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter
+    }()
+
     var chatMessage: ChatMessage {
         let normalized = role.lowercased()
         let senderId = normalized == "user" || normalized == "human" ? "user" : "assistant"
         return ChatMessage(content: content, timestamp: Self.displayTimestamp(timestamp), rawTimestamp: timestamp, senderId: senderId)
     }
 
+    static func date(from raw: String) -> Date? {
+        isoFormatter.date(from: raw) ?? isoFormatterWithoutFractionalSeconds.date(from: raw)
+    }
+
     private static func displayTimestamp(_ raw: String) -> String {
-        let iso = ISO8601DateFormatter()
-        if let date = iso.date(from: raw) {
+        if let date = date(from: raw) {
             let formatter = DateFormatter()
-            formatter.dateFormat = "HH:mm"
+            formatter.dateFormat = Calendar.current.isDateInToday(date) ? "HH:mm" : "MM月dd日 HH:mm"
             return formatter.string(from: date)
         }
+
         return raw
     }
 }
