@@ -126,17 +126,63 @@ class ChatViewModelConfigTest {
     fun profileCannotDisplayAvailableFromAnotherProfilesManagerState() {
         val availabilityConnectionState = connectionStateForProfileAvailability(
             profileId = "agent2",
-            selectedProfileId = "agent2",
+            selectedProfileId = "agent1",
             activeConnectionProfileId = "agent1",
-            activeConnectionState = ConnectionState.PAIRED,
+            selectedConnectionState = ConnectionState.PAIRED,
+            profileConnectionState = ConnectionState.DISCONNECTED,
+            routerConnectionState = ConnectionState.PAIRED,
         )
 
         assertEquals(
-            ConnectionState.PAIRED,
+            ConnectionState.DISCONNECTED,
             availabilityConnectionState,
         )
         assertEquals(
+            AgentAvailabilityStatus.CONNECTING,
+            agentAvailabilityForStatus(
+                hasBackendId = true,
+                pairingState = PairingState.PAIRED,
+                connectionState = availabilityConnectionState,
+            ),
+        )
+    }
+
+    @Test
+    fun profileDisplaysAvailableAfterItsOwnRuntimeEvidence() {
+        val availabilityConnectionState = connectionStateForProfileAvailability(
+            profileId = "agent2",
+            selectedProfileId = "agent1",
+            activeConnectionProfileId = "agent1",
+            selectedConnectionState = ConnectionState.PAIRED,
+            profileConnectionState = ConnectionState.PAIRED,
+            routerConnectionState = ConnectionState.PAIRED,
+        )
+
+        assertEquals(ConnectionState.PAIRED, availabilityConnectionState)
+        assertEquals(
             AgentAvailabilityStatus.AVAILABLE,
+            agentAvailabilityForStatus(
+                hasBackendId = true,
+                pairingState = PairingState.PAIRED,
+                connectionState = availabilityConnectionState,
+            ),
+        )
+    }
+
+    @Test
+    fun routerReconnectDowngradesReachableProfileToConnecting() {
+        val availabilityConnectionState = connectionStateForProfileAvailability(
+            profileId = "agent2",
+            selectedProfileId = "agent1",
+            activeConnectionProfileId = "agent1",
+            selectedConnectionState = ConnectionState.CONNECTING,
+            profileConnectionState = ConnectionState.PAIRED,
+            routerConnectionState = ConnectionState.CONNECTING,
+        )
+
+        assertEquals(ConnectionState.CONNECTING, availabilityConnectionState)
+        assertEquals(
+            AgentAvailabilityStatus.CONNECTING,
             agentAvailabilityForStatus(
                 hasBackendId = true,
                 pairingState = PairingState.PAIRED,

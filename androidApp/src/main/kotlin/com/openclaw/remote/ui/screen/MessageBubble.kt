@@ -42,6 +42,7 @@ fun MessageBubble(
     onCopy: () -> Unit = {},
     onQuote: () -> Unit = {},
     onSelect: () -> Unit = {},
+    onSpeak: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val colors = MochiTheme.colors
@@ -145,6 +146,13 @@ fun MessageBubble(
                     onClick = {
                         menuExpanded = false
                         onQuote()
+                    },
+                )
+                DropdownMenuItem(
+                    text = { Text("朗读") },
+                    onClick = {
+                        menuExpanded = false
+                        onSpeak()
                     },
                 )
                 DropdownMenuItem(

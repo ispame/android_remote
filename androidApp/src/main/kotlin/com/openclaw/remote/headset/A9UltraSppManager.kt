@@ -43,7 +43,15 @@ sealed class A9UltraSppState {
             is Ready -> "${deviceName} 就绪"
             is Recording -> "${deviceName} 录音中 ${bytes}B"
             is Error -> message
-        }
+    }
+}
+
+fun A9UltraSppState.supportsStandbyControl(): Boolean {
+    return this is A9UltraSppState.Ready || this is A9UltraSppState.Recording
+}
+
+fun A9UltraSppState.supportsLedLightControl(): Boolean {
+    return this is A9UltraSppState.Ready || this is A9UltraSppState.Recording
 }
 
 class A9UltraSppManager(
@@ -82,6 +90,9 @@ class A9UltraSppManager(
     private val _standbyMode = MutableStateFlow(A9UltraStandbyMode.WAKE_WORD_REQUIRED)
     val standbyMode: StateFlow<A9UltraStandbyMode> = _standbyMode
 
+    private val _ledLightEnabled = MutableStateFlow(true)
+    val ledLightEnabled: StateFlow<Boolean> = _ledLightEnabled
+
     fun start() {
         if (connectionJob?.isActive == true) return
         connectionJob = scope.launch {
@@ -116,6 +127,11 @@ class A9UltraSppManager(
             enterAwaitingWake(reason = "manual-off")
             finishSession(closeHeadset = false, reason = "manual-off")
         }
+    }
+
+    fun setLedLightEnabled(enabled: Boolean) {
+        _ledLightEnabled.value = enabled
+        send(ABMateSppCommand.LED_LIGHT, A9UltraSppPolicy.ledLightPayload(enabled))
     }
 
     fun toggleStandbyMode() {
@@ -222,6 +238,9 @@ class A9UltraSppManager(
         when (frame.command) {
             ABMateSppCommand.DEVICE_INFO.value,
             ABMateSppCommand.DEVICE_INFO_NOTIFY.value -> {
+                A9UltraSppPolicy.parseLedLightEnabled(frame)?.let { enabled ->
+                    _ledLightEnabled.value = enabled
+                }
                 handleDeviceInfo(frame)
                 logDeviceNotifyTlvs(frame)
                 A9UltraSppPolicy.parseWakeEvent(frame)?.let(::handleWakeEvent)

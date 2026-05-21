@@ -36,9 +36,33 @@ class A9UltraSppProtocolTest {
         assertEquals(ABMateSppCommand.DEVICE_INFO.value, frame.command)
         assertEquals(ABMateSppFrameType.REQUEST, frame.type)
         assertEquals(
-            listOf(0x24, 0xFE, 0xFF, 0x05, 0x1C),
+            listOf(0x24, 0xFE, 0xFF, 0x05, 0x1C, 0x0F),
             ABMateTlv.parse(frame.payload).map { it.type },
         )
+    }
+
+    @Test
+    fun ledLightCommandUsesAbMateLedSwitchProtocol() {
+        assertEquals(0x2E, ABMateSppCommand.LED_LIGHT.value)
+        assertArrayEquals(byteArrayOf(0x00), A9UltraSppPolicy.ledLightPayload(enabled = false))
+        assertArrayEquals(byteArrayOf(0x01), A9UltraSppPolicy.ledLightPayload(enabled = true))
+    }
+
+    @Test
+    fun ledLightStatusParsesFromDeviceInfoTlv() {
+        val enabledFrame = ABMateSppFrame(
+            command = ABMateSppCommand.DEVICE_INFO.value,
+            type = ABMateSppFrameType.RESPONSE,
+            payload = ABMateTlv.encode(ABMateTlv.item(0x0F, 0x01)),
+        )
+        val disabledNotify = ABMateSppFrame(
+            command = ABMateSppCommand.DEVICE_INFO_NOTIFY.value,
+            type = ABMateSppFrameType.NOTIFY,
+            payload = ABMateTlv.encode(ABMateTlv.item(0x0F, 0x00)),
+        )
+
+        assertEquals(true, A9UltraSppPolicy.parseLedLightEnabled(enabledFrame))
+        assertEquals(false, A9UltraSppPolicy.parseLedLightEnabled(disabledNotify))
     }
 
     @Test

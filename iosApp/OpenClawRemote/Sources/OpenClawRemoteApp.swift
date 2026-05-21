@@ -10,6 +10,7 @@ struct OpenClawRemoteApp: App {
     @StateObject private var wsManager: WebSocketManager
     @StateObject private var headsetController: HeadsetConversationController
     @StateObject private var audioRecorder = AudioRecorder()
+    @StateObject private var messageSpeechController = MessageSpeechController()
 
     @State private var isDark = false
     @State private var showSettings = false
@@ -76,6 +77,7 @@ struct OpenClawRemoteApp: App {
                         settingsManager: settingsManager,
                         audioRecorder: audioRecorder,
                         headsetController: headsetController,
+                        messageSpeechController: messageSpeechController,
                         isDark: isDark,
                         colors: colors,
                         onToggleTheme: { isDark.toggle() },

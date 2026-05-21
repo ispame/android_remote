@@ -268,6 +268,7 @@ struct MainScreenView: View {
     @ObservedObject var settingsManager: SettingsManager
     @ObservedObject var audioRecorder: AudioRecorder
     @ObservedObject var headsetController: HeadsetConversationController
+    @ObservedObject var messageSpeechController: MessageSpeechController
     let isDark: Bool
     let colors: MochiColors
     let onToggleTheme: () -> Void
@@ -342,6 +343,9 @@ struct MainScreenView: View {
                                         onSelect: {
                                             isSelectingMessages = true
                                             selectedMessageIds = [message.id]
+                                        },
+                                        onSpeak: {
+                                            messageSpeechController.speak(message.content)
                                         },
                                         onApprovalCommand: { command in
                                             sendApprovalCommand(command)

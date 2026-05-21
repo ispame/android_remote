@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.Keyboard
+import androidx.compose.material.icons.filled.Lightbulb
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Settings
@@ -49,6 +50,8 @@ import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -77,12 +80,14 @@ fun MainScreen(
     profiles: List<AgentProfile> = emptyList(),
     selectedProfileId: String = "",
     profileStatuses: Map<String, AgentAvailabilityStatus> = emptyMap(),
-    unreadCounts: Map<String, Int> = emptyMap(),
     isDark: Boolean,
     isLoadingHistory: Boolean,
     hasMoreHistory: Boolean,
     headsetStatusLabel: String? = null,
     headsetStandbyMode: A9UltraStandbyMode = A9UltraStandbyMode.WAKE_WORD_REQUIRED,
+    showHeadsetStandbyControl: Boolean = false,
+    headsetLedLightEnabled: Boolean = true,
+    showHeadsetLedLightControl: Boolean = false,
     soundPlaybackEnabled: Boolean = true,
     isPlaybackSpeaking: Boolean = false,
     viewModel: ChatViewModel,
@@ -91,6 +96,8 @@ fun MainScreen(
     onToggleSoundPlayback: () -> Unit = {},
     onInterruptPlayback: () -> Unit = {},
     onToggleHeadsetStandbyMode: () -> Unit = {},
+    onToggleHeadsetLedLight: (Boolean) -> Unit = {},
+    onSpeakMessage: (String) -> Unit = {},
     onNavigateToSettings: () -> Unit = {},
     onSelectProfile: (String) -> Unit = {},
 ) {
@@ -163,9 +170,11 @@ fun MainScreen(
                 profiles = profiles,
                 selectedProfileId = selectedProfileId,
                 profileStatuses = profileStatuses,
-                unreadCounts = unreadCounts,
                 headsetStatusLabel = headsetStatusLabel,
                 headsetStandbyMode = headsetStandbyMode,
+                showHeadsetStandbyControl = showHeadsetStandbyControl,
+                headsetLedLightEnabled = headsetLedLightEnabled,
+                showHeadsetLedLightControl = showHeadsetLedLightControl,
                 soundPlaybackEnabled = soundPlaybackEnabled,
                 isPlaybackSpeaking = isPlaybackSpeaking,
                 isDark = isDark,
@@ -173,6 +182,7 @@ fun MainScreen(
                 onToggleSoundPlayback = onToggleSoundPlayback,
                 onInterruptPlayback = onInterruptPlayback,
                 onToggleHeadsetStandbyMode = onToggleHeadsetStandbyMode,
+                onToggleHeadsetLedLight = onToggleHeadsetLedLight,
                 onNavigateToSettings = onNavigateToSettings,
                 onSelectProfile = onSelectProfile,
                 colors = colors,
@@ -240,6 +250,9 @@ fun MainScreen(
                             onSelect = {
                                 isSelectingMessages = true
                                 selectedMessageKeys = setOf(messageKey)
+                            },
+                            onSpeak = {
+                                onSpeakMessage(msg.content)
                             },
                         )
                     }
@@ -387,9 +400,11 @@ private fun TopBar(
     profiles: List<AgentProfile>,
     selectedProfileId: String,
     profileStatuses: Map<String, AgentAvailabilityStatus>,
-    unreadCounts: Map<String, Int>,
     headsetStatusLabel: String?,
     headsetStandbyMode: A9UltraStandbyMode,
+    showHeadsetStandbyControl: Boolean,
+    headsetLedLightEnabled: Boolean,
+    showHeadsetLedLightControl: Boolean,
     soundPlaybackEnabled: Boolean,
     isPlaybackSpeaking: Boolean,
     isDark: Boolean,
@@ -397,6 +412,7 @@ private fun TopBar(
     onToggleSoundPlayback: () -> Unit,
     onInterruptPlayback: () -> Unit,
     onToggleHeadsetStandbyMode: () -> Unit,
+    onToggleHeadsetLedLight: (Boolean) -> Unit,
     onNavigateToSettings: () -> Unit,
     onSelectProfile: (String) -> Unit,
     colors: MochiColors,
@@ -432,7 +448,6 @@ private fun TopBar(
                                 profile = profile,
                                 status = itemStatus,
                                 selected = profile.id == selectedProfileId,
-                                hasUnread = (unreadCounts[profile.id] ?: 0) > 0,
                                 colors = colors,
                                 onClick = { onSelectProfile(profile.id) },
                                 modifier = Modifier.weight(1f),
@@ -473,21 +488,23 @@ private fun TopBar(
                     )
                 }
 
-                MochiIconButton(
-                    imageVector = Icons.Filled.Mic,
-                    contentDescription = if (headsetStandbyMode == A9UltraStandbyMode.CONTINUOUS) {
-                        "切换到唤醒词待机"
-                    } else {
-                        "切换到连续对话"
-                    },
-                    tint = if (headsetStandbyMode == A9UltraStandbyMode.CONTINUOUS) colors.accent else colors.textSecondary,
-                    background = if (headsetStandbyMode == A9UltraStandbyMode.CONTINUOUS) {
-                        colors.accent.copy(alpha = 0.12f)
-                    } else {
-                        colors.inputBg
-                    },
-                    onClick = onToggleHeadsetStandbyMode,
-                )
+                if (showHeadsetStandbyControl) {
+                    MochiIconButton(
+                        imageVector = Icons.Filled.Mic,
+                        contentDescription = if (headsetStandbyMode == A9UltraStandbyMode.CONTINUOUS) {
+                            "切换到唤醒词待机"
+                        } else {
+                            "切换到连续对话"
+                        },
+                        tint = if (headsetStandbyMode == A9UltraStandbyMode.CONTINUOUS) colors.accent else colors.textSecondary,
+                        background = if (headsetStandbyMode == A9UltraStandbyMode.CONTINUOUS) {
+                            colors.accent.copy(alpha = 0.12f)
+                        } else {
+                            colors.inputBg
+                        },
+                        onClick = onToggleHeadsetStandbyMode,
+                    )
+                }
 
                 MochiIconButton(
                     imageVector = if (soundPlaybackEnabled) Icons.AutoMirrored.Filled.VolumeUp else Icons.AutoMirrored.Filled.VolumeOff,
@@ -531,7 +548,11 @@ private fun TopBar(
                     modifier = Modifier.size(14.dp),
                 )
                 Text(
-                    text = "耳机 $headsetStatusLabel · ${headsetStandbyMode.label}",
+                    text = if (showHeadsetStandbyControl) {
+                        "耳机 $headsetStatusLabel · ${headsetStandbyMode.label}"
+                    } else {
+                        "耳机 $headsetStatusLabel"
+                    },
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Medium,
                     color = colors.textSecondary,
@@ -539,9 +560,60 @@ private fun TopBar(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),
                 )
+                LedLightSwitch(
+                    checked = headsetLedLightEnabled,
+                    enabled = showHeadsetLedLightControl,
+                    onCheckedChange = onToggleHeadsetLedLight,
+                    colors = colors,
+                )
                 StatusDot(color = colors.primary)
             }
         }
+    }
+}
+
+@Composable
+private fun LedLightSwitch(
+    checked: Boolean,
+    enabled: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    colors: MochiColors,
+) {
+    Row(
+        modifier = Modifier.semantics {
+            contentDescription = if (checked) "关闭耳机盒 LED" else "打开耳机盒 LED"
+        },
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Icon(
+            imageVector = Icons.Filled.Lightbulb,
+            contentDescription = null,
+            tint = when {
+                !enabled -> colors.textSecondary.copy(alpha = 0.45f)
+                checked -> colors.accent
+                else -> colors.textSecondary
+            },
+            modifier = Modifier.size(16.dp),
+        )
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            enabled = enabled,
+            modifier = Modifier.height(28.dp),
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = colors.accent,
+                checkedTrackColor = colors.accent.copy(alpha = 0.28f),
+                checkedBorderColor = colors.accent.copy(alpha = 0.42f),
+                uncheckedThumbColor = colors.textSecondary,
+                uncheckedTrackColor = colors.inputBg,
+                uncheckedBorderColor = colors.inputBorder,
+                disabledCheckedThumbColor = colors.textSecondary.copy(alpha = 0.45f),
+                disabledCheckedTrackColor = colors.inputBg,
+                disabledUncheckedThumbColor = colors.textSecondary.copy(alpha = 0.35f),
+                disabledUncheckedTrackColor = colors.inputBg,
+            ),
+        )
     }
 }
 
@@ -614,7 +686,6 @@ private fun AgentChip(
     profile: AgentProfile,
     status: AgentAvailabilityStatus,
     selected: Boolean,
-    hasUnread: Boolean,
     colors: MochiColors,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
@@ -644,14 +715,6 @@ private fun AgentChip(
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f),
         )
-        if (!selected && hasUnread) {
-            Box(
-                modifier = Modifier
-                    .size(6.dp)
-                    .clip(CircleShape)
-                    .background(colors.recordingRed)
-            )
-        }
     }
 }
 

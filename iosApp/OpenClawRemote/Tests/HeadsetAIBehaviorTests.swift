@@ -17,6 +17,8 @@ struct HeadsetAIBehaviorTests {
         try testVoiceActivityFinishesAfterSpeechAndTailSilence()
         try testVoiceActivityRequiresUsefulSpeechForASR()
         try testPromptToneChannelRendering()
+        try testMessageSpeechTrimsAndSkipsBlankText()
+        try testASRFailuresDropOptimisticMessage()
         print("HeadsetAIBehaviorTests passed")
     }
 
@@ -164,6 +166,18 @@ struct HeadsetAIBehaviorTests {
         try expect(right.contains { abs($0.right) > 0.001 }, "right tone should contain right channel signal")
         try expect(right.allSatisfy { abs($0.left) < 0.0001 }, "right tone should mute left channel")
         try expect(both.contains { abs($0.left) > 0.001 && abs($0.right) > 0.001 }, "both tone should contain stereo signal")
+    }
+
+    private static func testMessageSpeechTrimsAndSkipsBlankText() throws {
+        try expect(MessageSpeechController.normalizedText("  朗读这条消息 \n") == "朗读这条消息", "manual message speech should trim outer whitespace")
+        try expect(MessageSpeechController.normalizedText(" \n\t ") == nil, "manual message speech should skip blank text")
+    }
+
+    private static func testASRFailuresDropOptimisticMessage() throws {
+        try expect(shouldDropAsrFailureMessage("ASR_AUDIO_EMPTY"), "empty audio should remove the optimistic voice placeholder")
+        try expect(shouldDropAsrFailureMessage("ASR_EMPTY_TRANSCRIPT"), "empty transcript should remove the optimistic voice placeholder")
+        try expect(shouldDropAsrFailureMessage("ASR_PROVIDER_CLOSED"), "provider closures should remove the optimistic voice placeholder")
+        try expect(shouldDropAsrFailureMessage(nil), "unknown ASR failure should remove the optimistic voice placeholder")
     }
 
     private static func expect(_ condition: @autoclosure () -> Bool, _ message: String) throws {
