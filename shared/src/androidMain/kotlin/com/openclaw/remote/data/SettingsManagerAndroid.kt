@@ -19,8 +19,11 @@ class SettingsManagerAndroid(private val context: Context) : SettingsManager {
     companion object {
         private const val LEGACY_PROFILE_ID = "legacy-android-profile"
         private val GATEWAY_URL = stringPreferencesKey("gateway_url")
-        private val DEVICE_ID = stringPreferencesKey("device_id")
-        private val BASE_DEVICE_ID = stringPreferencesKey("base_device_id_v1")
+        private val ACCOUNT_ID = stringPreferencesKey("account_id")
+        private val ACCESS_TOKEN = stringPreferencesKey("access_token")
+        private val REFRESH_TOKEN = stringPreferencesKey("refresh_token")
+        private val ACCESS_EXPIRES_AT = stringPreferencesKey("access_expires_at")
+        private val REFRESH_EXPIRES_AT = stringPreferencesKey("refresh_expires_at")
         private val DEVICE_LABEL = stringPreferencesKey("device_label")
         private val TOKEN = stringPreferencesKey("token")
         private val PAIRED_BACKEND_ID = stringPreferencesKey("paired_backend_id")
@@ -58,7 +61,6 @@ class SettingsManagerAndroid(private val context: Context) : SettingsManager {
             val profiles = state.profiles.toMutableList()
             val current = profiles[index]
             profiles[index] = current.copy(
-                appClientId = config.deviceId.ifBlank { current.appClientId },
                 gatewayUrl = config.gatewayUrl.ifBlank { current.gatewayUrl },
                 token = config.token,
                 backendId = config.pairedBackendId ?: current.backendId,
@@ -69,29 +71,17 @@ class SettingsManagerAndroid(private val context: Context) : SettingsManager {
                 updatedAt = now,
             )
             prefs[DEVICE_LABEL] = config.deviceLabel.ifEmpty { "我的设备" }
+            prefs[ACCOUNT_ID] = config.accountId
+            prefs[ACCESS_TOKEN] = config.accessToken
+            prefs[REFRESH_TOKEN] = config.refreshToken
+            prefs[ACCESS_EXPIRES_AT] = config.accessExpiresAt
+            prefs[REFRESH_EXPIRES_AT] = config.refreshExpiresAt
             prefs[ASR_MODE] = config.asrMode.normalizedAsrMode()
             prefs[ASR_PROFILE_ID] = if (config.asrMode == "backend") "" else config.asrProfileId
             prefs[TTS_ENGINE] = config.ttsEngine
             prefs[MINIMAX_API_KEY] = config.minimaxApiKey
             prefs[MINIMAX_VOICE_ID] = config.minimaxVoiceId
-            if (config.deviceId.isNotBlank()) {
-                prefs[BASE_DEVICE_ID] = config.deviceId
-                prefs[DEVICE_ID] = config.deviceId
-            }
             persistProfiles(prefs, profiles, profiles[index].id)
-        }
-    }
-
-    override suspend fun updateDeviceId(id: String) {
-        context.dataStore.edit { prefs ->
-            prefs[BASE_DEVICE_ID] = id
-            prefs[DEVICE_ID] = id
-            val state = prefs.toProfilesState()
-            persistProfiles(
-                prefs = prefs,
-                profiles = state.profiles.map { it.copy(appClientId = id, updatedAt = currentTimestampMillis()) },
-                selectedProfileId = state.selectedProfileId,
-            )
         }
     }
 
@@ -150,7 +140,6 @@ class SettingsManagerAndroid(private val context: Context) : SettingsManager {
         context.dataStore.edit { prefs ->
             val state = prefs.toProfilesState()
             val normalized = profile.normalizedForSave(
-                appClientId = prefs.baseDeviceId(),
                 asrMode = prefs.globalAsrMode(),
                 asrProfileId = prefs.globalAsrProfileId(),
             )
@@ -198,7 +187,6 @@ class SettingsManagerAndroid(private val context: Context) : SettingsManager {
 
             val profile = if (targetIndex != null) {
                 profiles[targetIndex].copy(
-                    appClientId = prefs.baseDeviceId(),
                     platform = platform,
                     displayName = displayName,
                     gatewayUrl = normalizedGateway,
@@ -213,7 +201,6 @@ class SettingsManagerAndroid(private val context: Context) : SettingsManager {
             } else {
                 AgentProfile(
                     id = randomProfileId(),
-                    appClientId = prefs.baseDeviceId(),
                     platform = platform,
                     displayName = displayName,
                     gatewayUrl = normalizedGateway,
@@ -317,7 +304,7 @@ class SettingsManagerAndroid(private val context: Context) : SettingsManager {
         val profiles = if (loaded.isEmpty()) {
             listOf(makeLegacyProfile())
         } else {
-            loaded.withSharedAppClientId(baseDeviceId())
+            loaded
         }
         val selectedId = this[SELECTED_AGENT_PROFILE_ID]
             ?.takeIf { id -> profiles.any { it.id == id } }
@@ -332,7 +319,11 @@ class SettingsManagerAndroid(private val context: Context) : SettingsManager {
         return GatewayConfig(
             profileId = selected.id,
             gatewayUrl = selected.gatewayUrl,
-            deviceId = selected.appClientId,
+            accountId = this[ACCOUNT_ID] ?: "",
+            accessToken = this[ACCESS_TOKEN] ?: "",
+            refreshToken = this[REFRESH_TOKEN] ?: "",
+            accessExpiresAt = this[ACCESS_EXPIRES_AT] ?: "",
+            refreshExpiresAt = this[REFRESH_EXPIRES_AT] ?: "",
             deviceLabel = this[DEVICE_LABEL] ?: "我的设备",
             token = selected.token,
             pairedBackendId = pairedBackendId,
@@ -348,7 +339,6 @@ class SettingsManagerAndroid(private val context: Context) : SettingsManager {
     private fun Preferences.makeLegacyProfile(): AgentProfile =
         AgentProfile(
             id = this[SELECTED_AGENT_PROFILE_ID] ?: LEGACY_PROFILE_ID,
-            appClientId = baseDeviceId(),
             platform = AgentPlatform.OPENCLAW,
             displayName = this[PAIRED_BACKEND_LABEL] ?: AgentPlatform.OPENCLAW.defaultDisplayName,
             gatewayUrl = this[GATEWAY_URL] ?: "ws://192.168.1.14:8765",
@@ -360,25 +350,14 @@ class SettingsManagerAndroid(private val context: Context) : SettingsManager {
             asrProfileId = globalAsrProfileId(),
         )
 
-    private fun Preferences.baseDeviceId(): String {
-        val existing = this[BASE_DEVICE_ID]
-            ?: this[DEVICE_ID]
-            ?: ""
-        return existing
-    }
-
     private fun Preferences.globalAsrMode(): String =
         (this[ASR_MODE] ?: "router").normalizedAsrMode()
 
     private fun Preferences.globalAsrProfileId(): String =
         if (globalAsrMode() == "backend") "" else (this[ASR_PROFILE_ID] ?: "")
 
-    private fun List<AgentProfile>.withSharedAppClientId(appClientId: String): List<AgentProfile> =
-        map { it.copy(appClientId = appClientId) }
-
-    private fun AgentProfile.normalizedForSave(appClientId: String, asrMode: String, asrProfileId: String): AgentProfile =
+    private fun AgentProfile.normalizedForSave(asrMode: String, asrProfileId: String): AgentProfile =
         copy(
-            appClientId = appClientId,
             gatewayUrl = gatewayUrl.trim().ifEmpty { AgentProfile.DEFAULT_GATEWAY_URL },
             backendId = backendId.trim(),
             token = token.trim(),
@@ -394,7 +373,7 @@ class SettingsManagerAndroid(private val context: Context) : SettingsManager {
         profiles: List<AgentProfile>,
         selectedProfileId: String,
     ) {
-        val safeProfiles = profiles.ifEmpty { AgentProfilesState.default(prefs.baseDeviceId()).profiles }
+        val safeProfiles = profiles.ifEmpty { AgentProfilesState.default().profiles }
         val safeSelectedId = selectedProfileId.takeIf { id -> safeProfiles.any { it.id == id } }
             ?: safeProfiles.first().id
         prefs[AGENT_PROFILES] = encodeProfiles(safeProfiles)
@@ -405,7 +384,6 @@ class SettingsManagerAndroid(private val context: Context) : SettingsManager {
     private fun MutablePreferences.mirrorSelectedProfile(state: AgentProfilesState) {
         val selected = state.selectedProfile
         this[GATEWAY_URL] = selected.gatewayUrl
-        this[DEVICE_ID] = selected.appClientId
         this[TOKEN] = selected.token
         if (selected.backendId.isNotBlank() && selected.isPaired) {
             this[PAIRED_BACKEND_ID] = selected.backendId

@@ -4,7 +4,7 @@
  * Responsibilities:
  * - Fetch WS endpoint via HTTP POST /api/ws/connect
  * - Establish and maintain the WebSocket connection
- * - Send the register frame after connection
+ * - Send the backend_register frame after connection
  * - Handle incoming frames (parse + dispatch)
  * - Handle pong detection for heartbeat
  * - Trigger reconnect on unexpected close/error
@@ -22,9 +22,9 @@ import type {
   RegisteredFrame,
   RegisterErrorFrame,
   MessageFrame,
-  PingFrame,
   PairRequestFrame,
   PairsListFrame,
+  PairResponseFrame,
   ErrorFrame,
   WsConnectResponse,
 } from "./protocol/types.js";
@@ -38,7 +38,7 @@ export interface WsClientConfig {
   token: string;
   /** Tenant ID. */
   tenantId: string;
-  /** Plugin label (sent in register frame). */
+  /** Plugin label (sent in backend_register frame). */
   label?: string;
   /** Custom WebSocket agent (for proxy, TLS, etc.). */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -49,7 +49,7 @@ export interface WsClientConfig {
 
 export interface WsClientDeps {
   /** Called when connection is established and registered. */
-  onReady: (clientId: string) => void;
+  onReady: (backendId: string) => void;
   /** Called when a message frame is received. */
   onMessage: (frame: MessageFrame) => void;
   /** Called when a pair_request is received. */
@@ -75,7 +75,7 @@ export class WsClient {
   private config: WsClientConfig;
   private deps: WsClientDeps;
   private ws: WebSocket | null = null;
-  private registeredClientId: string | null = null;
+  private registeredBackendId: string | null = null;
   private stopped = false;
 
   // WS config obtained from /api/ws/connect response
@@ -95,7 +95,7 @@ export class WsClient {
   // -------------------------------------------------------------------------
 
   /**
-   * Start: fetch WS endpoint, connect, and send register frame.
+   * Start: fetch WS endpoint, connect, and send backend_register frame.
    * Returns true if connection succeeded, false otherwise.
    */
   async start(): Promise<boolean> {
@@ -179,21 +179,29 @@ export class WsClient {
   /**
    * Send a pair_response frame.
    */
-  sendPairResponse(targetAppId: string, approve: boolean): void {
-    const frame = {
-      type: "pair_response" as const,
-      target_app_id: targetAppId,
-      approve,
-      backend_id: this.registeredClientId ?? "",
+  sendPairResponse(accountId: string, approved: boolean): void {
+    const frame: PairResponseFrame = {
+      type: "pair_response",
+      account_id: accountId,
+      approved,
+      backend_id: this.registeredBackendId ?? this.config.agentId,
+      backend_label: this.config.label ?? "OpenClaw",
     };
     this.send(serializeFrame(frame));
   }
 
   /**
-   * Get the registered client ID (assigned by Router after register).
+   * Get the registered backend ID.
+   */
+  getBackendId(): string | null {
+    return this.registeredBackendId;
+  }
+
+  /**
+   * @deprecated use getBackendId()
    */
   getClientId(): string | null {
-    return this.registeredClientId;
+    return this.getBackendId();
   }
 
   /**
@@ -328,18 +336,17 @@ export class WsClient {
   }
 
   /**
-   * Send the register frame after WS connection is established.
+   * Send the backend_register frame after WS connection is established.
    */
   private sendRegisterFrame(): void {
     const frame: RegisterFrame = {
-      type: "register",
-      client_type: "backend",
-      client_id: "",
-      label: this.config.label ?? "OpenClaw",
-      token: this.config.token,
+      type: "backend_register",
+      backend_id: this.config.agentId,
+      backend_token: this.config.token,
+      backend_label: this.config.label ?? "OpenClaw",
     };
     this.send(serializeFrame(frame));
-    this.config.log.debug("[ws] register frame sent");
+    this.config.log.debug("[ws] backend_register frame sent");
   }
 
   /**
@@ -382,24 +389,24 @@ export class WsClient {
    */
   private dispatchFrame(frame: IncomingFrame): void {
     switch (frame.type) {
-      case "registered":
-        this.handleRegistered(frame);
+      case "backend_registered":
+        this.handleRegistered(frame as RegisteredFrame);
         break;
       case "error":
-        this.handleError(frame);
+        this.handleError(frame as RegisterErrorFrame | ErrorFrame);
         break;
       case "message":
-        this.deps.onMessage(frame);
+        this.deps.onMessage(frame as MessageFrame);
         break;
       case "pong":
         // Application-layer pong - treat same as router pong
         this.deps.onRouterPong();
         break;
       case "pair_request":
-        this.deps.onPairRequest(frame);
+        this.deps.onPairRequest(frame as PairRequestFrame);
         break;
       case "pairs_list":
-        this.deps.onPairsList(frame);
+        this.deps.onPairsList(frame as PairsListFrame);
         break;
       default:
         this.config.log.debug(`[ws] unhandled frame type: ${(frame as IncomingFrame).type}`);
@@ -408,9 +415,9 @@ export class WsClient {
 
   private handleRegistered(frame: RegisteredFrame): void {
     if (frame.success) {
-      this.registeredClientId = frame.client_id;
-      this.config.log.info(`[ws] registered as ${this.registeredClientId}`);
-      this.deps.onReady(frame.client_id);
+      this.registeredBackendId = frame.backend_id;
+      this.config.log.info(`[ws] registered as ${this.registeredBackendId}`);
+      this.deps.onReady(frame.backend_id);
     }
   }
 

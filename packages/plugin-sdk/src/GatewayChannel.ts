@@ -38,8 +38,8 @@ import type {
   PairsListFrame,
   ErrorFrame,
   PairedDevice,
+  HistoryRequestFrame,
 } from "./protocol/types.js";
-import { serializeFrame } from "./protocol/serialize.js";
 
 export interface GatewayChannelConfig {
   /** Router base URL (e.g., https://boson-tech.top). */
@@ -60,7 +60,7 @@ export interface GatewayChannelConfig {
 
 export type GatewayChannelEventMap = {
   /** Emitted when the plugin is registered and ready. */
-  ready: (clientId: string) => void;
+  ready: (backendId: string) => void;
   /** Emitted when a message is received from an App. */
   message: (frame: MessageFrame) => void;
   /** Emitted when a pairing request arrives. */
@@ -72,7 +72,7 @@ export type GatewayChannelEventMap = {
   /** Emitted when the connection is lost. */
   disconnected: () => void;
   /** Emitted on reconnection success. */
-  reconnected: (clientId: string) => void;
+  reconnected: (backendId: string) => void;
 };
 
 type EventKey = keyof GatewayChannelEventMap;
@@ -95,7 +95,7 @@ export class GatewayChannel {
   private heartbeatManager: HeartbeatManager;
 
   private state: ConnectionState = "idle";
-  private clientId: string | null = null;
+  private backendId: string | null = null;
 
   // Event handlers
   private handlers: Map<EventKey, Set<GatewayChannelEventMap[EventKey]>> = new Map();
@@ -200,7 +200,7 @@ export class GatewayChannel {
     this.heartbeatManager.stop();
     this.reconnectManager.stop();
     this.wsClient.stop();
-    this.clientId = null;
+    this.backendId = null;
   }
 
   /**
@@ -221,18 +221,19 @@ export class GatewayChannel {
   }
 
   /**
-   * Send a message to an App.
+   * Send a message to the active terminal for an account.
    */
-  sendMessage(to: string, content: string, contentType: MessageFrame["content_type"] = "text"): void {
-    if (!this.clientId) {
+  sendMessage(accountId: string, content: string, contentType: MessageFrame["content_type"] = "text"): void {
+    if (!this.backendId) {
       this.logger.warn("[channel] cannot send: not registered");
       return;
     }
 
     const frame: MessageFrame = {
       type: "message",
-      from: this.clientId,
-      to,
+      account_id: accountId,
+      backend_id: this.backendId,
+      message_id: `${Date.now()}`,
       content,
       content_type: contentType,
       timestamp: new Date().toISOString(),
@@ -262,13 +263,13 @@ export class GatewayChannel {
    * Push an event to paired Apps via HTTP.
    */
   async pushEvent(event: string, data: unknown): Promise<void> {
-    if (!this.clientId) {
+    if (!this.backendId) {
       this.logger.warn("[channel] cannot push event: not registered");
       return;
     }
 
     await this.httpClient.pushEvent({
-      backendId: this.clientId,
+      backendId: this.backendId,
       event,
       data,
     });
@@ -277,8 +278,8 @@ export class GatewayChannel {
   /**
    * Approve or reject a pairing request.
    */
-  approvePairRequest(appId: string, approve: boolean): void {
-    this.wsClient.sendPairResponse(appId, approve);
+  approvePairRequest(accountId: string, approve: boolean): void {
+    this.wsClient.sendPairResponse(accountId, approve);
   }
 
   /**
@@ -289,10 +290,37 @@ export class GatewayChannel {
   }
 
   /**
-   * Get the registered client ID.
+   * Request history for one account/backend conversation.
+   */
+  requestHistory(accountId: string, sessionKey = "current", beforeTimestamp?: string, limit?: number): void {
+    if (!this.backendId) {
+      this.logger.warn("[channel] cannot request history: not registered");
+      return;
+    }
+
+    const frame: HistoryRequestFrame = {
+      type: "history_request",
+      account_id: accountId,
+      backend_id: this.backendId,
+      session_key: sessionKey,
+      before_timestamp: beforeTimestamp,
+      limit,
+    };
+    this.wsClient.send(JSON.stringify(frame));
+  }
+
+  /**
+   * Get the registered backend ID.
+   */
+  getBackendId(): string | null {
+    return this.backendId;
+  }
+
+  /**
+   * @deprecated use getBackendId()
    */
   getClientId(): string | null {
-    return this.clientId;
+    return this.getBackendId();
   }
 
   /**
@@ -308,8 +336,9 @@ export class GatewayChannel {
 
   private buildWsClientDeps(): WsClientDeps {
     return {
-      onReady: (clientId: string) => {
-        this.clientId = clientId;
+      onReady: (backendId: string) => {
+        const wasConnected = this.backendId !== null;
+        this.backendId = backendId;
         this.state = "connected";
         this.reconnectManager.reset();
 
@@ -320,14 +349,14 @@ export class GatewayChannel {
         }
         this.heartbeatManager.start();
 
-        const isReconnect = this.clientId !== null && this.handlers.get("reconnected") !== undefined;
+        const isReconnect = wasConnected && this.handlers.get("reconnected") !== undefined;
         if (isReconnect) {
-          this.logger.info(`[channel] reconnected as ${clientId}`);
-          this.emit("reconnected", clientId);
+          this.logger.info(`[channel] reconnected as ${backendId}`);
+          this.emit("reconnected", backendId);
         } else {
-          this.logger.info(`[channel] ready as ${clientId}`);
+          this.logger.info(`[channel] ready as ${backendId}`);
         }
-        this.emit("ready", clientId);
+        this.emit("ready", backendId);
       },
 
       onMessage: (frame: MessageFrame) => {
@@ -335,13 +364,13 @@ export class GatewayChannel {
       },
 
       onPairRequest: (frame: PairRequestFrame) => {
-        this.logger.info(`[channel] pair request from ${frame.from_app_label} (${frame.from_app_id})`);
+        this.logger.info(`[channel] pair request from ${frame.terminal_label ?? frame.account_id ?? "unknown"} (${frame.account_id ?? "unknown"})`);
         this.emit("pair_request", frame);
       },
 
       onPairsList: (frame: PairsListFrame) => {
-        this.logger.debug(`[channel] pairs list: ${frame.pairs.length} device(s)`);
-        this.emit("pairs_list", frame.pairs);
+        this.logger.debug(`[channel] pairs list: ${frame.backends.length} backend(s)`);
+        this.emit("pairs_list", frame.backends);
       },
 
       onError: (frame: ErrorFrame) => {

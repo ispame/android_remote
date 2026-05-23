@@ -43,7 +43,7 @@ export class GatewayChannel {
     reconnectManager;
     heartbeatManager;
     state = "idle";
-    clientId = null;
+    backendId = null;
     // Event handlers
     handlers = new Map();
     constructor(config) {
@@ -135,7 +135,7 @@ export class GatewayChannel {
         this.heartbeatManager.stop();
         this.reconnectManager.stop();
         this.wsClient.stop();
-        this.clientId = null;
+        this.backendId = null;
     }
     /**
      * Register an event handler.
@@ -153,17 +153,18 @@ export class GatewayChannel {
         this.handlers.get(event)?.delete(handler);
     }
     /**
-     * Send a message to an App.
+     * Send a message to the active terminal for an account.
      */
-    sendMessage(to, content, contentType = "text") {
-        if (!this.clientId) {
+    sendMessage(accountId, content, contentType = "text") {
+        if (!this.backendId) {
             this.logger.warn("[channel] cannot send: not registered");
             return;
         }
         const frame = {
             type: "message",
-            from: this.clientId,
-            to,
+            account_id: accountId,
+            backend_id: this.backendId,
+            message_id: `${Date.now()}`,
             content,
             content_type: contentType,
             timestamp: new Date().toISOString(),
@@ -185,12 +186,12 @@ export class GatewayChannel {
      * Push an event to paired Apps via HTTP.
      */
     async pushEvent(event, data) {
-        if (!this.clientId) {
+        if (!this.backendId) {
             this.logger.warn("[channel] cannot push event: not registered");
             return;
         }
         await this.httpClient.pushEvent({
-            backendId: this.clientId,
+            backendId: this.backendId,
             event,
             data,
         });
@@ -198,8 +199,8 @@ export class GatewayChannel {
     /**
      * Approve or reject a pairing request.
      */
-    approvePairRequest(appId, approve) {
-        this.wsClient.sendPairResponse(appId, approve);
+    approvePairRequest(accountId, approve) {
+        this.wsClient.sendPairResponse(accountId, approve);
     }
     /**
      * Query the list of paired devices.
@@ -208,10 +209,34 @@ export class GatewayChannel {
         this.wsClient.sendListPairs();
     }
     /**
-     * Get the registered client ID.
+     * Request history for one account/backend conversation.
+     */
+    requestHistory(accountId, sessionKey = "current", beforeTimestamp, limit) {
+        if (!this.backendId) {
+            this.logger.warn("[channel] cannot request history: not registered");
+            return;
+        }
+        const frame = {
+            type: "history_request",
+            account_id: accountId,
+            backend_id: this.backendId,
+            session_key: sessionKey,
+            before_timestamp: beforeTimestamp,
+            limit,
+        };
+        this.wsClient.send(JSON.stringify(frame));
+    }
+    /**
+     * Get the registered backend ID.
+     */
+    getBackendId() {
+        return this.backendId;
+    }
+    /**
+     * @deprecated use getBackendId()
      */
     getClientId() {
-        return this.clientId;
+        return this.getBackendId();
     }
     /**
      * Get the current connection state.
@@ -224,8 +249,9 @@ export class GatewayChannel {
     // -------------------------------------------------------------------------
     buildWsClientDeps() {
         return {
-            onReady: (clientId) => {
-                this.clientId = clientId;
+            onReady: (backendId) => {
+                const wasConnected = this.backendId !== null;
+                this.backendId = backendId;
                 this.state = "connected";
                 this.reconnectManager.reset();
                 // Start heartbeat with ping interval from router
@@ -234,26 +260,26 @@ export class GatewayChannel {
                     this.heartbeatManager.setPingInterval(pingInterval);
                 }
                 this.heartbeatManager.start();
-                const isReconnect = this.clientId !== null && this.handlers.get("reconnected") !== undefined;
+                const isReconnect = wasConnected && this.handlers.get("reconnected") !== undefined;
                 if (isReconnect) {
-                    this.logger.info(`[channel] reconnected as ${clientId}`);
-                    this.emit("reconnected", clientId);
+                    this.logger.info(`[channel] reconnected as ${backendId}`);
+                    this.emit("reconnected", backendId);
                 }
                 else {
-                    this.logger.info(`[channel] ready as ${clientId}`);
+                    this.logger.info(`[channel] ready as ${backendId}`);
                 }
-                this.emit("ready", clientId);
+                this.emit("ready", backendId);
             },
             onMessage: (frame) => {
                 this.emit("message", frame);
             },
             onPairRequest: (frame) => {
-                this.logger.info(`[channel] pair request from ${frame.from_app_label} (${frame.from_app_id})`);
+                this.logger.info(`[channel] pair request from ${frame.terminal_label ?? frame.account_id ?? "unknown"} (${frame.account_id ?? "unknown"})`);
                 this.emit("pair_request", frame);
             },
             onPairsList: (frame) => {
-                this.logger.debug(`[channel] pairs list: ${frame.pairs.length} device(s)`);
-                this.emit("pairs_list", frame.pairs);
+                this.logger.debug(`[channel] pairs list: ${frame.backends.length} backend(s)`);
+                this.emit("pairs_list", frame.backends);
             },
             onError: (frame) => {
                 // On INVALID_TOKEN error, stop reconnecting

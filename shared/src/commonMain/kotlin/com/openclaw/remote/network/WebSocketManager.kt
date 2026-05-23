@@ -23,6 +23,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.TimeZone
 import java.util.UUID
 
 /**
@@ -33,9 +34,8 @@ import java.util.UUID
  */
 class WebSocketManager(
     private val wsUrl: String,
-    private val deviceId: String,
     private val deviceLabel: String,
-    private val token: String = "",
+    private val accessToken: String = "",
     private val preferredBackendId: String? = null,
     private val asrMode: String = "router",
     private val asrProfileId: String = "",
@@ -58,6 +58,7 @@ class WebSocketManager(
     private val _messageChannel = Channel<WsMessageEvent>(Channel.BUFFERED)
     val messageChannel = _messageChannel
 
+    private var accountId: String? = null
     private var registeredBackendId: String? = null
     private var restorableBackendId: String? = preferredBackendId?.takeIf { it.isNotBlank() }
     private var pendingPairBackendId: String? = null
@@ -182,6 +183,7 @@ class WebSocketManager(
             registeredBackendId = null
             pendingPairBackendId = null
             restorableBackendId = preferredBackendId?.takeIf { it.isNotBlank() }
+            accountId = null
             _connectionState.value = ConnectionState.DISCONNECTED
             _pairingState.value = PairingState.UNPAIRED
         }
@@ -223,7 +225,11 @@ class WebSocketManager(
         pendingPairBackendId = backendId
         val frame = buildJsonObject {
             put("type", "pair_request")
-            put("target_backend_id", backendId)
+            put("backend_id", backendId)
+            put("terminal_label", deviceLabel)
+            putJsonObject("app_metadata") {
+                put("platform", "android")
+            }
         }
         log(
             "pair request send backend=$backendId " +
@@ -242,10 +248,15 @@ class WebSocketManager(
         if (!canSendUserPayload(_pairingState.value, registeredBackendId)) {
             return
         }
+        val backendId = registeredBackendId ?: return
+        val messageId = "msg_${UUID.randomUUID()}"
         val frame = buildJsonObject {
             put("type", "message")
-            put("to", registeredBackendId)
+            put("backend_id", backendId)
+            put("message_id", messageId)
             put("content", text)
+            put("content_type", "text")
+            put("timestamp", isoTimestamp())
         }
         // Emit a "sending" placeholder so UI can show spinner immediately
         val placeholderMsg = ChatMessage(
@@ -256,12 +267,14 @@ class WebSocketManager(
         )
         offerEvent(WsMessageEvent.NewMessage(placeholderMsg))
         // Actual send will happen async; the placeholder carries the pending status
-        send(frame.toString())
+        send(frame.toString(), label = "message:$messageId")
     }
 
     fun sendAudio(audioData: ByteArray) {
         if (!canSendUserPayload(_pairingState.value, registeredBackendId)) return
+        val backendId = registeredBackendId ?: return
         val base64Audio = Base64.encode(audioData)
+        val messageId = "msg_${UUID.randomUUID()}"
         val clientMessageId = UUID.randomUUID().toString()
         val audioSummary = AudioPayloadInspector.describe(audioData)
         log(
@@ -271,10 +284,12 @@ class WebSocketManager(
         )
         val frame = buildJsonObject {
             put("type", "message")
-            put("to", registeredBackendId)
+            put("backend_id", backendId)
+            put("message_id", messageId)
             put("client_message_id", clientMessageId)
             put("content", base64Audio)
             put("content_type", "audio")
+            put("timestamp", isoTimestamp())
             putJsonObject("audio") {
                 put("format", "wav")
                 put("codec", "pcm_s16le")
@@ -310,7 +325,7 @@ class WebSocketManager(
         )
     }
 
-    fun requestRecentHistory(rounds: Int = 15, backendId: String? = null): Boolean {
+    fun requestRecentHistory(rounds: Int = 15, backendId: String? = null, beforeTimestamp: String? = null): Boolean {
         val targetBackendId = resolveHistoryRequestTarget(
             registeredBackendId = registeredBackendId,
             requestedBackendId = backendId,
@@ -327,9 +342,9 @@ class WebSocketManager(
         }
         val frame = buildJsonObject {
             put("type", "history_request")
-            put("app_id", deviceId)
-            put("target_backend_id", targetBackendId)
+            put("backend_id", targetBackendId)
             put("session_key", "current")
+            beforeTimestamp?.trim()?.takeIf { it.isNotEmpty() }?.let { put("before_timestamp", it) }
             put("limit", maxOf(1, rounds) * 2)
         }
         send(frame.toString())
@@ -341,7 +356,7 @@ class WebSocketManager(
         autoPairEnabled = false
         val frame = buildJsonObject {
             put("type", "unpair")
-            put("target_id", registeredBackendId)
+            put("backend_id", registeredBackendId)
         }
         send(frame.toString())
         registeredBackendId = null
@@ -351,15 +366,13 @@ class WebSocketManager(
 
     private fun sendRegister() {
         val frame = buildJsonObject {
-            put("type", "register")
-            put("client_type", "app")
-            put("client_id", deviceId)
-            put("label", deviceLabel)
-            if (token.isNotEmpty()) {
-                put("token", token)
-            }
+            put("type", "app_register")
+            put("access_token", accessToken)
+            put("terminal_label", deviceLabel)
+            put("platform", "android")
+            put("app_version", "2.0.0-kmp")
         }
-        send(frame.toString(), label = "register")
+        send(frame.toString(), label = "app_register")
     }
 
     private fun send(text: String, label: String = "frame", onFailure: ((String) -> Unit)? = null) {
@@ -381,12 +394,12 @@ class WebSocketManager(
     }
 
     /** Send an ack frame in response to a received message. */
-    private fun sendAck(seq: Int) {
+    private fun sendAck(messageId: String) {
         val frame = buildJsonObject {
-            put("type", "ack")
-            put("seq", seq)
+            put("type", "message_ack")
+            put("message_id", messageId)
         }
-        send(frame.toString(), label = "ack:$seq")
+        send(frame.toString(), label = "message_ack:$messageId")
     }
 
     private fun handleMessage(text: String, generation: Long) {
@@ -401,27 +414,57 @@ class WebSocketManager(
             log("ws rx ${summarizeJsonObject(obj)}")
 
             when (type) {
-                "registered" -> {
+                "app_registered", "registered" -> {
                     val success = obj["success"]?.jsonPrimitive?.content?.toBoolean() ?: false
                     if (success) {
+                        accountId = obj["account_id"]?.jsonPrimitive?.contentOrNull ?: accountId
                         _connectionState.value = registeredConnectionState(_pairingState.value)
                         reconnectAttempts = 0
                         cancelReconnect()
+                        val pairedBackendIds = obj["paired_backends"]?.jsonArray?.mapNotNull { element ->
+                            (element as? JsonObject)?.get("backend_id")?.jsonPrimitive?.contentOrNull
+                        }.orEmpty()
+                        if (pairedBackendIds.isNotEmpty()) {
+                            restorableBackendId = obj["selected_backend_id"]?.jsonPrimitive?.contentOrNull
+                                ?: pairedBackendIds.firstOrNull()
+                        }
                         val pendingBackendId = pendingPairBackendId
-                        val restoreBackendId = resolveAutoPairBackendId(
-                            configuredBackendId = preferredBackendId,
-                            registeredBackendId = restorableBackendId ?: registeredBackendId,
-                        ).takeIf { autoPairEnabled }
+                        val restoreBackendId = if (pairedBackendIds.isEmpty()) {
+                            resolveAutoPairBackendId(
+                                configuredBackendId = preferredBackendId,
+                                registeredBackendId = restorableBackendId ?: registeredBackendId,
+                            ).takeIf { autoPairEnabled }
+                        } else {
+                            null
+                        }
                         val autoPairBackendId = pendingBackendId ?: restoreBackendId
                         if (autoPairBackendId != null) {
                             isRestoringPairing = pendingBackendId == null
                             sendPairRequest(autoPairBackendId)
                         }
-                        offerEvent(WsMessageEvent.Registered(deviceId))
+                        offerEvent(WsMessageEvent.Registered(accountId.orEmpty(), pairedBackendIds))
+                    }
+                }
+                "session_preempted" -> {
+                    intentionalDisconnect = true
+                    cancelReconnect()
+                    reconnectAttempts = 0
+                    _connectionState.value = ConnectionState.DISCONNECTED
+                    offerEvent(
+                        WsMessageEvent.SessionPreempted(
+                            reason = obj["reason"]?.jsonPrimitive?.contentOrNull ?: "replaced_by_new_terminal",
+                            replacementTerminalLabel = obj["replacement_terminal_label"]?.jsonPrimitive?.contentOrNull,
+                        )
+                    )
+                    scope.launch {
+                        webSocketSession?.close()
+                        webSocketSession = null
                     }
                 }
                 "pair_response" -> {
-                    val approve = obj["approve"]?.jsonPrimitive?.content?.toBoolean() ?: false
+                    val approve = obj["approved"]?.jsonPrimitive?.content?.toBoolean()
+                        ?: obj["approve"]?.jsonPrimitive?.content?.toBoolean()
+                        ?: false
                     val backendId = obj["backend_id"]?.jsonPrimitive?.content ?: ""
                     val backendLabel = obj["backend_label"]?.jsonPrimitive?.content ?: backendId
                     if (approve) {
@@ -445,12 +488,13 @@ class WebSocketManager(
                 }
                 "message" -> {
                     val content = obj["content"]?.jsonPrimitive?.content ?: ""
-                    val seq = obj["seq"]?.jsonPrimitive?.content?.toIntOrNull()
-                    val backendId = obj["from"]?.jsonPrimitive?.contentOrNull ?: registeredBackendId
+                    val messageId = obj["message_id"]?.jsonPrimitive?.contentOrNull
+                    val backendId = obj["backend_id"]?.jsonPrimitive?.contentOrNull
+                        ?: obj["from"]?.jsonPrimitive?.contentOrNull
+                        ?: registeredBackendId
 
-                    // Immediately ack this message so the sender (plugin) gets delivery confirmation
-                    if (seq != null) {
-                        sendAck(seq)
+                    if (!messageId.isNullOrBlank()) {
+                        sendAck(messageId)
                     }
 
                     offerEvent(
@@ -467,7 +511,6 @@ class WebSocketManager(
                 }
                 "history_response" -> {
                     val backendId = obj["backend_id"]?.jsonPrimitive?.contentOrNull
-                        ?: obj["target_backend_id"]?.jsonPrimitive?.contentOrNull
                     val messages = obj["messages"]?.jsonArray?.mapNotNull { element ->
                         val item = element as? JsonObject ?: return@mapNotNull null
                         val content = item["content"]?.jsonPrimitive?.content ?: return@mapNotNull null
@@ -488,16 +531,12 @@ class WebSocketManager(
                     }
                     offerEvent(WsMessageEvent.AsrResult(clientMessageId, success, transcript, error))
                 }
-                "ack" -> {
+                "message_ack", "ack" -> {
                     // Server acks our sent message — we don't need to act on it here
                     // because we don't track per-message delivery state at the app level
                 }
-                "delivery_failed" -> {
-                    val seq = obj["seq"]?.jsonPrimitive?.content?.toIntOrNull()
+                "message_delivery_failed", "delivery_failed" -> {
                     val reason = obj["reason"]?.jsonPrimitive?.content ?: "unknown"
-                    if (seq != null) {
-                        pendingAcks.remove(seq)?.invoke(MessageStatus.FAILED)
-                    }
                     offerEvent(
                         WsMessageEvent.NewMessage(
                             ChatMessage("消息发送失败: $reason", timestamp(), "assistant")
@@ -514,7 +553,9 @@ class WebSocketManager(
                 }
                 "pong" -> {}
                 "unpaired" -> {
-                    val targetId = obj["target_id"]?.jsonPrimitive?.content ?: ""
+                    val targetId = obj["backend_id"]?.jsonPrimitive?.contentOrNull
+                        ?: obj["target_id"]?.jsonPrimitive?.content
+                        ?: ""
                     if (targetId == registeredBackendId) {
                         autoPairEnabled = false
                         registeredBackendId = null
@@ -527,6 +568,13 @@ class WebSocketManager(
                 "error" -> {
                     val code = obj["code"]?.jsonPrimitive?.content ?: "unknown"
                     val msg = obj["message"]?.jsonPrimitive?.content ?: "未知错误"
+                    if (isTerminalAuthError(code)) {
+                        intentionalDisconnect = true
+                        cancelReconnect()
+                        reconnectAttempts = 0
+                        webSocketSession = null
+                        _connectionState.value = ConnectionState.DISCONNECTED
+                    }
                     val wasPairing = _pairingState.value == PairingState.PENDING
                     val recovery = recoverPairingAfterRouterError(
                         pairingState = _pairingState.value,
@@ -553,6 +601,9 @@ class WebSocketManager(
                             )
                         )
                     )
+                    if (isTerminalAuthError(code)) {
+                        offerEvent(WsMessageEvent.Error(code, msg))
+                    }
                 }
             }
         } catch (e: Exception) {
@@ -580,6 +631,11 @@ class WebSocketManager(
         return SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date())
     }
 
+    private fun isoTimestamp(): String =
+        SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply {
+            timeZone = TimeZone.getTimeZone("UTC")
+        }.format(Date())
+
     private fun summarizeJsonFrame(text: String): String {
         return runCatching {
             val obj = Json.parseToJsonElement(text) as? JsonObject ?: return@runCatching "bytes=${text.length}"
@@ -590,24 +646,24 @@ class WebSocketManager(
     private fun summarizeJsonObject(obj: JsonObject): String {
         val type = obj.stringField("type")
         val contentType = obj.stringField("content_type")
+        val accessTokenField = obj.stringField("access_token")
         val clientMessageId = obj.stringField("client_message_id")
-        val clientId = obj.stringField("client_id")
         val label = obj.stringField("label")
-        val targetBackendId = obj.stringField("target_backend_id")
+        val terminalLabel = obj.stringField("terminal_label")
         val backendId = obj.stringField("backend_id")
-        val targetAppId = obj.stringField("target_app_id")
-        val approve = obj["approve"]?.jsonPrimitive?.contentOrNull
+        val messageId = obj.stringField("message_id")
+        val approve = obj["approved"]?.jsonPrimitive?.contentOrNull
+            ?: obj["approve"]?.jsonPrimitive?.contentOrNull
         val code = obj.stringField("code")
         val error = obj.stringField("error") ?: obj.stringField("message")
         val contentLength = obj["content"]?.jsonPrimitive?.contentOrNull?.length
         return buildString {
             append("type=${type ?: "-"}")
-            if (clientId != null) append(" client_id=$clientId")
             if (label != null) append(" label=$label")
-            if (obj["token"] != null) append(" tokenPresent=true")
-            if (targetBackendId != null) append(" target_backend_id=$targetBackendId")
+            if (terminalLabel != null) append(" terminal_label=$terminalLabel")
+            if (obj["token"] != null || accessTokenField != null) append(" tokenPresent=true")
             if (backendId != null) append(" backend_id=$backendId")
-            if (targetAppId != null) append(" target_app_id=$targetAppId")
+            if (messageId != null) append(" message_id=$messageId")
             if (approve != null) append(" approve=$approve")
             if (contentType != null) append(" contentType=$contentType")
             if (clientMessageId != null) append(" id=$clientMessageId")
@@ -772,6 +828,14 @@ internal fun isBackendUnavailableRouterError(code: String, message: String): Boo
         normalizedCode == "CLIENT_NOT_FOUND" ||
         "backend not found" in normalizedMessage ||
         "backend offline" in normalizedMessage
+}
+
+internal fun isTerminalAuthError(code: String): Boolean {
+    val normalizedCode = code.trim().uppercase()
+    return normalizedCode == "INVALID_ACCESS_TOKEN" ||
+        normalizedCode == "EXPIRED_ACCESS_TOKEN" ||
+        normalizedCode == "ACCESS_TOKEN_EXPIRED" ||
+        normalizedCode == "ACCESS_TOKEN_REVOKED"
 }
 
 private fun hasRestorablePairing(registeredBackendId: String?, configuredBackendId: String?): Boolean {

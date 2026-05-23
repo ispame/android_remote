@@ -27,7 +27,9 @@ class SettingsManagerAndroidTest {
         manager.updateConfig(
             GatewayConfig(
                 gatewayUrl = "wss://boson-tech.top/ws",
-                deviceId = "device-1",
+                accountId = "acct-1",
+                accessToken = "access-1",
+                refreshToken = "refresh-1",
                 deviceLabel = "Chao iPhone",
                 token = "token-1",
                 pairedBackendId = "main",
@@ -45,6 +47,25 @@ class SettingsManagerAndroidTest {
         assertEquals("minimax", config.ttsEngine)
         assertEquals("test-key", config.minimaxApiKey)
         assertEquals("female_sunny_zh", config.minimaxVoiceId)
+    }
+
+    @Test
+    fun persistsAccountScopedAuthSession() = runTest {
+        manager.updateConfig(
+            GatewayConfig(
+                gatewayUrl = "wss://boson-tech.top/ws",
+                accountId = "acct-123",
+                accessToken = "access-token-123",
+                refreshToken = "refresh-token-123",
+                deviceLabel = "Pixel",
+            )
+        )
+
+        val restored = SettingsManagerAndroid(context).configFlow.first()
+
+        assertEquals("acct-123", restored.accountId)
+        assertEquals("access-token-123", restored.accessToken)
+        assertEquals("refresh-token-123", restored.refreshToken)
     }
 
     @Test

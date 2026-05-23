@@ -45,7 +45,7 @@ export interface GatewayChannelConfig {
 }
 export type GatewayChannelEventMap = {
     /** Emitted when the plugin is registered and ready. */
-    ready: (clientId: string) => void;
+    ready: (backendId: string) => void;
     /** Emitted when a message is received from an App. */
     message: (frame: MessageFrame) => void;
     /** Emitted when a pairing request arrives. */
@@ -57,7 +57,7 @@ export type GatewayChannelEventMap = {
     /** Emitted when the connection is lost. */
     disconnected: () => void;
     /** Emitted on reconnection success. */
-    reconnected: (clientId: string) => void;
+    reconnected: (backendId: string) => void;
 };
 type EventKey = keyof GatewayChannelEventMap;
 export type ConnectionState = "idle" | "connecting" | "connected" | "reconnecting" | "stopped";
@@ -72,7 +72,7 @@ export declare class GatewayChannel {
     private reconnectManager;
     private heartbeatManager;
     private state;
-    private clientId;
+    private backendId;
     private handlers;
     constructor(config: GatewayChannelConfig);
     /**
@@ -92,9 +92,9 @@ export declare class GatewayChannel {
      */
     off<K extends EventKey>(event: K, handler: GatewayChannelEventMap[K]): void;
     /**
-     * Send a message to an App.
+     * Send a message to the active terminal for an account.
      */
-    sendMessage(to: string, content: string, contentType?: MessageFrame["content_type"]): void;
+    sendMessage(accountId: string, content: string, contentType?: MessageFrame["content_type"]): void;
     /**
      * Send a command result callback via HTTP.
      */
@@ -106,13 +106,21 @@ export declare class GatewayChannel {
     /**
      * Approve or reject a pairing request.
      */
-    approvePairRequest(appId: string, approve: boolean): void;
+    approvePairRequest(accountId: string, approve: boolean): void;
     /**
      * Query the list of paired devices.
      */
     listPairs(): void;
     /**
-     * Get the registered client ID.
+     * Request history for one account/backend conversation.
+     */
+    requestHistory(accountId: string, sessionKey?: string, beforeTimestamp?: string, limit?: number): void;
+    /**
+     * Get the registered backend ID.
+     */
+    getBackendId(): string | null;
+    /**
+     * @deprecated use getBackendId()
      */
     getClientId(): string | null;
     /**

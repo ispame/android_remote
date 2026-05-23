@@ -131,7 +131,7 @@ function createMockRouter(options: MockRouterOptions = {}) {
     const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
     const pathSegment = url.pathname; // e.g. /ws/plugin/test123
 
-    let registeredClientId: string | null = null;
+    let registeredBackendId: string | null = null;
 
     ws.on("message", (data: WebSocket.RawData) => {
       let raw: string;
@@ -141,16 +141,15 @@ function createMockRouter(options: MockRouterOptions = {}) {
       let frame: Record<string, unknown>;
       try { frame = JSON.parse(raw); } catch { return; }
 
-      if (frame.type === "register") {
-        // Extract client_id from frame
-        const clientId = (frame.client_id as string) || `backend-${Date.now()}`;
-        registeredClientId = clientId;
-        registeredClients.set(clientId, ws);
+      if (frame.type === "backend_register") {
+        const backendId = (frame.backend_id as string) || `backend-${Date.now()}`;
+        registeredBackendId = backendId;
+        registeredClients.set(backendId, ws);
 
         ws.send(JSON.stringify({
-          type: "registered",
-          client_id: clientId,
-          client_type: "backend",
+          type: "backend_registered",
+          backend_id: backendId,
+          backend_label: frame.backend_label ?? "TestPlugin",
           success: true,
         }));
         return;
@@ -161,7 +160,7 @@ function createMockRouter(options: MockRouterOptions = {}) {
     });
 
     ws.on("close", () => {
-      if (registeredClientId) registeredClients.delete(registeredClientId);
+      if (registeredBackendId) registeredClients.delete(registeredBackendId);
     });
   });
 
@@ -285,8 +284,8 @@ describe("Plugin SDK ↔ Router 接口配套测试", () => {
       router.httpServer.close();
     });
 
-    it("POST /api/ws/connect → WS upgrade → register 帧 → registered 响应", async () => {
-      let clientId: string | null = null;
+    it("POST /api/ws/connect → WS upgrade → backend_register 帧 → backend_registered 响应", async () => {
+      let backendId: string | null = null;
       let readyCalled = false;
       const wsConnectCalls: unknown[] = [];
 
@@ -300,7 +299,7 @@ describe("Plugin SDK ↔ Router 接口配套测试", () => {
           log: nullLogger,
         },
         {
-          onReady: (id) => { clientId = id; readyCalled = true; },
+          onReady: (id) => { backendId = id; readyCalled = true; },
           onMessage: () => {},
           onPairRequest: () => {},
           onPairsList: () => {},
@@ -314,11 +313,11 @@ describe("Plugin SDK ↔ Router 接口配套测试", () => {
       const ok = await wsClient.start();
       expect(ok).toBe(true);
 
-      // Wait for async WS open + register
+      // Wait for async WS open + backend_register
       await new Promise<void>((resolve) => setTimeout(resolve, 200));
 
       expect(readyCalled).toBe(true);
-      expect(clientId).toBeTruthy();
+      expect(backendId).toBeTruthy();
 
       // Verify: /api/ws/connect was called with correct fields
       const wsConnectReq = router.requestLog.find((r) => r.path === "/api/ws/connect");
@@ -328,7 +327,7 @@ describe("Plugin SDK ↔ Router 接口配套测试", () => {
       expect(connectBody.token).toBe("valid-token-abc");
       expect(connectBody.tenant_id).toBe("tenant-1");
 
-      // Verify: WS was established and register frame was sent
+      // Verify: WS was established and backend_register frame was sent
       expect(router.registeredClients.size).toBeGreaterThanOrEqual(1);
 
       wsClient.stop();

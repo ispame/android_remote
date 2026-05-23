@@ -13,6 +13,7 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.core.content.ContextCompat
+import com.openclaw.remote.auth.GatewayAuthClient
 import com.openclaw.remote.audio.AudioRecorderAndroid
 import com.openclaw.remote.data.GatewayConfig
 import com.openclaw.remote.data.SettingsManagerAndroid
@@ -24,6 +25,7 @@ import com.openclaw.remote.headset.TtsEngine
 import com.openclaw.remote.headset.TtsEngineFactory
 import com.openclaw.remote.headset.supportsLedLightControl
 import com.openclaw.remote.headset.supportsStandbyControl
+import com.openclaw.remote.ui.screen.AuthScreen
 import com.openclaw.remote.ui.screen.MainScreen
 import com.openclaw.remote.ui.screen.QRParseResult
 import com.openclaw.remote.ui.screen.SettingsScreen
@@ -33,7 +35,11 @@ import com.openclaw.remote.ui.theme.MochiTheme
 import com.openclaw.remote.viewmodel.ChatViewModel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Locale
+import java.util.TimeZone
 
 class MainActivity : ComponentActivity() {
 
@@ -94,7 +100,9 @@ class MainActivity : ComponentActivity() {
             var isDark by rememberSaveable(systemDark) { mutableStateOf(systemDark) }
             var showSettings by remember { mutableStateOf(false) }
             var showQRScanner by remember { mutableStateOf(false) }
+            var authGateNotice by remember { mutableStateOf<String?>(null) }
             val assistantSpeechTrigger = remember { AssistantSpeechTrigger() }
+            val authClient = remember { GatewayAuthClient() }
 
             MochiTheme(darkTheme = isDark) {
                 val connectionState by viewModel.connectionState.collectAsState()
@@ -110,13 +118,62 @@ class MainActivity : ComponentActivity() {
                 val headsetStandbyMode by headsetManager.standbyMode.collectAsState()
                 val headsetLedLightEnabled by headsetManager.ledLightEnabled.collectAsState()
                 val config by settingsManager.configFlow.collectAsState(initial = currentConfig)
+                val authNotice by viewModel.authNotice.collectAsState()
                 val soundPlaybackEnabled by settingsManager.soundPlaybackEnabledFlow.collectAsState(initial = true)
                 val playbackState by soundPlaybackController.state.collectAsState()
                 val showHeadsetStandbyControl = headsetState.supportsStandbyControl()
                 val showHeadsetLedLightControl = headsetState.supportsLedLightControl()
+                val authenticated = config.accessToken.isNotBlank()
+
+                DisposableEffect(Unit) {
+                    onDispose {
+                        authClient.close()
+                    }
+                }
+
+                LaunchedEffect(authenticated) {
+                    if (!authenticated) {
+                        showQRScanner = false
+                        showSettings = false
+                    }
+                }
 
                 LaunchedEffect(soundPlaybackEnabled) {
                     soundPlaybackController.syncSoundPlaybackEnabled(soundPlaybackEnabled)
+                }
+
+                LaunchedEffect(config.gatewayUrl, config.refreshToken, config.accessExpiresAt) {
+                    if (config.accessToken.isBlank() || config.refreshToken.isBlank()) return@LaunchedEffect
+                    val delayMillis = refreshDelayMillis(config.accessExpiresAt)
+                    delay(delayMillis)
+                    runCatching {
+                        authClient.refresh(
+                            gatewayUrl = config.gatewayUrl,
+                            refreshToken = config.refreshToken,
+                        )
+                    }.onSuccess { session ->
+                        settingsManager.updateConfig(
+                            config.copy(
+                                accountId = session.accountId,
+                                accessToken = session.accessToken,
+                                refreshToken = session.refreshToken,
+                                accessExpiresAt = session.accessExpiresAt,
+                                refreshExpiresAt = session.refreshExpiresAt,
+                            )
+                        )
+                    }.onFailure {
+                        authGateNotice = "会话已过期，请重新登录"
+                        viewModel.disconnect()
+                        settingsManager.updateConfig(
+                            config.copy(
+                                accountId = "",
+                                accessToken = "",
+                                refreshToken = "",
+                                accessExpiresAt = "",
+                                refreshExpiresAt = "",
+                            )
+                        )
+                    }
                 }
 
                 // 监听配置变化，重新初始化 TTS 引擎
@@ -149,7 +206,34 @@ class MainActivity : ComponentActivity() {
                     )
                 }
 
-                if (showQRScanner) {
+                if (!authenticated) {
+                    AuthScreen(
+                        config = config,
+                        notice = authNotice ?: authGateNotice,
+                        onAuthenticated = { session, gatewayUrl ->
+                            scope.launch {
+                                settingsManager.updateConfig(
+                                    config.copy(
+                                        gatewayUrl = gatewayUrl,
+                                        accountId = session.accountId,
+                                        accessToken = session.accessToken,
+                                        refreshToken = session.refreshToken,
+                                        accessExpiresAt = session.accessExpiresAt,
+                                        refreshExpiresAt = session.refreshExpiresAt,
+                                        deviceLabel = config.deviceLabel.ifBlank { "我的设备" },
+                                    )
+                                )
+                                authGateNotice = null
+                                viewModel.clearAuthNotice()
+                                viewModel.connect()
+                            }
+                        },
+                        onNoticeShown = {
+                            authGateNotice = null
+                            viewModel.clearAuthNotice()
+                        },
+                    )
+                } else if (showQRScanner) {
                     QRScannerScreen(
                         onQRCodeScanned = { scannedText ->
                             showQRScanner = false
@@ -176,7 +260,7 @@ class MainActivity : ComponentActivity() {
                             viewModel.unpair()
                         },
                         onBack = { showSettings = false },
-                        onNavigateToQRScanner = { showQRScanner = true }
+                        onNavigateToQRScanner = { if (authenticated) showQRScanner = true }
                     )
                 } else {
                     MainScreen(
@@ -299,6 +383,11 @@ class MainActivity : ComponentActivity() {
         when (result) {
             is QRParseResult.Success -> {
                 scope.launch {
+                    val config = settingsManager.configFlow.first()
+                    if (config.accessToken.isBlank()) {
+                        viewModel.addLocalMessage("请先登录账号，再扫码配对")
+                        return@launch
+                    }
                     val error = settingsManager.profileAcceptError(result.gatewayUrl, result.backendId)
                     if (error != null) {
                         viewModel.addLocalMessage(error)
@@ -342,5 +431,23 @@ class MainActivity : ComponentActivity() {
             permissions += Manifest.permission.BLUETOOTH_CONNECT
         }
         return permissions
+    }
+}
+
+private fun refreshDelayMillis(accessExpiresAt: String): Long {
+    val expiresAtMillis = parseIsoTimestampMillis(accessExpiresAt) ?: return 5 * 60 * 1000L
+    val refreshAtMillis = expiresAtMillis - 2 * 60 * 1000L
+    return (refreshAtMillis - System.currentTimeMillis()).coerceAtLeast(10 * 1000L)
+}
+
+private fun parseIsoTimestampMillis(value: String): Long? {
+    if (value.isBlank()) return null
+    val patterns = listOf("yyyy-MM-dd'T'HH:mm:ss.SSSX", "yyyy-MM-dd'T'HH:mm:ssX")
+    return patterns.firstNotNullOfOrNull { pattern ->
+        runCatching {
+            SimpleDateFormat(pattern, Locale.US).apply {
+                timeZone = TimeZone.getTimeZone("UTC")
+            }.parse(value)?.time
+        }.getOrNull()
     }
 }

@@ -11,6 +11,7 @@ import com.openclaw.remote.domain.ConnectionState
 import com.openclaw.remote.domain.PairingState
 import com.openclaw.remote.network.WebSocketManager
 import com.openclaw.remote.network.WsMessageEvent
+import com.openclaw.remote.network.isTerminalAuthError
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.sync.Mutex
@@ -49,9 +50,11 @@ class ChatViewModel(
     private val _hasMoreHistory = MutableStateFlow(true)
     val hasMoreHistory: StateFlow<Boolean> = _hasMoreHistory.asStateFlow()
 
+    private val _authNotice = MutableStateFlow<String?>(null)
+    val authNotice: StateFlow<String?> = _authNotice.asStateFlow()
+
     private var wsManager: WebSocketManager? = null
     private val viewModelScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
-    private var generatedDeviceId: String? = null
     private var activeConnectionKey: ChatConnectionKey? = null
     private var activeManagerJobs: List<Job> = emptyList()
     private var activeRouterConnectionState = ConnectionState.DISCONNECTED
@@ -79,22 +82,26 @@ class ChatViewModel(
     }
 
     private fun reconnectIfNeeded(config: GatewayConfig, force: Boolean = false) {
-        val deviceId = effectiveDeviceId(config)
-        val nextConnectionKey = config.toChatConnectionKey(deviceId)
+        if (!shouldMaintainAuthenticatedConnection(config.accessToken)) {
+            activeManagerJobs.forEach { it.cancel() }
+            activeManagerJobs = emptyList()
+            wsManager?.disconnect()
+            wsManager = null
+            activeConnectionKey = null
+            activeRouterConnectionState = ConnectionState.DISCONNECTED
+            if (config.profileId.isNotBlank()) {
+                updateProfileState(config.profileId) { state ->
+                    state.copy(connectionState = ConnectionState.DISCONNECTED)
+                }
+            }
+            _connectionState.value = ConnectionState.DISCONNECTED
+            return
+        }
+        val nextConnectionKey = config.toChatConnectionKey()
         if (!force && !shouldReconnectForConfig(activeConnectionKey, nextConnectionKey)) {
             return
         }
-        reconnect(config, deviceId, nextConnectionKey)
-    }
-
-    private fun effectiveDeviceId(config: GatewayConfig): String {
-        if (config.deviceId.isNotEmpty()) return config.deviceId
-        val deviceId = generatedDeviceId ?: "device_${UUID.randomUUID().toString().take(8)}"
-            .also { generatedDeviceId = it }
-        viewModelScope.launch {
-            settingsManager.updateDeviceId(deviceId)
-        }
-        return deviceId
+        reconnect(config, nextConnectionKey)
     }
 
     private fun applyProfilesState(state: AgentProfilesState) {
@@ -126,7 +133,7 @@ class ChatViewModel(
         scheduleStartupHistoryPreload(state.profiles)
     }
 
-    private fun reconnect(config: GatewayConfig, deviceId: String, connectionKey: ChatConnectionKey) {
+    private fun reconnect(config: GatewayConfig, connectionKey: ChatConnectionKey) {
         if (_selectedProfileId.value.isNotBlank()) {
             persistActiveRuntimeState(_selectedProfileId.value)
         }
@@ -146,9 +153,8 @@ class ChatViewModel(
 
         wsManager = WebSocketManager(
             wsUrl = config.gatewayUrl,
-            deviceId = deviceId,
             deviceLabel = config.deviceLabel.ifEmpty { "我的设备" },
-            token = config.token,
+            accessToken = config.accessToken,
             preferredBackendId = config.pairedBackendId,
             asrMode = config.asrMode,
             asrProfileId = config.asrProfileId,
@@ -195,6 +201,11 @@ class ChatViewModel(
                 manager.messageChannel.receiveAsFlow().collect { event ->
                     when (event) {
                         is WsMessageEvent.Registered -> {
+                            if (event.accountId.isNotBlank() && event.accountId != latestConfig.accountId) {
+                                viewModelScope.launch {
+                                    settingsManager.updateConfig(latestConfig.copy(accountId = event.accountId))
+                                }
+                            }
                             requestPendingStartupHistory()
                         }
                         is WsMessageEvent.Paired -> {
@@ -306,6 +317,29 @@ class ChatViewModel(
                                 )
                             )
                         }
+                        is WsMessageEvent.SessionPreempted -> {
+                            val notice = buildString {
+                                append("账号已在另一台设备登录")
+                                event.replacementTerminalLabel
+                                    ?.takeIf { it.isNotBlank() }
+                                    ?.let { append("：$it") }
+                            }
+                            updateProfileState(managerProfileId) { state ->
+                                state.copy(connectionState = ConnectionState.DISCONNECTED)
+                            }
+                            if (managerProfileId == _selectedProfileId.value) {
+                                _connectionState.value = ConnectionState.DISCONNECTED
+                            }
+                            appendMessageToProfile(
+                                managerProfileId,
+                                ChatMessage(
+                                    notice,
+                                    SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date()),
+                                    "assistant",
+                                )
+                            )
+                            clearAuthSession(notice)
+                        }
                         is WsMessageEvent.Error -> {
                             appendMessageToProfile(
                                 managerProfileId,
@@ -315,6 +349,9 @@ class ChatViewModel(
                                     "assistant",
                                 )
                             )
+                            if (isTerminalAuthError(event.code)) {
+                                clearAuthSession("登录状态已过期，请重新登录")
+                            }
                         }
                     }
                 }
@@ -363,10 +400,9 @@ class ChatViewModel(
                 }
                 val config = settingsManager.configFlow.first { it.profileId == profileId }
                 latestConfig = config
-                val deviceId = effectiveDeviceId(config)
-                val nextConnectionKey = config.toChatConnectionKey(deviceId)
+                val nextConnectionKey = config.toChatConnectionKey()
                 if (shouldRefreshConnectionForPairRequest(activeConnectionKey, nextConnectionKey)) {
-                    reconnect(config, deviceId, nextConnectionKey)
+                    reconnect(config, nextConnectionKey)
                 }
                 wsManager?.requestPair(normalizedBackendId)
             }
@@ -443,11 +479,12 @@ class ChatViewModel(
     }
 
     fun loadMoreHistory() {
+        val beforeTimestamp = oldestHistoryTimestamp(profileStates[_selectedProfileId.value]?.messages.orEmpty())
         _isLoadingHistory.value = true
         updateProfileState(_selectedProfileId.value) { state ->
             state.copy(isLoadingHistory = true)
         }
-        if (wsManager?.requestRecentHistory(backendId = selectedProfileBackendId()) != true) {
+        if (wsManager?.requestRecentHistory(backendId = selectedProfileBackendId(), beforeTimestamp = beforeTimestamp) != true) {
             _isLoadingHistory.value = false
             updateProfileState(_selectedProfileId.value) { state ->
                 state.copy(isLoadingHistory = false)
@@ -463,12 +500,38 @@ class ChatViewModel(
         wsManager?.disconnect()
     }
 
+    fun clearAuthNotice() {
+        _authNotice.value = null
+    }
+
     fun onCleared() {
         wsManager?.disconnect()
         wsManager = null
         activeManagerJobs.forEach { it.cancel() }
         activeManagerJobs = emptyList()
         viewModelScope.cancel()
+    }
+
+    private fun clearAuthSession(message: String) {
+        _authNotice.value = message
+        activeManagerJobs.forEach { it.cancel() }
+        activeManagerJobs = emptyList()
+        wsManager?.disconnect()
+        wsManager = null
+        activeConnectionKey = null
+        activeRouterConnectionState = ConnectionState.DISCONNECTED
+        _connectionState.value = ConnectionState.DISCONNECTED
+        viewModelScope.launch {
+            settingsManager.updateConfig(
+                latestConfig.copy(
+                    accountId = "",
+                    accessToken = "",
+                    refreshToken = "",
+                    accessExpiresAt = "",
+                    refreshExpiresAt = "",
+                )
+            )
+        }
     }
 
     private fun appendMessageToProfile(profileId: String, message: ChatMessage) {
@@ -667,20 +730,18 @@ internal fun shouldDropAsrFailureMessage(error: String?): Boolean =
 internal data class ChatConnectionKey(
     val profileId: String,
     val gatewayUrl: String,
-    val deviceId: String,
     val deviceLabel: String,
-    val token: String,
+    val accessToken: String,
     val asrMode: String,
     val asrProfileId: String,
 )
 
-internal fun GatewayConfig.toChatConnectionKey(effectiveDeviceId: String): ChatConnectionKey =
+internal fun GatewayConfig.toChatConnectionKey(): ChatConnectionKey =
     ChatConnectionKey(
         profileId = profileId,
         gatewayUrl = gatewayUrl,
-        deviceId = effectiveDeviceId,
         deviceLabel = deviceLabel,
-        token = token,
+        accessToken = accessToken,
         asrMode = asrMode,
         asrProfileId = asrProfileId,
     )
@@ -693,6 +754,12 @@ internal fun shouldRefreshConnectionForPairRequest(previous: ChatConnectionKey?,
 
 internal fun shouldPersistPairedBackend(config: GatewayConfig, backendId: String?, backendLabel: String?): Boolean =
     config.pairedBackendId != backendId || config.pairedBackendLabel != backendLabel
+
+internal fun shouldMaintainAuthenticatedConnection(accessToken: String): Boolean =
+    accessToken.trim().isNotEmpty()
+
+internal fun oldestHistoryTimestamp(messages: List<ChatMessage>): String? =
+    messages.firstNotNullOfOrNull { it.rawTimestamp?.takeIf { timestamp -> timestamp.isNotBlank() } }
 
 internal data class ChatProfileRuntimeState(
     val registeredBackendId: String? = null,

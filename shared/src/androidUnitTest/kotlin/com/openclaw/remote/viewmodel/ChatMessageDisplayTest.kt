@@ -111,9 +111,10 @@ class ChatMessageDisplayTest {
                 senderId = "user",
                 status = MessageStatus.SENDING,
             )
-            val historyMessage = historyChatMessage(
+            val historyMessage = ChatMessage(
                 content = "你好",
-                role = "user",
+                timestamp = "10:12",
+                senderId = "user",
                 rawTimestamp = "2026-05-21T02:12:34Z",
             )
 

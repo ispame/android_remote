@@ -12,6 +12,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@openclaw/protocol": "file:../../../android-remote-gateway/packages/protocol",
     "ws": "^8.16.0"
   },
   "devDependencies": {

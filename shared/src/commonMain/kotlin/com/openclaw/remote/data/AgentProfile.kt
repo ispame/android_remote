@@ -41,7 +41,6 @@ enum class AgentAvailabilityStatus(val label: String) {
 
 data class AgentProfile(
     val id: String,
-    val appClientId: String,
     val platform: AgentPlatform = AgentPlatform.OPENCLAW,
     val displayName: String = "",
     val gatewayUrl: String = DEFAULT_GATEWAY_URL,
@@ -84,10 +83,9 @@ data class AgentProfilesState(
         get() = profiles.size < SettingsManager.MAX_AGENT_PROFILES
 
     companion object {
-        fun default(appClientId: String = ""): AgentProfilesState {
+        fun default(): AgentProfilesState {
             val profile = AgentProfile(
                 id = randomProfileId(),
-                appClientId = appClientId,
                 backendId = "",
                 displayName = AgentPlatform.OPENCLAW.defaultDisplayName,
             )
@@ -109,7 +107,6 @@ internal fun encodeProfiles(profiles: List<AgentProfile>): String =
             add(
                 buildJsonObject {
                     put("id", profile.id)
-                    put("appClientId", profile.appClientId)
                     put("platform", profile.platform.wireValue)
                     put("displayName", profile.displayName)
                     put("gatewayUrl", profile.gatewayUrl)
@@ -139,7 +136,6 @@ private fun decodeProfile(element: JsonElement): AgentProfile? {
     val backendId = obj.stringValue("backendId")
     return AgentProfile(
         id = id,
-        appClientId = obj.stringValue("appClientId"),
         platform = AgentPlatform.fromWireValue(obj.stringValue("platform")),
         displayName = obj.stringValue("displayName"),
         gatewayUrl = obj.stringValue("gatewayUrl").ifBlank { AgentProfile.DEFAULT_GATEWAY_URL },

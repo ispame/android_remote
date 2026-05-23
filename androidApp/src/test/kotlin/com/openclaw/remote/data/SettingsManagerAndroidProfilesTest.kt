@@ -30,7 +30,6 @@ class SettingsManagerAndroidProfilesTest {
         manager.updateConfig(
             GatewayConfig(
                 gatewayUrl = "wss://boson-tech.top/ws",
-                deviceId = "device-1",
                 deviceLabel = "Pixel",
                 token = "token-1",
                 pairedBackendId = "bk_openclaw",

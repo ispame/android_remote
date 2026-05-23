@@ -16,12 +16,12 @@
  * });
  *
  * channel.on("message", (msg) => {
- *   console.log("message from", msg.from, ":", msg.content);
+ *   console.log("message from", msg.account_id, ":", msg.content);
  * });
  *
  * channel.on("pair_request", (req) => {
- *   console.log("pair request from", req.from_app_label);
- *   channel.approvePairRequest(req.from_app_id, true);
+ *   console.log("pair request from", req.terminal_label);
+ *   channel.approvePairRequest(req.account_id!, true);
  * });
  *
  * await channel.start();

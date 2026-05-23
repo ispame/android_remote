@@ -45,10 +45,10 @@ final class WebSocketManager: ObservableObject {
     private var pendingHistoryProfileId: String?
     private var pendingAudioProfileIdsByClientMessageId: [String: String] = [:]
 
+    private var accountId: String?
     private var registeredBackendId: String?
-    private var deviceId: String
     private var deviceLabel: String
-    private var token: String
+    private var accessToken: String
     private var asrMode = "router"
     private var asrProfileId = ""
     private var preferredBackendId: String?
@@ -67,10 +67,9 @@ final class WebSocketManager: ObservableObject {
     private var oldestHistoryTimestamp: String?
     private var lastAutoHistoryRequestAt: Date?
 
-    init(deviceId: String, deviceLabel: String, token: String) {
-        self.deviceId = deviceId
+    init(deviceLabel: String, accessToken: String) {
         self.deviceLabel = deviceLabel
-        self.token = token
+        self.accessToken = accessToken
     }
 
     func syncProfiles(_ profiles: [AgentProfile]) {
@@ -99,7 +98,7 @@ final class WebSocketManager: ObservableObject {
         }
     }
 
-    func applyProfile(_ profile: AgentProfile, deviceLabel: String) {
+    func applyProfile(_ profile: AgentProfile, deviceLabel: String, accessToken: String) {
         persistActiveRuntimeState()
 
         activeProfileId = profile.id
@@ -107,7 +106,7 @@ final class WebSocketManager: ObservableObject {
         if !profile.backendId.isEmpty {
             profileIdsByBackendId[profile.backendId] = profile.id
         }
-        updateCredentials(deviceLabel: deviceLabel, token: profile.token)
+        updateCredentials(deviceLabel: deviceLabel, accessToken: accessToken)
         updateAsrConfiguration(mode: profile.asrMode, profileId: profile.asrProfileId)
         unreadCounts[profile.id] = 0
 
@@ -118,6 +117,10 @@ final class WebSocketManager: ObservableObject {
         state.pairingState = profile.isPaired && !profile.backendId.isEmpty ? .paired : .unpaired
         profileStates[profile.id] = state
         loadRuntimeState(state)
+        guard !self.accessToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            suspendSocketForMissingAuth()
+            return
+        }
         connect(to: profile.gatewayUrl)
     }
 
@@ -175,6 +178,10 @@ final class WebSocketManager: ObservableObject {
     }
 
     func connect(to urlString: String) {
+        guard !accessToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            suspendSocketForMissingAuth()
+            return
+        }
         guard let normalizedUrl = normalizeGatewayUrl(urlString) else {
             connectionState = .disconnected
             return
@@ -205,9 +212,9 @@ final class WebSocketManager: ObservableObject {
         openSocket(to: normalizedUrl)
     }
 
-    func updateCredentials(deviceLabel: String, token: String) {
+    func updateCredentials(deviceLabel: String, accessToken: String) {
         self.deviceLabel = deviceLabel
-        self.token = token
+        self.accessToken = accessToken
     }
 
     func restorePairing(backendId: String?, backendLabel: String?) {
@@ -231,13 +238,13 @@ final class WebSocketManager: ObservableObject {
     func applyConfiguration(
         gatewayUrl: String,
         deviceLabel: String,
-        token: String,
+        accessToken: String,
         pairedBackendId: String?,
         pairedBackendLabel: String?,
         asrMode: String = "router",
         asrProfileId: String = ""
     ) {
-        updateCredentials(deviceLabel: deviceLabel, token: token)
+        updateCredentials(deviceLabel: deviceLabel, accessToken: accessToken)
         updateAsrConfiguration(mode: asrMode, profileId: asrProfileId)
         restorePairing(backendId: pairedBackendId, backendLabel: pairedBackendLabel)
         connect(to: gatewayUrl)
@@ -263,14 +270,18 @@ final class WebSocketManager: ObservableObject {
     }
 
     func requestPair(backendId: String) {
-        guard connectionState == .registered, !backendId.isEmpty else { return }
+        guard (connectionState == .registered || connectionState == .paired), !backendId.isEmpty else { return }
         preferredBackendId = backendId
         preferredBackendLabel = backendId
         pairingState = .pending
         persistActiveRuntimeState()
         sendJson([
             "type": "pair_request",
-            "target_backend_id": backendId
+            "backend_id": backendId,
+            "terminal_label": deviceLabel,
+            "app_metadata": [
+                "platform": "ios"
+            ]
         ])
     }
 
@@ -281,11 +292,15 @@ final class WebSocketManager: ObservableObject {
 
     func sendText(_ text: String) {
         guard pairingState == .paired, let backendId = registeredBackendId else { return }
+        let messageId = "msg_\(UUID().uuidString)"
         addLocalMessageWithStatus(text, senderId: "user", status: .sending, seq: nil)
         sendJson([
             "type": "message",
-            "to": backendId,
-            "content": text
+            "backend_id": backendId,
+            "message_id": messageId,
+            "content": text,
+            "content_type": "text",
+            "timestamp": isoTimestamp()
         ])
     }
 
@@ -305,8 +320,7 @@ final class WebSocketManager: ObservableObject {
         pendingHistoryProfileId = activeProfileId
         var frame: [String: Any] = [
             "type": "history_request",
-            "app_id": deviceId,
-            "target_backend_id": backendId,
+            "backend_id": backendId,
             "session_key": "current",
             "limit": max(1, rounds) * 2
         ]
@@ -320,13 +334,16 @@ final class WebSocketManager: ObservableObject {
     func sendAudio(_ data: Data) {
         guard pairingState == .paired, let backendId = registeredBackendId else { return }
         let base64 = data.base64EncodedString()
+        let messageId = "msg_\(UUID().uuidString)"
         let clientMessageId = UUID().uuidString
         let frame: [String: Any] = [
             "type": "message",
-            "to": backendId,
+            "backend_id": backendId,
+            "message_id": messageId,
             "client_message_id": clientMessageId,
             "content": base64,
             "content_type": "audio",
+            "timestamp": isoTimestamp(),
             "audio": [
                 "format": "wav",
                 "codec": "pcm_s16le",
@@ -353,13 +370,16 @@ final class WebSocketManager: ObservableObject {
         guard state.pairingState == .paired, let backendId = state.registeredBackendId else { return false }
 
         let base64 = data.base64EncodedString()
+        let messageId = "msg_\(UUID().uuidString)"
         let clientMessageId = UUID().uuidString
         let frame: [String: Any] = [
             "type": "message",
-            "to": backendId,
+            "backend_id": backendId,
+            "message_id": messageId,
             "client_message_id": clientMessageId,
             "content": base64,
             "content_type": "audio",
+            "timestamp": isoTimestamp(),
             "audio": [
                 "format": "wav",
                 "codec": "pcm_s16le",
@@ -394,7 +414,7 @@ final class WebSocketManager: ObservableObject {
         guard !backendId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         sendJson([
             "type": "unpair",
-            "target_id": backendId
+            "backend_id": backendId
         ])
         if profileId == activeProfileId {
             registeredBackendId = nil
@@ -455,6 +475,15 @@ final class WebSocketManager: ObservableObject {
         scheduleReconnect()
     }
 
+    private func suspendSocketForMissingAuth() {
+        intentionalDisconnect = true
+        cancelReconnect()
+        socketGeneration += 1
+        webSocketTask?.cancel(with: .goingAway, reason: nil)
+        webSocketTask = nil
+        connectionState = .disconnected
+    }
+
     private func scheduleReconnect() {
         guard let urlString = currentUrlString, !intentionalDisconnect else { return }
         cancelReconnect()
@@ -469,16 +498,13 @@ final class WebSocketManager: ObservableObject {
     }
 
     private func sendRegister() {
-        var frame: [String: Any] = [
-            "type": "register",
-            "client_type": "app",
-            "client_id": deviceId,
-            "label": deviceLabel
-        ]
-        if !token.isEmpty {
-            frame["token"] = token
-        }
-        sendJson(frame)
+        sendJson([
+            "type": "app_register",
+            "access_token": accessToken,
+            "terminal_label": deviceLabel,
+            "platform": "ios",
+            "app_version": "2.0.0-native"
+        ])
     }
 
     private func sendJson(_ dict: [String: Any]) {
@@ -487,10 +513,10 @@ final class WebSocketManager: ObservableObject {
         webSocketTask?.send(.string(text)) { _ in }
     }
 
-    private func sendAck(_ seq: Int) {
+    private func sendAck(_ messageId: String) {
         sendJson([
-            "type": "ack",
-            "seq": seq
+            "type": "message_ack",
+            "message_id": messageId
         ])
     }
 
@@ -528,17 +554,37 @@ final class WebSocketManager: ObservableObject {
             guard let self = self else { return }
 
             switch type {
-            case "registered":
+            case "app_registered", "registered":
                 let success = json["success"] as? Bool ?? false
                 if success {
+                    self.accountId = json["account_id"] as? String ?? self.accountId
                     self.connectionState = .registered
                     self.reconnectAttempts = 0
                     self.cancelReconnect()
-                    self.messageSubject.send(.registered(self.deviceId))
-                    if let backendId = self.preferredBackendId ?? self.registeredBackendId {
+                    let pairedBackends = (json["paired_backends"] as? [[String: Any]] ?? [])
+                        .compactMap { $0["backend_id"] as? String }
+                    if !pairedBackends.isEmpty {
+                        self.preferredBackendId = (json["selected_backend_id"] as? String) ?? pairedBackends.first
+                    }
+                    self.messageSubject.send(.registered(self.accountId ?? ""))
+                    if pairedBackends.isEmpty, let backendId = self.preferredBackendId ?? self.registeredBackendId {
                         self.requestPair(backendId: backendId)
                     }
                 }
+
+            case "session_preempted":
+                self.intentionalDisconnect = true
+                self.cancelReconnect()
+                self.connectionState = .disconnected
+                let replacement = json["replacement_terminal_label"] as? String
+                if let replacement, !replacement.isEmpty {
+                    self.addMessage("当前账号已在另一台终端接管：\(replacement)", senderId: "assistant")
+                } else {
+                    self.addMessage("当前账号已在另一台终端接管", senderId: "assistant")
+                }
+                self.messageSubject.send(.sessionPreempted(replacementTerminalLabel: replacement))
+                self.webSocketTask?.cancel(with: .normalClosure, reason: nil)
+                self.webSocketTask = nil
 
             case "pair_response":
                 self.handlePairResponse(json)
@@ -550,21 +596,17 @@ final class WebSocketManager: ObservableObject {
                 self.handleAsrResult(json)
 
             case "history_response":
-                let backendId = (json["backend_id"] as? String) ?? (json["target_backend_id"] as? String)
+                let backendId = json["backend_id"] as? String
                 let responseProfileId = backendId.flatMap { self.profileId(forBackendId: $0) }
                     ?? self.pendingHistoryProfileId
                     ?? self.activeProfileId
                 self.handleHistoryResponse(json, profileId: responseProfileId)
 
-            case "ack":
+            case "message_ack", "ack":
                 break
 
-            case "delivery_failed":
-                let seq = json["seq"] as? Int
+            case "message_delivery_failed", "delivery_failed":
                 let reason = json["reason"] as? String ?? "unknown"
-                if let seq {
-                    self.pendingAcks.removeValue(forKey: seq)
-                }
                 self.addMessage("消息发送失败: \(reason)", senderId: "assistant")
 
             case "ping":
@@ -579,7 +621,14 @@ final class WebSocketManager: ObservableObject {
             case "error":
                 let code = json["code"] as? String ?? "unknown"
                 let msg = json["message"] as? String ?? "未知错误"
+                if Self.isTerminalAuthError(code) {
+                    self.intentionalDisconnect = true
+                    self.cancelReconnect()
+                    self.webSocketTask = nil
+                    self.connectionState = .disconnected
+                }
                 self.addMessage("错误 (\(code)): \(msg)", senderId: "assistant")
+                self.messageSubject.send(.error(code: code, message: msg))
 
             default:
                 break
@@ -588,7 +637,7 @@ final class WebSocketManager: ObservableObject {
     }
 
     private func handlePairResponse(_ json: [String: Any]) {
-        let approve = json["approve"] as? Bool ?? false
+        let approve = (json["approved"] as? Bool) ?? (json["approve"] as? Bool) ?? false
         let backendId = json["backend_id"] as? String ?? ""
         let backendLabel = json["backend_label"] as? String ?? backendId
         let profileId = profileId(forBackendId: backendId) ?? activeProfileId
@@ -623,13 +672,10 @@ final class WebSocketManager: ObservableObject {
 
     private func handleInboundMessage(_ json: [String: Any]) {
         guard let content = displayableBackendContent(json["content"] as? String ?? "") else { return }
-        let seq = json["seq"] as? Int
-        if let seq {
-            sendAck(seq)
-            if receivedMessageSeqs.contains(seq) { return }
-            rememberReceivedSeq(seq)
+        if let messageId = json["message_id"] as? String, !messageId.isEmpty {
+            sendAck(messageId)
         }
-        let backendId = json["from"] as? String ?? registeredBackendId ?? ""
+        let backendId = (json["backend_id"] as? String) ?? (json["from"] as? String) ?? registeredBackendId ?? ""
         let profileId = profileId(forBackendId: backendId) ?? activeProfileId
         let message = HistoryMessagePayload.chatMessage(
             content: content,
@@ -641,7 +687,7 @@ final class WebSocketManager: ObservableObject {
     }
 
     private func handleUnpaired(_ json: [String: Any]) {
-        let targetId = json["target_id"] as? String ?? ""
+        let targetId = (json["backend_id"] as? String) ?? (json["target_id"] as? String) ?? ""
         guard let profileId = profileId(forBackendId: targetId) ?? activeProfileId else { return }
         if profileId == activeProfileId {
             registeredBackendId = nil
@@ -924,6 +970,21 @@ final class WebSocketManager: ObservableObject {
         formatter.dateFormat = "HH:mm"
         return formatter.string(from: Date())
     }
+
+    private func isoTimestamp() -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        return formatter.string(from: Date())
+    }
+
+    private static func isTerminalAuthError(_ code: String) -> Bool {
+        let normalized = code.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        return normalized == "INVALID_ACCESS_TOKEN" ||
+            normalized == "EXPIRED_ACCESS_TOKEN" ||
+            normalized == "ACCESS_TOKEN_EXPIRED" ||
+            normalized == "ACCESS_TOKEN_REVOKED"
+    }
 }
 
 enum WsMessageEvent {
@@ -931,5 +992,6 @@ enum WsMessageEvent {
     case paired(profileId: String, backendId: String, backendLabel: String)
     case unpaired(profileId: String)
     case newMessage(profileId: String, ChatMessage)
+    case sessionPreempted(replacementTerminalLabel: String?)
     case error(code: String, message: String)
 }

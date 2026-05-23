@@ -27,7 +27,11 @@ class SettingsManagerIOS : SettingsManager {
     private fun loadConfig(): GatewayConfig {
         return GatewayConfig(
             gatewayUrl = defaults.stringForKey("gateway_url") ?: "ws://192.168.1.14:8765",
-            deviceId = defaults.stringForKey("device_id") ?: "",
+            accountId = defaults.stringForKey("account_id") ?: "",
+            accessToken = defaults.stringForKey("access_token") ?: "",
+            refreshToken = defaults.stringForKey("refresh_token") ?: "",
+            accessExpiresAt = defaults.stringForKey("access_expires_at") ?: "",
+            refreshExpiresAt = defaults.stringForKey("refresh_expires_at") ?: "",
             deviceLabel = defaults.stringForKey("device_label") ?: "",
             token = defaults.stringForKey("token") ?: "",
             pairedBackendId = defaults.stringForKey("paired_backend_id"),
@@ -39,7 +43,11 @@ class SettingsManagerIOS : SettingsManager {
 
     private fun saveConfig(config: GatewayConfig) {
         defaults.setObject(config.gatewayUrl, forKey = "gateway_url")
-        defaults.setObject(config.deviceId, forKey = "device_id")
+        defaults.setObject(config.accountId, forKey = "account_id")
+        defaults.setObject(config.accessToken, forKey = "access_token")
+        defaults.setObject(config.refreshToken, forKey = "refresh_token")
+        defaults.setObject(config.accessExpiresAt, forKey = "access_expires_at")
+        defaults.setObject(config.refreshExpiresAt, forKey = "refresh_expires_at")
         defaults.setObject(config.deviceLabel, forKey = "device_label")
         defaults.setObject(config.token, forKey = "token")
         defaults.setObject(config.asrMode, forKey = "asr_mode")
@@ -61,7 +69,6 @@ class SettingsManagerIOS : SettingsManager {
     private fun makeState(config: GatewayConfig): AgentProfilesState {
         val profile = AgentProfile(
             id = config.profileId.ifBlank { "legacy-ios-profile" },
-            appClientId = config.deviceId,
             platform = AgentPlatform.OPENCLAW,
             displayName = config.pairedBackendLabel ?: AgentPlatform.OPENCLAW.defaultDisplayName,
             gatewayUrl = config.gatewayUrl,
@@ -77,11 +84,6 @@ class SettingsManagerIOS : SettingsManager {
 
     override suspend fun updateConfig(config: GatewayConfig) {
         saveConfig(config)
-    }
-
-    override suspend fun updateDeviceId(id: String) {
-        val current = _configFlow.value
-        saveConfig(current.copy(deviceId = id))
     }
 
     override suspend fun updateDeviceLabel(label: String) {
@@ -125,7 +127,6 @@ class SettingsManagerIOS : SettingsManager {
     ): AgentProfile? {
         val profile = AgentProfile(
             id = _configFlow.value.profileId.ifBlank { "legacy-ios-profile" },
-            appClientId = _configFlow.value.deviceId,
             platform = platform,
             displayName = label ?: platform.defaultDisplayName,
             gatewayUrl = gatewayUrl,
@@ -162,7 +163,11 @@ class SettingsManagerIOS : SettingsManager {
 
     override suspend fun clearConfig() {
         defaults.removeObjectForKey("gateway_url")
-        defaults.removeObjectForKey("device_id")
+        defaults.removeObjectForKey("account_id")
+        defaults.removeObjectForKey("access_token")
+        defaults.removeObjectForKey("refresh_token")
+        defaults.removeObjectForKey("access_expires_at")
+        defaults.removeObjectForKey("refresh_expires_at")
         defaults.removeObjectForKey("device_label")
         defaults.removeObjectForKey("token")
         defaults.removeObjectForKey("paired_backend_id")

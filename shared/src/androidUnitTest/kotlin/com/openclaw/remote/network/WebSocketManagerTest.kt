@@ -256,4 +256,11 @@ class WebSocketManagerTest {
             ),
         )
     }
+
+    @Test
+    fun accessTokenFailuresAreTerminalErrors() {
+        assertEquals(true, isTerminalAuthError("INVALID_ACCESS_TOKEN"))
+        assertEquals(true, isTerminalAuthError("expired_access_token"))
+        assertEquals(false, isTerminalAuthError("TARGET_NOT_FOUND"))
+    }
 }

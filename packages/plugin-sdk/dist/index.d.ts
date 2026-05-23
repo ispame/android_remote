@@ -16,12 +16,12 @@
  * });
  *
  * channel.on("message", (msg) => {
- *   console.log("message from", msg.from, ":", msg.content);
+ *   console.log("message from", msg.account_id, ":", msg.content);
  * });
  *
  * channel.on("pair_request", (req) => {
- *   console.log("pair request from", req.from_app_label);
- *   channel.approvePairRequest(req.from_app_id, true);
+ *   console.log("pair request from", req.terminal_label);
+ *   channel.approvePairRequest(req.account_id!, true);
  * });
  *
  * await channel.start();
@@ -35,7 +35,8 @@ export { ReconnectManager } from "./reconnect.js";
 export { HeartbeatManager } from "./heartbeat.js";
 export type { Logger } from "./logger.js";
 export { createPrefixedLogger, noopLogger } from "./logger.js";
-export type { RegisterFrame, RegisteredFrame, RegisterErrorFrame, MessageFrame, MessageContentType, AckFrame, DeliveryFailedFrame, PingFrame, PongFrame, ListPairsFrame, PairsListFrame, PairedDevice, PairRequestFrame, PairResponseFrame, UnpairedFrame, DeviceDisconnectedFrame, ErrorFrame, IncomingFrame, OutgoingFrame, CommandResultPayload, EventPushPayload, WsConnectResponse, WsEndpointParams, } from "./protocol/types.js";
+export type { RegisterFrame, RegisteredFrame, RegisterErrorFrame, MessageFrame, MessageContentType, AckFrame, DeliveryFailedFrame, PingFrame, PongFrame, ListPairsFrame, PairsListFrame, PairedDevice, PairRequestFrame, PairResponseFrame, UnpairedFrame, AccountSessionActiveFrame, AccountSessionInactiveFrame, SessionPreemptedFrame, HistoryRequestFrame, HistoryResponseFrame, HistoryItem, ErrorFrame, IncomingFrame, OutgoingFrame, WsConnectResponse, WsEndpointParams, } from "./protocol/types.js";
+export type { CommandResultParams as CommandResultPayload, EventPushParams as EventPushPayload } from "./http-client.js";
 export { serializeFrame, serializeMessage, serializeAck } from "./protocol/serialize.js";
 export { parseFrame, parseFrameSafe, FrameParseError } from "./protocol/parse.js";
 //# sourceMappingURL=index.d.ts.map

@@ -4,7 +4,7 @@
  * Responsibilities:
  * - Fetch WS endpoint via HTTP POST /api/ws/connect
  * - Establish and maintain the WebSocket connection
- * - Send the register frame after connection
+ * - Send the backend_register frame after connection
  * - Handle incoming frames (parse + dispatch)
  * - Handle pong detection for heartbeat
  * - Trigger reconnect on unexpected close/error
@@ -22,7 +22,7 @@ export class WsClient {
     config;
     deps;
     ws = null;
-    registeredClientId = null;
+    registeredBackendId = null;
     stopped = false;
     // WS config obtained from /api/ws/connect response
     wsEndpoint = null;
@@ -38,7 +38,7 @@ export class WsClient {
     // Public API
     // -------------------------------------------------------------------------
     /**
-     * Start: fetch WS endpoint, connect, and send register frame.
+     * Start: fetch WS endpoint, connect, and send backend_register frame.
      * Returns true if connection succeeded, false otherwise.
      */
     async start() {
@@ -111,20 +111,27 @@ export class WsClient {
     /**
      * Send a pair_response frame.
      */
-    sendPairResponse(targetAppId, approve) {
+    sendPairResponse(accountId, approved) {
         const frame = {
             type: "pair_response",
-            target_app_id: targetAppId,
-            approve,
-            backend_id: this.registeredClientId ?? "",
+            account_id: accountId,
+            approved,
+            backend_id: this.registeredBackendId ?? this.config.agentId,
+            backend_label: this.config.label ?? "OpenClaw",
         };
         this.send(serializeFrame(frame));
     }
     /**
-     * Get the registered client ID (assigned by Router after register).
+     * Get the registered backend ID.
+     */
+    getBackendId() {
+        return this.registeredBackendId;
+    }
+    /**
+     * @deprecated use getBackendId()
      */
     getClientId() {
-        return this.registeredClientId;
+        return this.getBackendId();
     }
     /**
      * Get WS config for reconnect manager.
@@ -240,18 +247,17 @@ export class WsClient {
         });
     }
     /**
-     * Send the register frame after WS connection is established.
+     * Send the backend_register frame after WS connection is established.
      */
     sendRegisterFrame() {
         const frame = {
-            type: "register",
-            client_type: "backend",
-            client_id: "",
-            label: this.config.label ?? "OpenClaw",
-            token: this.config.token,
+            type: "backend_register",
+            backend_id: this.config.agentId,
+            backend_token: this.config.token,
+            backend_label: this.config.label ?? "OpenClaw",
         };
         this.send(serializeFrame(frame));
-        this.config.log.debug("[ws] register frame sent");
+        this.config.log.debug("[ws] backend_register frame sent");
     }
     /**
      * Handle incoming WebSocket message (text or binary).
@@ -297,7 +303,7 @@ export class WsClient {
      */
     dispatchFrame(frame) {
         switch (frame.type) {
-            case "registered":
+            case "backend_registered":
                 this.handleRegistered(frame);
                 break;
             case "error":
@@ -322,9 +328,9 @@ export class WsClient {
     }
     handleRegistered(frame) {
         if (frame.success) {
-            this.registeredClientId = frame.client_id;
-            this.config.log.info(`[ws] registered as ${this.registeredClientId}`);
-            this.deps.onReady(frame.client_id);
+            this.registeredBackendId = frame.backend_id;
+            this.config.log.info(`[ws] registered as ${this.registeredBackendId}`);
+            this.deps.onReady(frame.backend_id);
         }
     }
     handleError(frame) {

@@ -6,7 +6,11 @@ package com.openclaw.remote.data
 data class GatewayConfig(
     val profileId: String = "",
     val gatewayUrl: String = "ws://192.168.1.14:8765",
-    val deviceId: String = "",
+    val accountId: String = "",
+    val accessToken: String = "",
+    val refreshToken: String = "",
+    val accessExpiresAt: String = "",
+    val refreshExpiresAt: String = "",
     val deviceLabel: String = "",
     val token: String = "",
     val pairedBackendId: String? = null,

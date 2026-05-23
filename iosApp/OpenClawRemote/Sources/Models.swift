@@ -194,7 +194,6 @@ enum AgentPlatform: String, Codable, CaseIterable, Identifiable {
 
 struct AgentProfile: Identifiable, Codable, Equatable {
     var id: String
-    var appClientId: String
     var platform: AgentPlatform
     var displayName: String
     var gatewayUrl: String
@@ -209,7 +208,6 @@ struct AgentProfile: Identifiable, Codable, Equatable {
 
     init(
         id: String = UUID().uuidString,
-        appClientId: String,
         platform: AgentPlatform = .openclaw,
         displayName: String = "",
         gatewayUrl: String = "wss://boson-tech.top/ws",
@@ -223,7 +221,6 @@ struct AgentProfile: Identifiable, Codable, Equatable {
         updatedAt: Date = Date()
     ) {
         self.id = id
-        self.appClientId = appClientId
         self.platform = platform
         self.displayName = displayName
         self.gatewayUrl = gatewayUrl
@@ -257,7 +254,11 @@ struct AgentProfile: Identifiable, Codable, Equatable {
 
 struct GatewayConfig {
     var gatewayUrl: String
-    var deviceId: String
+    var accountId: String
+    var accessToken: String
+    var refreshToken: String
+    var accessExpiresAt: String
+    var refreshExpiresAt: String
     var deviceLabel: String
     var token: String
     var pairedBackendId: String?
@@ -267,7 +268,11 @@ struct GatewayConfig {
 
     init(
         gatewayUrl: String = "wss://boson-tech.top/ws",
-        deviceId: String = "",
+        accountId: String = "",
+        accessToken: String = "",
+        refreshToken: String = "",
+        accessExpiresAt: String = "",
+        refreshExpiresAt: String = "",
         deviceLabel: String = "",
         token: String = "",
         pairedBackendId: String? = nil,
@@ -276,7 +281,11 @@ struct GatewayConfig {
         asrProfileId: String = ""
     ) {
         self.gatewayUrl = gatewayUrl
-        self.deviceId = deviceId
+        self.accountId = accountId
+        self.accessToken = accessToken
+        self.refreshToken = refreshToken
+        self.accessExpiresAt = accessExpiresAt
+        self.refreshExpiresAt = refreshExpiresAt
         self.deviceLabel = deviceLabel
         self.token = token
         self.pairedBackendId = pairedBackendId

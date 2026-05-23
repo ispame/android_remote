@@ -4,7 +4,7 @@
  * Responsibilities:
  * - Fetch WS endpoint via HTTP POST /api/ws/connect
  * - Establish and maintain the WebSocket connection
- * - Send the register frame after connection
+ * - Send the backend_register frame after connection
  * - Handle incoming frames (parse + dispatch)
  * - Handle pong detection for heartbeat
  * - Trigger reconnect on unexpected close/error
@@ -22,7 +22,7 @@ export interface WsClientConfig {
     token: string;
     /** Tenant ID. */
     tenantId: string;
-    /** Plugin label (sent in register frame). */
+    /** Plugin label (sent in backend_register frame). */
     label?: string;
     /** Custom WebSocket agent (for proxy, TLS, etc.). */
     agent?: any;
@@ -31,7 +31,7 @@ export interface WsClientConfig {
 }
 export interface WsClientDeps {
     /** Called when connection is established and registered. */
-    onReady: (clientId: string) => void;
+    onReady: (backendId: string) => void;
     /** Called when a message frame is received. */
     onMessage: (frame: MessageFrame) => void;
     /** Called when a pair_request is received. */
@@ -54,7 +54,7 @@ export declare class WsClient {
     private config;
     private deps;
     private ws;
-    private registeredClientId;
+    private registeredBackendId;
     private stopped;
     private wsEndpoint;
     private pingIntervalMs;
@@ -63,7 +63,7 @@ export declare class WsClient {
     private reconnectMax;
     constructor(config: WsClientConfig, deps: WsClientDeps);
     /**
-     * Start: fetch WS endpoint, connect, and send register frame.
+     * Start: fetch WS endpoint, connect, and send backend_register frame.
      * Returns true if connection succeeded, false otherwise.
      */
     start(): Promise<boolean>;
@@ -94,9 +94,13 @@ export declare class WsClient {
     /**
      * Send a pair_response frame.
      */
-    sendPairResponse(targetAppId: string, approve: boolean): void;
+    sendPairResponse(accountId: string, approved: boolean): void;
     /**
-     * Get the registered client ID (assigned by Router after register).
+     * Get the registered backend ID.
+     */
+    getBackendId(): string | null;
+    /**
+     * @deprecated use getBackendId()
      */
     getClientId(): string | null;
     /**
@@ -120,7 +124,7 @@ export declare class WsClient {
      */
     private establishConnection;
     /**
-     * Send the register frame after WS connection is established.
+     * Send the backend_register frame after WS connection is established.
      */
     private sendRegisterFrame;
     /**

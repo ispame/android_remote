@@ -16,7 +16,6 @@ class ChatProfileRoutingTest {
     private val profiles = listOf(
         AgentProfile(
             id = "profile-openclaw",
-            appClientId = "device-1",
             platform = AgentPlatform.OPENCLAW,
             gatewayUrl = "wss://boson-tech.top/ws",
             backendId = "bk_openclaw",
@@ -24,7 +23,6 @@ class ChatProfileRoutingTest {
         ),
         AgentProfile(
             id = "profile-hermes",
-            appClientId = "device-1",
             platform = AgentPlatform.HERMES,
             gatewayUrl = "wss://boson-tech.top/ws",
             backendId = "bk_hermes",

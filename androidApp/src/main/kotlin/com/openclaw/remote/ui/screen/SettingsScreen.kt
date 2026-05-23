@@ -47,6 +47,7 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -65,6 +66,8 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.openclaw.remote.auth.AuthSessionResult
+import com.openclaw.remote.auth.GatewayAuthClient
 import com.openclaw.remote.data.AgentAvailabilityStatus
 import com.openclaw.remote.data.AgentPlatform
 import com.openclaw.remote.data.AgentProfile
@@ -144,9 +147,19 @@ fun SettingsScreen(
     val colors = MochiTheme.colors
     val config by settingsManager.configFlow.collectAsState(initial = GatewayConfig())
     val profilesState by settingsManager.profilesFlow.collectAsState(
-        initial = AgentProfilesState.default(config.deviceId),
+        initial = AgentProfilesState.default(),
     )
+    val authClient = remember { GatewayAuthClient() }
     var agentForms by remember { mutableStateOf<List<AgentFormState>>(emptyList()) }
+    var phoneNumber by remember { mutableStateOf("") }
+    var smsCode by remember { mutableStateOf("") }
+    var isAuthBusy by remember { mutableStateOf(false) }
+    var accountId by remember(config) { mutableStateOf(config.accountId) }
+    var accessToken by remember(config) { mutableStateOf(config.accessToken) }
+    var refreshToken by remember(config) { mutableStateOf(config.refreshToken) }
+    var currentPassword by remember { mutableStateOf("") }
+    var newPassword by remember { mutableStateOf("") }
+    var confirmNewPassword by remember { mutableStateOf("") }
     var deviceLabel by remember(config) { mutableStateOf(config.deviceLabel) }
     var asrMode by remember(config) { mutableStateOf(config.asrMode.ifEmpty { "router" }) }
     var asrProfileId by remember(config) { mutableStateOf(config.asrProfileId) }
@@ -174,6 +187,29 @@ fun SettingsScreen(
     fun normalizedGateway(value: String): String =
         value.trim().ifEmpty { AgentProfile.DEFAULT_GATEWAY_URL }
 
+    fun authGatewayUrl(): String =
+        normalizedGateway(
+            profilesState.selectedProfile.gatewayUrl.ifBlank { config.gatewayUrl }
+        )
+
+    suspend fun applyAuthSession(session: AuthSessionResult) {
+        val nextConfig = config.copy(
+            accountId = session.accountId,
+            accessToken = session.accessToken,
+            refreshToken = session.refreshToken,
+            accessExpiresAt = session.accessExpiresAt,
+            refreshExpiresAt = session.refreshExpiresAt,
+            deviceLabel = deviceLabel.ifEmpty { "我的设备" },
+        )
+        settingsManager.updateConfig(nextConfig)
+        accountId = session.accountId
+        accessToken = session.accessToken
+        refreshToken = session.refreshToken
+        currentPassword = ""
+        newPassword = ""
+        confirmNewPassword = ""
+    }
+
     suspend fun saveForm(form: AgentFormState, select: Boolean): AgentProfile? {
         val backendId = form.backendId.trim()
         val gatewayUrl = normalizedGateway(form.gatewayUrl)
@@ -187,7 +223,6 @@ fun SettingsScreen(
         }
         val profile = AgentProfile(
             id = form.id,
-            appClientId = config.deviceId,
             platform = form.platform,
             displayName = displayName,
             gatewayUrl = gatewayUrl,
@@ -208,6 +243,12 @@ fun SettingsScreen(
 
     LaunchedEffect(profilesState.profiles) {
         agentForms = profilesState.profiles.map(AgentFormState::fromProfile)
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            authClient.close()
+        }
     }
 
     LaunchedEffect(agentForms.firstOrNull()?.gatewayUrl, profilesState.selectedProfileId) {
@@ -470,6 +511,273 @@ fun SettingsScreen(
 
                 HorizontalDivider(color = colors.divider, thickness = 0.5.dp)
 
+                SectionTitle("短信登录", colors)
+                OutlinedTextField(
+                    value = phoneNumber,
+                    onValueChange = { phoneNumber = it },
+                    label = { Text("手机号") },
+                    placeholder = { Text("+8613800138000") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                    shape = RoundedCornerShape(8.dp),
+                    colors = mochiTextFieldColors(colors),
+                )
+                OutlinedTextField(
+                    value = smsCode,
+                    onValueChange = { smsCode = it },
+                    label = { Text("验证码") },
+                    placeholder = { Text("123456") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    shape = RoundedCornerShape(8.dp),
+                    colors = mochiTextFieldColors(colors),
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    OutlinedButton(
+                        onClick = {
+                            scope.launch {
+                                if (phoneNumber.isBlank()) {
+                                    showMessage("请先填写手机号")
+                                    return@launch
+                                }
+                                isAuthBusy = true
+                                runCatching {
+                                    authClient.requestSms(
+                                        gatewayUrl = authGatewayUrl(),
+                                        phoneNumber = phoneNumber,
+                                    )
+                                }.onSuccess {
+                                    showMessage("验证码已发送，${it.retryAfterSeconds} 秒后可重试")
+                                }.onFailure {
+                                    showMessage("发送验证码失败：${it.message ?: "unknown"}")
+                                }
+                                isAuthBusy = false
+                            }
+                        },
+                        enabled = !isAuthBusy,
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(8.dp),
+                    ) {
+                        Text("发送验证码")
+                    }
+                    Button(
+                        onClick = {
+                            scope.launch {
+                                if (phoneNumber.isBlank() || smsCode.isBlank()) {
+                                    showMessage("请填写手机号和验证码")
+                                    return@launch
+                                }
+                                isAuthBusy = true
+                                runCatching {
+                                    authClient.verifySms(
+                                        gatewayUrl = authGatewayUrl(),
+                                        phoneNumber = phoneNumber,
+                                        code = smsCode,
+                                        terminalLabel = deviceLabel.ifEmpty { "我的设备" },
+                                    )
+                                }.onSuccess {
+                                    applyAuthSession(it)
+                                    showMessage("登录成功")
+                                }.onFailure {
+                                    showMessage("登录失败：${it.message ?: "unknown"}")
+                                }
+                                isAuthBusy = false
+                            }
+                        },
+                        enabled = !isAuthBusy,
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(8.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = colors.primary,
+                            contentColor = colors.onPrimary,
+                        ),
+                    ) {
+                        Text("登录")
+                    }
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    OutlinedButton(
+                        onClick = {
+                            scope.launch {
+                                if (refreshToken.isBlank()) {
+                                    showMessage("当前没有 Refresh Token")
+                                    return@launch
+                                }
+                                isAuthBusy = true
+                                runCatching {
+                                    authClient.refresh(
+                                        gatewayUrl = authGatewayUrl(),
+                                        refreshToken = refreshToken,
+                                    )
+                                }.onSuccess {
+                                    applyAuthSession(it)
+                                    showMessage("会话已刷新")
+                                }.onFailure {
+                                    showMessage("刷新会话失败：${it.message ?: "unknown"}")
+                                }
+                                isAuthBusy = false
+                            }
+                        },
+                        enabled = !isAuthBusy,
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(8.dp),
+                    ) {
+                        Text("刷新会话")
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            scope.launch {
+                                isAuthBusy = true
+                                runCatching {
+                                    if (refreshToken.isNotBlank()) {
+                                        authClient.logout(
+                                            gatewayUrl = authGatewayUrl(),
+                                            refreshToken = refreshToken,
+                                        )
+                                    }
+                                }
+                                viewModel.disconnect()
+                                settingsManager.updateConfig(
+                                    config.copy(
+                                        accountId = "",
+                                        accessToken = "",
+                                        refreshToken = "",
+                                        accessExpiresAt = "",
+                                        refreshExpiresAt = "",
+                                    )
+                                )
+                                accountId = ""
+                                accessToken = ""
+                                refreshToken = ""
+                                showMessage("已退出登录")
+                                isAuthBusy = false
+                            }
+                        },
+                        enabled = !isAuthBusy,
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(8.dp),
+                    ) {
+                        Text("退出登录")
+                    }
+                }
+
+                HorizontalDivider(color = colors.divider, thickness = 0.5.dp)
+
+                SectionTitle("修改密码", colors)
+                OutlinedTextField(
+                    value = currentPassword,
+                    onValueChange = { currentPassword = it },
+                    label = { Text("当前密码") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                    shape = RoundedCornerShape(8.dp),
+                    colors = mochiTextFieldColors(colors),
+                )
+                OutlinedTextField(
+                    value = newPassword,
+                    onValueChange = { newPassword = it },
+                    label = { Text("新密码") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                    shape = RoundedCornerShape(8.dp),
+                    colors = mochiTextFieldColors(colors),
+                )
+                OutlinedTextField(
+                    value = confirmNewPassword,
+                    onValueChange = { confirmNewPassword = it },
+                    label = { Text("确认新密码") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                    shape = RoundedCornerShape(8.dp),
+                    colors = mochiTextFieldColors(colors),
+                )
+                OutlinedButton(
+                    onClick = {
+                        scope.launch {
+                            if (accessToken.isBlank()) {
+                                showMessage("请先登录")
+                                return@launch
+                            }
+                            if (currentPassword.isBlank() || newPassword.length < 8 || newPassword != confirmNewPassword) {
+                                showMessage("请检查当前密码和两次新密码")
+                                return@launch
+                            }
+                            isAuthBusy = true
+                            runCatching {
+                                authClient.changePassword(
+                                    gatewayUrl = authGatewayUrl(),
+                                    accessToken = accessToken,
+                                    currentPassword = currentPassword,
+                                    newPassword = newPassword,
+                                )
+                            }.onSuccess {
+                                applyAuthSession(it)
+                                showMessage("密码已修改")
+                            }.onFailure {
+                                showMessage("修改密码失败：${it.message ?: "unknown"}")
+                            }
+                            isAuthBusy = false
+                        }
+                    },
+                    enabled = !isAuthBusy,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(8.dp),
+                ) {
+                    Text("修改密码")
+                }
+
+                HorizontalDivider(color = colors.divider, thickness = 0.5.dp)
+
+                SectionTitle("账号会话", colors)
+                OutlinedTextField(
+                    value = accountId,
+                    onValueChange = { accountId = it },
+                    label = { Text("Account ID") },
+                    placeholder = { Text("acct_xxx") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    shape = RoundedCornerShape(8.dp),
+                    colors = mochiTextFieldColors(colors),
+                )
+                OutlinedTextField(
+                    value = accessToken,
+                    onValueChange = { accessToken = it },
+                    label = { Text("Access Token") },
+                    placeholder = { Text("access_token") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    shape = RoundedCornerShape(8.dp),
+                    colors = mochiTextFieldColors(colors),
+                )
+                OutlinedTextField(
+                    value = refreshToken,
+                    onValueChange = { refreshToken = it },
+                    label = { Text("Refresh Token") },
+                    placeholder = { Text("refresh_token") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    shape = RoundedCornerShape(8.dp),
+                    colors = mochiTextFieldColors(colors),
+                )
+
+                HorizontalDivider(color = colors.divider, thickness = 0.5.dp)
+
                 SectionTitle("设备信息", colors)
                 OutlinedTextField(
                     value = deviceLabel,
@@ -499,6 +807,11 @@ fun SettingsScreen(
                             settingsManager.updateGlobalAsr(asrMode, asrProfileId)
                             settingsManager.updateConfig(
                                 config.copy(
+                                    accountId = accountId.trim(),
+                                    accessToken = accessToken.trim(),
+                                    refreshToken = refreshToken.trim(),
+                                    accessExpiresAt = config.accessExpiresAt,
+                                    refreshExpiresAt = config.refreshExpiresAt,
                                     deviceLabel = deviceLabel.ifEmpty { "我的设备" },
                                     asrMode = asrMode,
                                     asrProfileId = if (asrMode == "backend") "" else asrProfileId,

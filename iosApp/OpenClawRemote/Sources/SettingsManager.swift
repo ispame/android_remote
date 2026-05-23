@@ -7,7 +7,6 @@ final class SettingsManager: ObservableObject {
     private let defaults = UserDefaults.standard
     private let profilesKey = "agent_profiles_v1"
     private let selectedProfileIdKey = "selected_agent_profile_id"
-    private let baseDeviceIdKey = "base_device_id_v1"
 
     @Published private(set) var profiles: [AgentProfile]
     @Published private(set) var selectedProfileId: String
@@ -42,25 +41,19 @@ final class SettingsManager: ObservableObject {
         defaults.string(forKey: "asr_profile_id") ?? selectedProfile.asrProfileId
     }
 
-    var baseDeviceId: String {
-        Self.ensureBaseDeviceId(in: defaults)
-    }
-
     init() {
         let legacyConfig = Self.loadLegacyConfig(from: defaults)
-        let sharedDeviceId = Self.ensureBaseDeviceId(in: defaults, legacyDeviceId: legacyConfig.deviceId)
         let loadedProfiles = Self.loadProfiles(from: defaults, key: profilesKey)
         let initialProfiles: [AgentProfile]
         if loadedProfiles.isEmpty {
-            initialProfiles = [Self.makeLegacyProfile(from: legacyConfig, appClientId: sharedDeviceId)]
+            initialProfiles = [Self.makeLegacyProfile(from: legacyConfig)]
         } else {
-            initialProfiles = Self.withSharedAppClientId(loadedProfiles, appClientId: sharedDeviceId)
-                .map { profile in
-                    var copy = profile
-                    copy.asrMode = legacyConfig.asrMode == "backend" ? "backend" : "router"
-                    copy.asrProfileId = legacyConfig.asrProfileId
-                    return copy
-                }
+            initialProfiles = loadedProfiles.map { profile in
+                var copy = profile
+                copy.asrMode = legacyConfig.asrMode == "backend" ? "backend" : "router"
+                copy.asrProfileId = legacyConfig.asrProfileId
+                return copy
+            }
         }
         let initialSelectedProfileId = defaults.string(forKey: selectedProfileIdKey)
             .flatMap { id in initialProfiles.contains(where: { $0.id == id }) ? id : nil }
@@ -78,6 +71,11 @@ final class SettingsManager: ObservableObject {
     }
 
     func updateConfig(_ config: GatewayConfig) {
+        defaults.set(config.accountId, forKey: "account_id")
+        defaults.set(config.accessToken, forKey: "access_token")
+        defaults.set(config.refreshToken, forKey: "refresh_token")
+        defaults.set(config.accessExpiresAt, forKey: "access_expires_at")
+        defaults.set(config.refreshExpiresAt, forKey: "refresh_expires_at")
         defaults.set(config.deviceLabel, forKey: "device_label")
         var profile = selectedProfile
         profile.gatewayUrl = config.gatewayUrl
@@ -91,17 +89,6 @@ final class SettingsManager: ObservableObject {
         replaceProfile(profile, select: true)
         updateGlobalAsr(mode: config.asrMode, profileId: config.asrProfileId)
         mirrorLegacyKeys(from: profile)
-    }
-
-    func updateDeviceId(_ id: String) {
-        defaults.set(id, forKey: baseDeviceIdKey)
-        defaults.set(id, forKey: "device_id")
-        for index in profiles.indices {
-            profiles[index].appClientId = id
-            profiles[index].updatedAt = Date()
-        }
-        persistProfiles()
-        publishActiveConfig()
     }
 
     func updateDeviceLabel(_ label: String) {
@@ -159,7 +146,6 @@ final class SettingsManager: ObservableObject {
     @discardableResult
     func saveProfile(_ profile: AgentProfile, select: Bool = true) -> Bool {
         var normalizedProfile = profile
-        normalizedProfile.appClientId = baseDeviceId
         normalizedProfile.asrMode = globalAsrMode
         normalizedProfile.asrProfileId = globalAsrProfileId
         normalizedProfile.updatedAt = Date()
@@ -252,7 +238,6 @@ final class SettingsManager: ObservableObject {
         let normalizedKey = "\(AgentProfile.normalizedGatewayKey(gatewayUrl))|\(backendId)"
 
         if let index = profiles.firstIndex(where: { $0.uniqueBackendKey == normalizedKey }) {
-            profiles[index].appClientId = baseDeviceId
             profiles[index].platform = platform
             profiles[index].displayName = displayName
             profiles[index].gatewayUrl = gatewayUrl
@@ -267,7 +252,6 @@ final class SettingsManager: ObservableObject {
         }
 
         if profiles.count == 1, profiles[0].backendId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            profiles[0].appClientId = baseDeviceId
             profiles[0].platform = platform
             profiles[0].displayName = displayName
             profiles[0].gatewayUrl = gatewayUrl
@@ -289,7 +273,6 @@ final class SettingsManager: ObservableObject {
         let id = UUID().uuidString
         let profile = AgentProfile(
             id: id,
-            appClientId: makeProfileAppClientId(profileId: id),
             platform: platform,
             displayName: displayName,
             gatewayUrl: gatewayUrl,
@@ -309,8 +292,7 @@ final class SettingsManager: ObservableObject {
 
     private func replaceProfile(_ profile: AgentProfile, select: Bool) {
         guard let index = profiles.firstIndex(where: { $0.id == profile.id }) else { return }
-        var normalizedProfile = profile
-        normalizedProfile.appClientId = baseDeviceId
+        let normalizedProfile = profile
         profiles[index] = normalizedProfile
         if select {
             selectedProfileId = normalizedProfile.id
@@ -347,7 +329,6 @@ final class SettingsManager: ObservableObject {
 
     private func mirrorLegacyKeys(from profile: AgentProfile) {
         defaults.set(profile.gatewayUrl, forKey: "gateway_url")
-        defaults.set(baseDeviceId, forKey: "device_id")
         defaults.set(profile.token, forKey: "token")
         defaults.set(profile.asrMode, forKey: "asr_mode")
         defaults.set(profile.asrProfileId, forKey: "asr_profile_id")
@@ -361,10 +342,6 @@ final class SettingsManager: ObservableObject {
         } else {
             defaults.removeObject(forKey: "paired_backend_label")
         }
-    }
-
-    private func makeProfileAppClientId(profileId _: String) -> String {
-        Self.ensureBaseDeviceId(in: defaults)
     }
 
     private func resolvedProfileName(platform: AgentPlatform, label: String?, backendId: String) -> String {
@@ -386,37 +363,14 @@ final class SettingsManager: ObservableObject {
         return profiles
     }
 
-    private static func ensureBaseDeviceId(in defaults: UserDefaults, legacyDeviceId: String? = nil) -> String {
-        let candidates = [
-            defaults.string(forKey: "base_device_id_v1"),
-            legacyDeviceId,
-            defaults.string(forKey: "device_id")
-        ]
-        if let existing = candidates
-            .compactMap({ $0?.trimmingCharacters(in: .whitespacesAndNewlines) })
-            .first(where: { !$0.isEmpty && $0 != "device_" }) {
-            defaults.set(existing, forKey: "base_device_id_v1")
-            defaults.set(existing, forKey: "device_id")
-            return existing
-        }
-        let generated = "device_\(UUID().uuidString.prefix(8))"
-        defaults.set(generated, forKey: "base_device_id_v1")
-        defaults.set(generated, forKey: "device_id")
-        return generated
-    }
-
-    private static func withSharedAppClientId(_ profiles: [AgentProfile], appClientId: String) -> [AgentProfile] {
-        profiles.map { profile in
-            var copy = profile
-            copy.appClientId = appClientId
-            return copy
-        }
-    }
-
     private static func loadLegacyConfig(from defaults: UserDefaults) -> GatewayConfig {
         GatewayConfig(
             gatewayUrl: defaults.string(forKey: "gateway_url") ?? "wss://boson-tech.top/ws",
-            deviceId: defaults.string(forKey: "device_id") ?? "",
+            accountId: defaults.string(forKey: "account_id") ?? "",
+            accessToken: defaults.string(forKey: "access_token") ?? "",
+            refreshToken: defaults.string(forKey: "refresh_token") ?? "",
+            accessExpiresAt: defaults.string(forKey: "access_expires_at") ?? "",
+            refreshExpiresAt: defaults.string(forKey: "refresh_expires_at") ?? "",
             deviceLabel: defaults.string(forKey: "device_label") ?? "",
             token: defaults.string(forKey: "token") ?? "",
             pairedBackendId: defaults.string(forKey: "paired_backend_id"),
@@ -426,10 +380,9 @@ final class SettingsManager: ObservableObject {
         )
     }
 
-    private static func makeLegacyProfile(from config: GatewayConfig, appClientId: String) -> AgentProfile {
+    private static func makeLegacyProfile(from config: GatewayConfig) -> AgentProfile {
         let backendId = config.pairedBackendId ?? ""
         return AgentProfile(
-            appClientId: appClientId,
             platform: .openclaw,
             displayName: config.pairedBackendLabel ?? AgentPlatform.openclaw.defaultDisplayName,
             gatewayUrl: config.gatewayUrl,
@@ -445,7 +398,11 @@ final class SettingsManager: ObservableObject {
     private static func makeConfig(from profile: AgentProfile, deviceLabel: String) -> GatewayConfig {
         GatewayConfig(
             gatewayUrl: profile.gatewayUrl,
-            deviceId: profile.appClientId,
+            accountId: UserDefaults.standard.string(forKey: "account_id") ?? "",
+            accessToken: UserDefaults.standard.string(forKey: "access_token") ?? "",
+            refreshToken: UserDefaults.standard.string(forKey: "refresh_token") ?? "",
+            accessExpiresAt: UserDefaults.standard.string(forKey: "access_expires_at") ?? "",
+            refreshExpiresAt: UserDefaults.standard.string(forKey: "refresh_expires_at") ?? "",
             deviceLabel: deviceLabel.isEmpty ? "我的设备" : deviceLabel,
             token: profile.token,
             pairedBackendId: profile.backendId.isEmpty ? nil : profile.backendId,

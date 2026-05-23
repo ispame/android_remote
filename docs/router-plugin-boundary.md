@@ -1,6 +1,15 @@
 # Router ↔ Plugin 运行时接口边界
 
-本文档定义 Router（Project A）和 Plugin（Project B）在运行时的交互边界，供部署人员参考。
+本文档只保留部署边界说明。**协议主规范已经迁移到 Router 仓库**，以避免 App、Router、Plugin 三侧各自维护一份协议副本。
+
+主规范位置：
+
+- `/Users/spame/WorkTable/openclaw_coder/boson/android-remote-gateway/docs/account-scoped-session-v2-design.md`
+- `/Users/spame/WorkTable/openclaw_coder/boson/android-remote-gateway/docs/account-scoped-session-v2-protocol.md`
+- `/Users/spame/WorkTable/openclaw_coder/boson/android-remote-gateway/docs/account-scoped-session-v2-consistency-audit.md`
+- `/Users/spame/WorkTable/openclaw_coder/boson/android-remote-gateway/packages/protocol/src/types.ts`
+
+如果这里的描述和 Router 主规范冲突，以 Router 仓库为准。
 
 ---
 

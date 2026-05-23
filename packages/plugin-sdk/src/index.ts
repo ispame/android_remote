@@ -16,12 +16,12 @@
  * });
  *
  * channel.on("message", (msg) => {
- *   console.log("message from", msg.from, ":", msg.content);
+ *   console.log("message from", msg.account_id, ":", msg.content);
  * });
  *
  * channel.on("pair_request", (req) => {
- *   console.log("pair request from", req.from_app_label);
- *   channel.approvePairRequest(req.from_app_id, true);
+ *   console.log("pair request from", req.terminal_label);
+ *   channel.approvePairRequest(req.account_id!, true);
  * });
  *
  * await channel.start();
@@ -63,19 +63,23 @@ export type {
   PairRequestFrame,
   PairResponseFrame,
   UnpairedFrame,
-  DeviceDisconnectedFrame,
+  AccountSessionActiveFrame,
+  AccountSessionInactiveFrame,
+  SessionPreemptedFrame,
+  HistoryRequestFrame,
+  HistoryResponseFrame,
+  HistoryItem,
   // Error frame
   ErrorFrame,
   // Union types
   IncomingFrame,
   OutgoingFrame,
-  // HTTP payloads
-  CommandResultPayload,
-  EventPushPayload,
   // WS connect
   WsConnectResponse,
   WsEndpointParams,
 } from "./protocol/types.js";
+
+export type { CommandResultParams as CommandResultPayload, EventPushParams as EventPushPayload } from "./http-client.js";
 
 // Protocol serialization/parsing
 export { serializeFrame, serializeMessage, serializeAck } from "./protocol/serialize.js";
