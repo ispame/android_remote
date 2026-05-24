@@ -27,6 +27,7 @@ import type {
   PairResponseFrame,
   ErrorFrame,
   WsConnectResponse,
+  MessageAckFrame,
 } from "./protocol/types.js";
 
 export interface WsClientConfig {
@@ -77,6 +78,8 @@ export class WsClient {
   private ws: WebSocket | null = null;
   private registeredBackendId: string | null = null;
   private stopped = false;
+  private receivedMessageKeys = new Set<string>();
+  private receivedMessageKeyOrder: string[] = [];
 
   // WS config obtained from /api/ws/connect response
   private wsEndpoint: string | null = null;
@@ -396,7 +399,7 @@ export class WsClient {
         this.handleError(frame as RegisterErrorFrame | ErrorFrame);
         break;
       case "message":
-        this.deps.onMessage(frame as MessageFrame);
+        this.handleMessageFrame(frame as MessageFrame);
         break;
       case "pong":
         // Application-layer pong - treat same as router pong
@@ -419,6 +422,42 @@ export class WsClient {
       this.config.log.info(`[ws] registered as ${this.registeredBackendId}`);
       this.deps.onReady(frame.backend_id);
     }
+  }
+
+  private handleMessageFrame(frame: MessageFrame): void {
+    const ackId = this.deliveryAckId(frame);
+    if (ackId) {
+      const ackFrame: MessageAckFrame = { type: "message_ack", message_id: ackId };
+      this.send(serializeFrame(ackFrame));
+    }
+    const key = this.receivedMessageKey(frame);
+    if (key && !this.rememberReceivedMessageKey(key)) {
+      this.config.log.debug(`[ws] duplicate message ignored: ${key}`);
+      return;
+    }
+    this.deps.onMessage(frame);
+  }
+
+  private deliveryAckId(frame: MessageFrame): string | undefined {
+    if (frame.seq !== undefined) return String(frame.seq);
+    return frame.message_id;
+  }
+
+  private receivedMessageKey(frame: MessageFrame): string | undefined {
+    if (frame.message_id) return `message_id:${frame.message_id}`;
+    if (frame.seq !== undefined) return `seq:${frame.seq}`;
+    return undefined;
+  }
+
+  private rememberReceivedMessageKey(key: string): boolean {
+    if (this.receivedMessageKeys.has(key)) return false;
+    this.receivedMessageKeys.add(key);
+    this.receivedMessageKeyOrder.push(key);
+    while (this.receivedMessageKeyOrder.length > 500) {
+      const removed = this.receivedMessageKeyOrder.shift();
+      if (removed) this.receivedMessageKeys.delete(removed);
+    }
+    return true;
   }
 
   private handleError(frame: RegisterErrorFrame | ErrorFrame): void {

@@ -56,6 +56,8 @@ export declare class WsClient {
     private ws;
     private registeredBackendId;
     private stopped;
+    private receivedMessageKeys;
+    private receivedMessageKeyOrder;
     private wsEndpoint;
     private pingIntervalMs;
     private reconnectIntervalMs;
@@ -136,6 +138,10 @@ export declare class WsClient {
      */
     private dispatchFrame;
     private handleRegistered;
+    private handleMessageFrame;
+    private deliveryAckId;
+    private receivedMessageKey;
+    private rememberReceivedMessageKey;
     private handleError;
     private terminateWs;
 }

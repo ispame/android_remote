@@ -62,7 +62,8 @@ final class WebSocketManager: ObservableObject {
     private let reconnectMaxDelay: TimeInterval = 30
 
     private var pendingAcks: [Int: (MessageStatus) -> Void] = [:]
-    private var receivedMessageSeqs = Set<Int>()
+    private var receivedMessageKeys = Set<String>()
+    private var receivedMessageKeyOrder: [String] = []
     private var loadedHistoryKeys = Set<String>()
     private var oldestHistoryTimestamp: String?
     private var lastAutoHistoryRequestAt: Date?
@@ -520,6 +521,45 @@ final class WebSocketManager: ObservableObject {
         ])
     }
 
+    private func deliveryAckId(from json: [String: Any]) -> String? {
+        if let seq = json["seq"] as? Int {
+            return String(seq)
+        }
+        if let seq = json["seq"] as? NSNumber {
+            return seq.stringValue
+        }
+        guard let messageId = json["message_id"] as? String, !messageId.isEmpty else {
+            return nil
+        }
+        return messageId
+    }
+
+    private func receivedMessageKey(from json: [String: Any]) -> String? {
+        if let messageId = json["message_id"] as? String, !messageId.isEmpty {
+            return "message_id:\(messageId)"
+        }
+        if let seq = json["seq"] as? Int {
+            return "seq:\(seq)"
+        }
+        if let seq = json["seq"] as? NSNumber {
+            return "seq:\(seq.stringValue)"
+        }
+        return nil
+    }
+
+    private func rememberReceivedMessageKey(_ key: String) -> Bool {
+        if receivedMessageKeys.contains(key) {
+            return false
+        }
+        receivedMessageKeys.insert(key)
+        receivedMessageKeyOrder.append(key)
+        while receivedMessageKeyOrder.count > 500 {
+            let removed = receivedMessageKeyOrder.removeFirst()
+            receivedMessageKeys.remove(removed)
+        }
+        return true
+    }
+
     private func receiveMessage(generation: Int) {
         webSocketTask?.receive { [weak self] result in
             guard let self = self, generation == self.socketGeneration else { return }
@@ -671,10 +711,13 @@ final class WebSocketManager: ObservableObject {
     }
 
     private func handleInboundMessage(_ json: [String: Any]) {
-        guard let content = displayableBackendContent(json["content"] as? String ?? "") else { return }
-        if let messageId = json["message_id"] as? String, !messageId.isEmpty {
-            sendAck(messageId)
+        if let ackId = deliveryAckId(from: json) {
+            sendAck(ackId)
         }
+        if let key = receivedMessageKey(from: json), !rememberReceivedMessageKey(key) {
+            return
+        }
+        guard let content = displayableBackendContent(json["content"] as? String ?? "") else { return }
         let backendId = (json["backend_id"] as? String) ?? (json["from"] as? String) ?? registeredBackendId ?? ""
         let profileId = profileId(forBackendId: backendId) ?? activeProfileId
         let message = HistoryMessagePayload.chatMessage(
@@ -716,13 +759,6 @@ final class WebSocketManager: ObservableObject {
         lastAutoHistoryRequestAt = now
         persistActiveRuntimeState()
         requestRecentHistory(rounds: 15, force: true)
-    }
-
-    private func rememberReceivedSeq(_ seq: Int) {
-        receivedMessageSeqs.insert(seq)
-        if receivedMessageSeqs.count > 500 {
-            receivedMessageSeqs.remove(receivedMessageSeqs.min() ?? seq)
-        }
     }
 
     private func handleHistoryResponse(_ json: [String: Any], profileId: String?) {

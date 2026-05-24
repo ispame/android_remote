@@ -24,6 +24,8 @@ export class WsClient {
     ws = null;
     registeredBackendId = null;
     stopped = false;
+    receivedMessageKeys = new Set();
+    receivedMessageKeyOrder = [];
     // WS config obtained from /api/ws/connect response
     wsEndpoint = null;
     pingIntervalMs = null;
@@ -310,7 +312,7 @@ export class WsClient {
                 this.handleError(frame);
                 break;
             case "message":
-                this.deps.onMessage(frame);
+                this.handleMessageFrame(frame);
                 break;
             case "pong":
                 // Application-layer pong - treat same as router pong
@@ -332,6 +334,43 @@ export class WsClient {
             this.config.log.info(`[ws] registered as ${this.registeredBackendId}`);
             this.deps.onReady(frame.backend_id);
         }
+    }
+    handleMessageFrame(frame) {
+        const ackId = this.deliveryAckId(frame);
+        if (ackId) {
+            const ackFrame = { type: "message_ack", message_id: ackId };
+            this.send(serializeFrame(ackFrame));
+        }
+        const key = this.receivedMessageKey(frame);
+        if (key && !this.rememberReceivedMessageKey(key)) {
+            this.config.log.debug(`[ws] duplicate message ignored: ${key}`);
+            return;
+        }
+        this.deps.onMessage(frame);
+    }
+    deliveryAckId(frame) {
+        if (frame.seq !== undefined)
+            return String(frame.seq);
+        return frame.message_id;
+    }
+    receivedMessageKey(frame) {
+        if (frame.message_id)
+            return `message_id:${frame.message_id}`;
+        if (frame.seq !== undefined)
+            return `seq:${frame.seq}`;
+        return undefined;
+    }
+    rememberReceivedMessageKey(key) {
+        if (this.receivedMessageKeys.has(key))
+            return false;
+        this.receivedMessageKeys.add(key);
+        this.receivedMessageKeyOrder.push(key);
+        while (this.receivedMessageKeyOrder.length > 500) {
+            const removed = this.receivedMessageKeyOrder.shift();
+            if (removed)
+                this.receivedMessageKeys.delete(removed);
+        }
+        return true;
     }
     handleError(frame) {
         this.config.log.error(`[ws] error from router: code=${frame.code} message=${frame.message}`);

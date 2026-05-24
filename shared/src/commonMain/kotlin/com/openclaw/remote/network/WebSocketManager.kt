@@ -79,6 +79,8 @@ class WebSocketManager(
     /** seq → callback to invoke when delivery is confirmed or failed. */
     private val pendingAcks = mutableMapOf<Int, (MessageStatus) -> Unit>()
     private val pendingAudioTimeouts = mutableMapOf<String, Job>()
+    private val receivedMessageKeys = mutableSetOf<String>()
+    private val receivedMessageKeyOrder = mutableListOf<String>()
 
     fun connect() {
         if (shouldIgnoreConnectRequest(webSocketSession != null, connectAttemptInFlight, reconnectJob != null, intentionalDisconnect)) {
@@ -402,6 +404,25 @@ class WebSocketManager(
         send(frame.toString(), label = "message_ack:$messageId")
     }
 
+    private fun deliveryAckId(obj: JsonObject): String? =
+        obj["seq"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+            ?: obj["message_id"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+
+    private fun receivedMessageKey(obj: JsonObject): String? =
+        obj["message_id"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }?.let { "message_id:$it" }
+            ?: obj["seq"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }?.let { "seq:$it" }
+
+    private fun rememberReceivedMessageKey(key: String): Boolean {
+        if (key in receivedMessageKeys) return false
+        receivedMessageKeys += key
+        receivedMessageKeyOrder += key
+        while (receivedMessageKeyOrder.size > 500) {
+            val removed = receivedMessageKeyOrder.removeAt(0)
+            receivedMessageKeys -= removed
+        }
+        return true
+    }
+
     private fun handleMessage(text: String, generation: Long) {
         if (!shouldProcessIncomingFrame(intentionalDisconnect, generation, socketGeneration)) {
             log("ws rx ignored stale generation=$generation current=$socketGeneration")
@@ -488,13 +509,16 @@ class WebSocketManager(
                 }
                 "message" -> {
                     val content = obj["content"]?.jsonPrimitive?.content ?: ""
-                    val messageId = obj["message_id"]?.jsonPrimitive?.contentOrNull
                     val backendId = obj["backend_id"]?.jsonPrimitive?.contentOrNull
                         ?: obj["from"]?.jsonPrimitive?.contentOrNull
                         ?: registeredBackendId
 
-                    if (!messageId.isNullOrBlank()) {
-                        sendAck(messageId)
+                    deliveryAckId(obj)?.let { sendAck(it) }
+                    receivedMessageKey(obj)?.let { key ->
+                        if (!rememberReceivedMessageKey(key)) {
+                            log("duplicate message ignored key=$key")
+                            return
+                        }
                     }
 
                     offerEvent(
