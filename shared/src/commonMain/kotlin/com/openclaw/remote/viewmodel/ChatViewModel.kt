@@ -9,9 +9,12 @@ import com.openclaw.remote.data.MessageStatus
 import com.openclaw.remote.data.SettingsManager
 import com.openclaw.remote.domain.ConnectionState
 import com.openclaw.remote.domain.PairingState
+import com.openclaw.remote.network.AuthRecoveryAction
 import com.openclaw.remote.network.WebSocketManager
 import com.openclaw.remote.network.WsMessageEvent
+import com.openclaw.remote.network.authRecoveryActionForWsError
 import com.openclaw.remote.network.isTerminalAuthError
+import com.openclaw.remote.network.shouldRefreshAccessToken
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.sync.Mutex
@@ -53,6 +56,9 @@ class ChatViewModel(
     private val _authNotice = MutableStateFlow<String?>(null)
     val authNotice: StateFlow<String?> = _authNotice.asStateFlow()
 
+    private val _authRecoveryRequests = MutableSharedFlow<AuthRecoveryRequest>(extraBufferCapacity = 1)
+    val authRecoveryRequests: SharedFlow<AuthRecoveryRequest> = _authRecoveryRequests.asSharedFlow()
+
     private var wsManager: WebSocketManager? = null
     private val viewModelScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var activeConnectionKey: ChatConnectionKey? = null
@@ -82,7 +88,7 @@ class ChatViewModel(
     }
 
     private fun reconnectIfNeeded(config: GatewayConfig, force: Boolean = false) {
-        if (!shouldMaintainAuthenticatedConnection(config.accessToken)) {
+        if (!shouldMaintainAuthenticatedConnection(config.accessToken, config.accessExpiresAt)) {
             activeManagerJobs.forEach { it.cancel() }
             activeManagerJobs = emptyList()
             wsManager?.disconnect()
@@ -341,6 +347,23 @@ class ChatViewModel(
                             clearAuthSession(notice)
                         }
                         is WsMessageEvent.Error -> {
+                            when (authRecoveryActionForWsError(event.code)) {
+                                AuthRecoveryAction.REFRESH_SESSION -> {
+                                    updateProfileState(managerProfileId) { state ->
+                                        state.copy(connectionState = ConnectionState.DISCONNECTED)
+                                    }
+                                    if (managerProfileId == _selectedProfileId.value) {
+                                        _connectionState.value = ConnectionState.DISCONNECTED
+                                    }
+                                    _authRecoveryRequests.emit(AuthRecoveryRequest(event.code, event.message))
+                                    return@collect
+                                }
+                                AuthRecoveryAction.REQUIRE_LOGIN -> {
+                                    clearAuthSession("登录状态已过期，请重新登录")
+                                    return@collect
+                                }
+                                AuthRecoveryAction.NONE -> Unit
+                            }
                             appendMessageToProfile(
                                 managerProfileId,
                                 ChatMessage(
@@ -755,8 +778,13 @@ internal fun shouldRefreshConnectionForPairRequest(previous: ChatConnectionKey?,
 internal fun shouldPersistPairedBackend(config: GatewayConfig, backendId: String?, backendLabel: String?): Boolean =
     config.pairedBackendId != backendId || config.pairedBackendLabel != backendLabel
 
-internal fun shouldMaintainAuthenticatedConnection(accessToken: String): Boolean =
-    accessToken.trim().isNotEmpty()
+internal fun shouldMaintainAuthenticatedConnection(accessToken: String, accessExpiresAt: String): Boolean =
+    accessToken.trim().isNotEmpty() && !shouldRefreshAccessToken(accessExpiresAt)
+
+data class AuthRecoveryRequest(
+    val code: String,
+    val message: String,
+)
 
 internal fun oldestHistoryTimestamp(messages: List<ChatMessage>): String? =
     messages.firstNotNullOfOrNull { it.rawTimestamp?.takeIf { timestamp -> timestamp.isNotBlank() } }

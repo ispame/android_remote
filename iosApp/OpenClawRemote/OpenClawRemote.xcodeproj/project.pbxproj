@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		0A1B2C3D4E5F60718293A4B5 /* ApprovalRequest.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1B2C3D4E5F60718293A4B4 /* ApprovalRequest.swift */; };
+		0B2C3D4E5F60718293A4B6C8 /* AuthRecoveryPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B2C3D4E5F60718293A4B6C7 /* AuthRecoveryPolicy.swift */; };
 		1B5B33DFF38C672BE1947434 /* InputAreaView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2DD481DC8CD7C44EB62100B1 /* InputAreaView.swift */; };
 		3F714AF4F704E166FDC5DC8A /* QRScannerScreenView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A609FE540C0EE0FA6D377651 /* QRScannerScreenView.swift */; };
 		4E1E63A428CD678307FFACF9 /* SettingsScreenView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A602978B2C24D4294DF971F /* SettingsScreenView.swift */; };
@@ -33,6 +35,8 @@
 
 /* Begin PBXFileReference section */
 		0485DBA11E12B632C6AA47D7 /* MainScreenView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainScreenView.swift; sourceTree = "<group>"; };
+		0A1B2C3D4E5F60718293A4B4 /* ApprovalRequest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApprovalRequest.swift; sourceTree = "<group>"; };
+		0B2C3D4E5F60718293A4B6C7 /* AuthRecoveryPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthRecoveryPolicy.swift; sourceTree = "<group>"; };
 		0C60717D2A2A02F7B79A6551 /* MochiColors.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MochiColors.swift; sourceTree = "<group>"; };
 		2DD481DC8CD7C44EB62100B1 /* InputAreaView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InputAreaView.swift; sourceTree = "<group>"; };
 		34BEE752760A7FD40F723C88 /* OpusDecoderBridge.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = OpusDecoderBridge.m; sourceTree = "<group>"; };
@@ -113,6 +117,8 @@
 		893917C58E04C23AC21F869F /* Sources */ = {
 			isa = PBXGroup;
 			children = (
+				0A1B2C3D4E5F60718293A4B4 /* ApprovalRequest.swift */,
+				0B2C3D4E5F60718293A4B6C7 /* AuthRecoveryPolicy.swift */,
 				D8723AA06B30B5639AC2D8FF /* AudioRecorder.swift */,
 				2DD481DC8CD7C44EB62100B1 /* InputAreaView.swift */,
 				0485DBA11E12B632C6AA47D7 /* MainScreenView.swift */,
@@ -264,6 +270,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				0A1B2C3D4E5F60718293A4B5 /* ApprovalRequest.swift in Sources */,
+				0B2C3D4E5F60718293A4B6C8 /* AuthRecoveryPolicy.swift in Sources */,
 				63974BB6FBBEFB347265A4AB /* A9UltraBLEManager.swift in Sources */,
 				689254496DC5E3A6E2E1858A /* ABMateProtocol.swift in Sources */,
 				953448EA4BD143E79D81431D /* AudioRecorder.swift in Sources */,

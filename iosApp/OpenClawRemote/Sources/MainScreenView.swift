@@ -1,4 +1,7 @@
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#endif
 
 struct TopBarView: View {
     let connectionState: ConnectionState
@@ -280,6 +283,10 @@ struct MainScreenView: View {
     @State private var isSelectingMessages = false
     @State private var selectedMessageIds = Set<UUID>()
     @State private var quotedMessageSummary: String?
+    @State private var inspectedApprovalRequest: ApprovalRequest?
+    @State private var handledApprovalMessageIds = Set<UUID>()
+    @State private var fullscreenTable: MarkdownTable?
+    @State private var tableSharePayload: TableSharePayload?
     private let bottomAnchorId = "chat-bottom-anchor"
 
     private var selectedMessages: [ChatMessage] {
@@ -348,7 +355,30 @@ struct MainScreenView: View {
                                             messageSpeechController.speak(message.content)
                                         },
                                         onApprovalCommand: { command in
-                                            sendApprovalCommand(command)
+                                            guard !handledApprovalMessageIds.contains(message.id),
+                                                  sendApprovalCommand(command) else {
+                                                return
+                                            }
+                                            let result = markApprovalHandledIfAllowed(
+                                                handledIds: handledApprovalMessageIds,
+                                                messageId: message.id
+                                            )
+                                            if result.allowed {
+                                                handledApprovalMessageIds = result.handledIds
+                                            }
+                                        },
+                                        isApprovalHandled: handledApprovalMessageIds.contains(message.id),
+                                        onInspectApprovalCode: { request in
+                                            inspectedApprovalRequest = request
+                                        },
+                                        onCopyTable: { table in
+                                            copyTable(table)
+                                        },
+                                        onDownloadTable: { table in
+                                            downloadTable(table)
+                                        },
+                                        onFullscreenTable: { table in
+                                            fullscreenTable = table
                                         }
                                     )
                                 }
@@ -448,9 +478,28 @@ struct MainScreenView: View {
             )
         }
         .background(colors.background)
+        .fullScreenCover(item: $inspectedApprovalRequest) { request in
+            ApprovalCodeInspectorView(request: request, colors: colors)
+        }
+        .fullScreenCover(item: $fullscreenTable) { table in
+            FullscreenMarkdownTableView(
+                table: table,
+                colors: colors,
+                onCopy: {
+                    copyTable(table)
+                },
+                onDownload: {
+                    downloadTable(table)
+                }
+            )
+        }
+        .sheet(item: $tableSharePayload) { payload in
+            ActivityView(activityItems: payload.items)
+        }
         .onChange(of: settingsManager.selectedProfileId) { _ in
             clearMessageSelection()
             quotedMessageSummary = nil
+            handledApprovalMessageIds.removeAll()
             if !settingsManager.selectedProfile.platform.supportsAudio {
                 inputMode = .text
             }
@@ -479,12 +528,33 @@ struct MainScreenView: View {
             .joined(separator: "\n\n")
     }
 
-    private func sendApprovalCommand(_ command: String) {
+    private func copyTable(_ table: MarkdownTable) {
+        UIPasteboard.general.string = table.markdownSource
+    }
+
+    private func downloadTable(_ table: MarkdownTable) {
+        let fileURL = FileManager.default.temporaryDirectory.appendingPathComponent(tableExportFileName())
+        do {
+            try table.csvSource.write(to: fileURL, atomically: true, encoding: .utf8)
+            tableSharePayload = TableSharePayload(items: [fileURL])
+        } catch {
+            UIPasteboard.general.string = table.csvSource
+        }
+    }
+
+    private func tableExportFileName(date: Date = Date()) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        return "openclaw-table-\(formatter.string(from: date)).csv"
+    }
+
+    private func sendApprovalCommand(_ command: String) -> Bool {
         guard wsManager.pairingState == .paired else {
             wsManager.addLocalMessage("请先配对 \(selectedProfile.platform.label)", senderId: "assistant")
-            return
+            return false
         }
         wsManager.sendText(command)
+        return true
     }
 
     private func quoteSummary(for content: String) -> String {
@@ -499,6 +569,173 @@ struct MainScreenView: View {
         return String(compact[..<endIndex]) + "..."
     }
 }
+
+private struct TableSharePayload: Identifiable {
+    let id = UUID()
+    let items: [Any]
+}
+
+private struct ApprovalCodeInspectorView: View {
+    let request: ApprovalRequest
+    let colors: MochiColors
+    @Environment(\.dismiss) private var dismiss
+
+    private var lines: [String] {
+        if request.codeLines.isEmpty, !request.command.isEmpty {
+            return [request.command]
+        }
+        return request.codeLines
+    }
+
+    var body: some View {
+        NavigationView {
+            VStack(spacing: 0) {
+                if lines.isEmpty {
+                    VStack(spacing: 12) {
+                        Image(systemName: "doc.text.magnifyingglass")
+                            .font(.system(size: 32, weight: .semibold))
+                            .foregroundColor(colors.textSecondary)
+                        Text("没有解析到代码")
+                            .font(.system(size: 15, weight: .medium))
+                            .foregroundColor(colors.textSecondary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(colors.background)
+                } else {
+                    ScrollView([.vertical, .horizontal], showsIndicators: true) {
+                        VStack(alignment: .leading, spacing: 0) {
+                            ForEach(Array(lines.enumerated()), id: \.offset) { index, line in
+                                CodeLineRow(
+                                    lineNumber: index + 1,
+                                    line: line,
+                                    colors: colors,
+                                    isAlternating: index.isMultiple(of: 2)
+                                )
+                            }
+                        }
+                        .padding(16)
+                    }
+                    .background(colors.background)
+                }
+            }
+            .navigationTitle("\(max(lines.count, 0)) 行代码")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button("关闭") {
+                        dismiss()
+                    }
+                }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button {
+                        UIPasteboard.general.string = request.command
+                    } label: {
+                        Label("复制全部", systemImage: "doc.on.doc")
+                    }
+                    .disabled(request.command.isEmpty)
+                }
+            }
+        }
+        .navigationViewStyle(.stack)
+    }
+}
+
+private struct CodeLineRow: View {
+    let lineNumber: Int
+    let line: String
+    let colors: MochiColors
+    let isAlternating: Bool
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Text("\(lineNumber)")
+                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                .foregroundColor(colors.textSecondary)
+                .frame(width: 42, alignment: .trailing)
+
+            Text(line.isEmpty ? " " : line)
+                .font(.system(size: 13, weight: .regular, design: .monospaced))
+                .foregroundColor(colors.textPrimary)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: true, vertical: false)
+
+            Spacer(minLength: 16)
+
+            Button {
+                UIPasteboard.general.string = line
+            } label: {
+                Image(systemName: "doc.on.doc")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(colors.textSecondary)
+                    .frame(width: 28, height: 28)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("复制第 \(lineNumber) 行")
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 9)
+        .background(isAlternating ? colors.surface.opacity(0.78) : colors.inputBg.opacity(0.58))
+        .contextMenu {
+            Button {
+                UIPasteboard.general.string = line
+            } label: {
+                Label("复制本行", systemImage: "doc.on.doc")
+            }
+        }
+    }
+}
+
+private struct FullscreenMarkdownTableView: View {
+    let table: MarkdownTable
+    let colors: MochiColors
+    let onCopy: () -> Void
+    let onDownload: () -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationView {
+            ScrollView([.horizontal, .vertical], showsIndicators: true) {
+                MarkdownTableGrid(
+                    table: table,
+                    colors: colors,
+                    textColor: colors.textPrimary
+                )
+                .padding(16)
+            }
+            .background(colors.background)
+            .navigationTitle("表格")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button("关闭") {
+                        dismiss()
+                    }
+                }
+                ToolbarItemGroup(placement: .navigationBarTrailing) {
+                    Button(action: onCopy) {
+                        Label("复制", systemImage: "doc.on.doc")
+                    }
+                    Button(action: onDownload) {
+                        Label("下载", systemImage: "square.and.arrow.down")
+                    }
+                }
+            }
+        }
+        .navigationViewStyle(.stack)
+    }
+}
+
+#if canImport(UIKit)
+private struct ActivityView: UIViewControllerRepresentable {
+    let activityItems: [Any]
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: activityItems, applicationActivities: nil)
+    }
+
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
+}
+#endif
 
 private struct ChatBottomPositionPreferenceKey: PreferenceKey {
     static var defaultValue: CGFloat = 0

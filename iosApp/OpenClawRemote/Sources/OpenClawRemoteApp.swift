@@ -119,8 +119,14 @@ struct OpenClawRemoteApp: App {
             .onAppear {
                 let isSystemDark = UITraitCollection.current.userInterfaceStyle == .dark
                 isDark = isSystemDark
-                applySelectedProfile()
                 scheduleTokenRefresh(for: settingsManager.configPublished)
+                if !settingsManager.configPublished.accessToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Task {
+                        if await refreshAuthSessionIfNeeded(force: false) {
+                            applySelectedProfile()
+                        }
+                    }
+                }
                 headsetController.start()
             }
         }
@@ -131,6 +137,15 @@ struct OpenClawRemoteApp: App {
             authNotice = "请先登录账号，再扫码配对"
             return
         }
+        Task {
+            guard await refreshAuthSessionIfNeeded(force: false) else { return }
+            await MainActor.run {
+                processQRParsed(scannedText)
+            }
+        }
+    }
+
+    private func processQRParsed(_ scannedText: String) {
         let result = parseQRPack(scannedText)
         switch result {
         case .success(let gatewayUrl, let backendId, let token, let platform, let label):
@@ -176,8 +191,19 @@ struct OpenClawRemoteApp: App {
                 .flatMap { $0.isEmpty ? nil : "：\($0)" } ?? ""
             clearAuthSession(message: "账号已在另一台设备登录\(suffix)")
         case .error(let code, _):
-            if isTerminalAuthError(code) {
+            switch authRecoveryAction(forWebSocketErrorCode: code) {
+            case .refreshSession:
+                Task {
+                    if await refreshAuthSessionIfNeeded(force: true) {
+                        await MainActor.run {
+                            applySelectedProfile()
+                        }
+                    }
+                }
+            case .requireLogin:
                 clearAuthSession(message: "登录状态已过期，请重新登录")
+            case .none:
+                break
             }
         case .newMessage(_, _):
             break
@@ -247,35 +273,61 @@ struct OpenClawRemoteApp: App {
         tokenRefreshTask = Task {
             try? await Task.sleep(nanoseconds: delay)
             guard !Task.isCancelled else { return }
-            do {
-                let session = try await GatewayAuthClient.refresh(
-                    gatewayUrl: config.gatewayUrl,
-                    refreshToken: config.refreshToken
-                )
-                await MainActor.run {
-                    let current = settingsManager.configPublished
-                    settingsManager.updateConfig(
-                        GatewayConfig(
-                            gatewayUrl: current.gatewayUrl,
-                            accountId: session.accountId,
-                            accessToken: session.accessToken,
-                            refreshToken: session.refreshToken,
-                            accessExpiresAt: session.accessExpiresAt,
-                            refreshExpiresAt: session.refreshExpiresAt,
-                            deviceLabel: current.deviceLabel,
-                            token: current.token,
-                            pairedBackendId: current.pairedBackendId,
-                            pairedBackendLabel: current.pairedBackendLabel,
-                            asrMode: current.asrMode,
-                            asrProfileId: current.asrProfileId
-                        )
+            _ = await refreshAuthSessionIfNeeded(force: true)
+        }
+    }
+
+    private func refreshAuthSessionIfNeeded(force: Bool) async -> Bool {
+        let config = settingsManager.configPublished
+        guard !config.accessToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            await MainActor.run {
+                clearAuthSession(message: "请先登录账号")
+            }
+            return false
+        }
+        guard !config.refreshToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            await MainActor.run {
+                clearAuthSession(message: "登录状态已过期，请重新登录")
+            }
+            return false
+        }
+        guard force || shouldRefreshAccessToken(accessExpiresAt: config.accessExpiresAt) else {
+            return true
+        }
+
+        do {
+            let session = try await GatewayAuthClient.refresh(
+                gatewayUrl: config.gatewayUrl,
+                refreshToken: config.refreshToken
+            )
+            await MainActor.run {
+                let current = settingsManager.configPublished
+                settingsManager.updateConfig(
+                    GatewayConfig(
+                        gatewayUrl: current.gatewayUrl,
+                        accountId: session.accountId,
+                        accessToken: session.accessToken,
+                        refreshToken: session.refreshToken,
+                        accessExpiresAt: session.accessExpiresAt,
+                        refreshExpiresAt: session.refreshExpiresAt,
+                        deviceLabel: current.deviceLabel,
+                        token: current.token,
+                        pairedBackendId: current.pairedBackendId,
+                        pairedBackendLabel: current.pairedBackendLabel,
+                        asrMode: current.asrMode,
+                        asrProfileId: current.asrProfileId
                     )
-                }
-            } catch {
+                )
+                authNotice = nil
+            }
+            return true
+        } catch {
+            if refreshFailureRequiresLogin(error.localizedDescription) {
                 await MainActor.run {
-                    clearAuthSession(message: "会话已过期，请重新登录")
+                    clearAuthSession(message: "登录状态已过期，请重新登录")
                 }
             }
+            return false
         }
     }
 
@@ -287,34 +339,6 @@ struct OpenClawRemoteApp: App {
             accessToken: settingsManager.config.accessToken
         )
     }
-}
-
-private func isTerminalAuthError(_ code: String) -> Bool {
-    let normalized = code.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-    return normalized == "INVALID_ACCESS_TOKEN" ||
-        normalized == "EXPIRED_ACCESS_TOKEN" ||
-        normalized == "ACCESS_TOKEN_EXPIRED" ||
-        normalized == "ACCESS_TOKEN_REVOKED"
-}
-
-private func tokenRefreshDelayNanoseconds(accessExpiresAt: String) -> UInt64 {
-    let fallbackSeconds: TimeInterval = 5 * 60
-    guard let expiresAt = parseIsoDate(accessExpiresAt) else {
-        return UInt64(fallbackSeconds * 1_000_000_000)
-    }
-    let refreshAt = expiresAt.addingTimeInterval(-2 * 60)
-    let seconds = max(refreshAt.timeIntervalSinceNow, 10)
-    return UInt64(seconds * 1_000_000_000)
-}
-
-private func parseIsoDate(_ value: String) -> Date? {
-    guard !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
-    let withFractional = ISO8601DateFormatter()
-    withFractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-    if let date = withFractional.date(from: value) {
-        return date
-    }
-    return ISO8601DateFormatter().date(from: value)
 }
 
 final class BosonRemoteControlAppDelegate: UIResponder, UIApplicationDelegate {

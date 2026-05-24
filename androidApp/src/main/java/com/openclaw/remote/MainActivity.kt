@@ -25,6 +25,9 @@ import com.openclaw.remote.headset.TtsEngine
 import com.openclaw.remote.headset.TtsEngineFactory
 import com.openclaw.remote.headset.supportsLedLightControl
 import com.openclaw.remote.headset.supportsStandbyControl
+import com.openclaw.remote.network.accessTokenRefreshDelayMillis
+import com.openclaw.remote.network.refreshFailureRequiresLogin
+import com.openclaw.remote.network.shouldRefreshAccessToken
 import com.openclaw.remote.ui.screen.AuthScreen
 import com.openclaw.remote.ui.screen.MainScreen
 import com.openclaw.remote.ui.screen.QRParseResult
@@ -37,9 +40,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
-import java.text.SimpleDateFormat
-import java.util.Locale
-import java.util.TimeZone
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 class MainActivity : ComponentActivity() {
 
@@ -52,6 +54,7 @@ class MainActivity : ComponentActivity() {
     private var systemFallbackTtsEngine: TtsEngine? = null
     private var currentConfig: GatewayConfig = GatewayConfig()
     private val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main)
+    private val authRefreshMutex = Mutex()
 
     private val requestPermissions = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -144,35 +147,22 @@ class MainActivity : ComponentActivity() {
 
                 LaunchedEffect(config.gatewayUrl, config.refreshToken, config.accessExpiresAt) {
                     if (config.accessToken.isBlank() || config.refreshToken.isBlank()) return@LaunchedEffect
-                    val delayMillis = refreshDelayMillis(config.accessExpiresAt)
+                    val delayMillis = accessTokenRefreshDelayMillis(config.accessExpiresAt)
                     delay(delayMillis)
-                    runCatching {
-                        authClient.refresh(
-                            gatewayUrl = config.gatewayUrl,
-                            refreshToken = config.refreshToken,
-                        )
-                    }.onSuccess { session ->
-                        settingsManager.updateConfig(
-                            config.copy(
-                                accountId = session.accountId,
-                                accessToken = session.accessToken,
-                                refreshToken = session.refreshToken,
-                                accessExpiresAt = session.accessExpiresAt,
-                                refreshExpiresAt = session.refreshExpiresAt,
-                            )
-                        )
-                    }.onFailure {
-                        authGateNotice = "会话已过期，请重新登录"
-                        viewModel.disconnect()
-                        settingsManager.updateConfig(
-                            config.copy(
-                                accountId = "",
-                                accessToken = "",
-                                refreshToken = "",
-                                accessExpiresAt = "",
-                                refreshExpiresAt = "",
-                            )
-                        )
+                    val outcome = refreshAuthSessionIfNeeded(authClient, force = false)
+                    if (outcome.loginRequired) {
+                        authGateNotice = outcome.message
+                    }
+                }
+
+                LaunchedEffect(Unit) {
+                    viewModel.authRecoveryRequests.collect {
+                        val outcome = refreshAuthSessionIfNeeded(authClient, force = true)
+                        when {
+                            outcome.canUseSession -> viewModel.connect()
+                            outcome.loginRequired -> authGateNotice = outcome.message
+                            outcome.message != null -> authGateNotice = outcome.message
+                        }
                     }
                 }
 
@@ -388,6 +378,17 @@ class MainActivity : ComponentActivity() {
                         viewModel.addLocalMessage("请先登录账号，再扫码配对")
                         return@launch
                     }
+                    GatewayAuthClient().also { authClient ->
+                        try {
+                            val outcome = refreshAuthSessionIfNeeded(authClient, force = false)
+                            if (!outcome.canUseSession) {
+                                viewModel.addLocalMessage(outcome.message ?: "登录状态暂不可用，请稍后重试")
+                                return@launch
+                            }
+                        } finally {
+                            authClient.close()
+                        }
+                    }
                     val error = settingsManager.profileAcceptError(result.gatewayUrl, result.backendId)
                     if (error != null) {
                         viewModel.addLocalMessage(error)
@@ -414,6 +415,62 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private suspend fun refreshAuthSessionIfNeeded(
+        authClient: GatewayAuthClient,
+        force: Boolean,
+    ): AuthRefreshOutcome = authRefreshMutex.withLock {
+        val config = settingsManager.configFlow.first()
+        if (config.accessToken.isBlank()) {
+            return@withLock AuthRefreshOutcome(canUseSession = false, loginRequired = true, message = "请先登录账号")
+        }
+        if (config.refreshToken.isBlank()) {
+            clearStoredAuthSession(config)
+            return@withLock AuthRefreshOutcome(canUseSession = false, loginRequired = true, message = "登录状态已过期，请重新登录")
+        }
+        if (!force && !shouldRefreshAccessToken(config.accessExpiresAt)) {
+            return@withLock AuthRefreshOutcome(canUseSession = true)
+        }
+
+        val result = runCatching {
+            authClient.refresh(
+                gatewayUrl = config.gatewayUrl,
+                refreshToken = config.refreshToken,
+            )
+        }
+        result.onSuccess { session ->
+            settingsManager.updateConfig(
+                config.copy(
+                    accountId = session.accountId,
+                    accessToken = session.accessToken,
+                    refreshToken = session.refreshToken,
+                    accessExpiresAt = session.accessExpiresAt,
+                    refreshExpiresAt = session.refreshExpiresAt,
+                )
+            )
+            return@withLock AuthRefreshOutcome(canUseSession = true)
+        }
+
+        val message = result.exceptionOrNull()?.message.orEmpty()
+        if (refreshFailureRequiresLogin(message)) {
+            clearStoredAuthSession(config)
+            return@withLock AuthRefreshOutcome(canUseSession = false, loginRequired = true, message = "登录状态已过期，请重新登录")
+        }
+        AuthRefreshOutcome(canUseSession = false, message = "网络异常，正在等待登录状态恢复")
+    }
+
+    private suspend fun clearStoredAuthSession(config: GatewayConfig) {
+        viewModel.disconnect()
+        settingsManager.updateConfig(
+            config.copy(
+                accountId = "",
+                accessToken = "",
+                refreshToken = "",
+                accessExpiresAt = "",
+                refreshExpiresAt = "",
+            )
+        )
+    }
+
     private fun checkPermissions() {
         val missing = requiredRuntimePermissions().filter { permission ->
             ContextCompat.checkSelfPermission(this, permission) != PackageManager.PERMISSION_GRANTED
@@ -434,20 +491,8 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private fun refreshDelayMillis(accessExpiresAt: String): Long {
-    val expiresAtMillis = parseIsoTimestampMillis(accessExpiresAt) ?: return 5 * 60 * 1000L
-    val refreshAtMillis = expiresAtMillis - 2 * 60 * 1000L
-    return (refreshAtMillis - System.currentTimeMillis()).coerceAtLeast(10 * 1000L)
-}
-
-private fun parseIsoTimestampMillis(value: String): Long? {
-    if (value.isBlank()) return null
-    val patterns = listOf("yyyy-MM-dd'T'HH:mm:ss.SSSX", "yyyy-MM-dd'T'HH:mm:ssX")
-    return patterns.firstNotNullOfOrNull { pattern ->
-        runCatching {
-            SimpleDateFormat(pattern, Locale.US).apply {
-                timeZone = TimeZone.getTimeZone("UTC")
-            }.parse(value)?.time
-        }.getOrNull()
-    }
-}
+private data class AuthRefreshOutcome(
+    val canUseSession: Boolean,
+    val loginRequired: Boolean = false,
+    val message: String? = null,
+)

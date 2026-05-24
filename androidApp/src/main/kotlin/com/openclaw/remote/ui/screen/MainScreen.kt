@@ -1,5 +1,7 @@
 package com.openclaw.remote.ui.screen
 
+import android.content.Context
+import android.content.Intent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.*
 import androidx.compose.animation.fadeIn
@@ -49,6 +51,7 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -66,9 +69,15 @@ import com.openclaw.remote.data.ChatMessage
 import com.openclaw.remote.domain.ConnectionState
 import com.openclaw.remote.domain.PairingState
 import com.openclaw.remote.headset.A9UltraStandbyMode
+import com.openclaw.remote.rich.RichApprovalRequest
+import com.openclaw.remote.rich.RichMarkdownTable
+import com.openclaw.remote.rich.markApprovalHandledIfAllowed
 import com.openclaw.remote.ui.theme.MochiColors
 import com.openclaw.remote.ui.theme.MochiTheme
 import com.openclaw.remote.viewmodel.ChatViewModel
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 @Composable
 fun MainScreen(
@@ -102,12 +111,16 @@ fun MainScreen(
     onSelectProfile: (String) -> Unit = {},
 ) {
     val colors = MochiTheme.colors
+    val context = LocalContext.current
     val clipboardManager = LocalClipboardManager.current
     val listState = rememberLazyListState()
     var isNearBottom by remember { mutableStateOf(true) }
     var isSelectingMessages by remember { mutableStateOf(false) }
     var selectedMessageKeys by remember { mutableStateOf<Set<String>>(emptySet()) }
     var quotedMessageSummary by remember { mutableStateOf<String?>(null) }
+    var inspectedApprovalRequest by remember { mutableStateOf<RichApprovalRequest?>(null) }
+    var handledApprovalMessageKeys by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var fullscreenTable by remember { mutableStateOf<RichMarkdownTable?>(null) }
     val configuration = LocalConfiguration.current
     val density = LocalDensity.current
     val screenHeightPx = with(density) { configuration.screenHeightDp.dp.toPx() }
@@ -154,6 +167,10 @@ fun MainScreen(
             touchLocationY = screenHeightPx
             isMicGestureActive = false
         }
+    }
+
+    LaunchedEffect(selectedProfileId) {
+        handledApprovalMessageKeys = emptySet()
     }
 
     Box(
@@ -254,6 +271,33 @@ fun MainScreen(
                             onSpeak = {
                                 onSpeakMessage(msg.content)
                             },
+                            onApprovalCommand = { command ->
+                                if (pairingState != PairingState.PAIRED) {
+                                    viewModel.addLocalMessage("请先扫码配对后端 Agent")
+                                } else {
+                                    val result = markApprovalHandledIfAllowed(
+                                        handledKeys = handledApprovalMessageKeys,
+                                        messageKey = messageKey,
+                                    )
+                                    if (result.allowed) {
+                                        handledApprovalMessageKeys = result.handledKeys
+                                        viewModel.sendText(command)
+                                    }
+                                }
+                            },
+                            isApprovalHandled = handledApprovalMessageKeys.contains(messageKey),
+                            onInspectApprovalCode = { request ->
+                                inspectedApprovalRequest = request
+                            },
+                            onCopyTable = { table ->
+                                clipboardManager.setText(AnnotatedString(table.toMarkdown()))
+                            },
+                            onDownloadTable = { table ->
+                                shareTableCsv(context, table)
+                            },
+                            onFullscreenTable = { table ->
+                                fullscreenTable = table
+                            },
                         )
                     }
                 }
@@ -344,6 +388,32 @@ fun MainScreen(
                 colors = colors,
             )
         }
+
+        inspectedApprovalRequest?.let { request ->
+            ApprovalCodeInspectorDialog(
+                request = request,
+                onDismiss = { inspectedApprovalRequest = null },
+                onCopyLine = { line ->
+                    clipboardManager.setText(AnnotatedString(line))
+                },
+                onCopyAll = { command ->
+                    clipboardManager.setText(AnnotatedString(command))
+                },
+            )
+        }
+
+        fullscreenTable?.let { table ->
+            MarkdownTableFullscreenDialog(
+                table = table,
+                onDismiss = { fullscreenTable = null },
+                onCopy = {
+                    clipboardManager.setText(AnnotatedString(table.toMarkdown()))
+                },
+                onDownload = {
+                    shareTableCsv(context, table)
+                },
+            )
+        }
     }
 }
 
@@ -358,6 +428,22 @@ private fun toggleSelectedMessage(selected: Set<String>, key: String): Set<Strin
 private fun quoteSummary(content: String): String {
     val compact = content.split(Regex("\\s+")).filter { it.isNotEmpty() }.joinToString(" ")
     return if (compact.length <= 300) compact else compact.take(300) + "..."
+}
+
+private fun shareTableCsv(context: Context, table: RichMarkdownTable) {
+    val fileName = tableExportFileName()
+    val intent = Intent(Intent.ACTION_SEND).apply {
+        type = "text/csv"
+        putExtra(Intent.EXTRA_SUBJECT, fileName)
+        putExtra(Intent.EXTRA_TITLE, fileName)
+        putExtra(Intent.EXTRA_TEXT, table.toCsv())
+    }
+    context.startActivity(Intent.createChooser(intent, "下载表格 CSV"))
+}
+
+private fun tableExportFileName(date: Date = Date()): String {
+    val formatter = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US)
+    return "openclaw-table-${formatter.format(date)}.csv"
 }
 
 @Composable

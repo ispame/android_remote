@@ -122,8 +122,13 @@ class ChatViewModelConfigTest {
 
     @Test
     fun authenticatedConnectionRequiresNonBlankAccessToken() {
-        assertFalse(shouldMaintainAuthenticatedConnection(" "))
-        assertTrue(shouldMaintainAuthenticatedConnection("access-token"))
+        assertFalse(shouldMaintainAuthenticatedConnection(" ", "2099-01-01T00:00:00.000Z"))
+        assertTrue(shouldMaintainAuthenticatedConnection("access-token", "2099-01-01T00:00:00.000Z"))
+    }
+
+    @Test
+    fun authenticatedConnectionWaitsForRefreshWhenAccessTokenIsExpired() {
+        assertFalse(shouldMaintainAuthenticatedConnection("access-token", "2000-01-01T00:00:00.000Z"))
     }
 
     @Test

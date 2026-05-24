@@ -592,12 +592,19 @@ class WebSocketManager(
                 "error" -> {
                     val code = obj["code"]?.jsonPrimitive?.content ?: "unknown"
                     val msg = obj["message"]?.jsonPrimitive?.content ?: "未知错误"
-                    if (isTerminalAuthError(code)) {
+                    val authRecoveryAction = authRecoveryActionForWsError(code)
+                    if (authRecoveryAction != AuthRecoveryAction.NONE) {
+                        val session = webSocketSession
                         intentionalDisconnect = true
                         cancelReconnect()
                         reconnectAttempts = 0
                         webSocketSession = null
                         _connectionState.value = ConnectionState.DISCONNECTED
+                        offerEvent(WsMessageEvent.Error(code, msg))
+                        scope.launch {
+                            session?.close()
+                        }
+                        return
                     }
                     val wasPairing = _pairingState.value == PairingState.PENDING
                     val recovery = recoverPairingAfterRouterError(
@@ -855,11 +862,7 @@ internal fun isBackendUnavailableRouterError(code: String, message: String): Boo
 }
 
 internal fun isTerminalAuthError(code: String): Boolean {
-    val normalizedCode = code.trim().uppercase()
-    return normalizedCode == "INVALID_ACCESS_TOKEN" ||
-        normalizedCode == "EXPIRED_ACCESS_TOKEN" ||
-        normalizedCode == "ACCESS_TOKEN_EXPIRED" ||
-        normalizedCode == "ACCESS_TOKEN_REVOKED"
+    return authRecoveryActionForWsError(code) != AuthRecoveryAction.NONE
 }
 
 private fun hasRestorablePairing(registeredBackendId: String?, configuredBackendId: String?): Boolean {

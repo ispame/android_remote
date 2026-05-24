@@ -1,4 +1,7 @@
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#endif
 
 struct MessageBubbleView: View {
     let message: ChatMessage
@@ -11,13 +14,22 @@ struct MessageBubbleView: View {
     let onSelect: () -> Void
     let onSpeak: () -> Void
     let onApprovalCommand: (String) -> Void
+    let isApprovalHandled: Bool
+    let onInspectApprovalCode: (ApprovalRequest) -> Void
+    let onCopyTable: (MarkdownTable) -> Void
+    let onDownloadTable: (MarkdownTable) -> Void
+    let onFullscreenTable: (MarkdownTable) -> Void
 
     private var usesWideLayout: Bool {
-        !message.isUser && message.content.prefersWideMessageLayout
+        !message.isUser && (approvalRequest != nil || message.content.prefersWideMessageLayout)
     }
 
     private var approvalRequest: ApprovalRequest? {
         message.isUser ? nil : ApprovalRequest.detect(in: message.content)
+    }
+
+    private var maxBubbleWidth: CGFloat {
+        messageBubbleMaxWidth(usesWideLayout: usesWideLayout)
     }
 
     var body: some View {
@@ -34,39 +46,44 @@ struct MessageBubbleView: View {
             }
 
             VStack(alignment: message.isUser ? .trailing : .leading, spacing: 3) {
-                CollapsibleMessageContent(
-                    text: message.content,
-                    textColor: message.isUser ? colors.userBubbleFg : colors.assistantFg,
-                    colors: colors
-                )
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    .background(
-                        RoundedCornerShape(
-                            topLeft: message.isUser ? 16 : 4,
-                            topRight: message.isUser ? 4 : 16,
-                            bottomLeft: 16,
-                            bottomRight: 16
-                        )
-                        .fill(message.isUser ? colors.userBubble : colors.assistantBg)
-                    )
-                    .frame(
-                        maxWidth: UIScreen.main.bounds.width * (usesWideLayout ? 0.94 : 0.82),
-                        alignment: message.isUser ? .trailing : .leading
-                    )
-
-                Text(message.timestamp)
-                    .font(.system(size: 11, weight: .regular))
-                    .foregroundColor(colors.textSecondary)
-
                 if let approvalRequest {
                     ApprovalActionsView(
                         request: approvalRequest,
                         colors: colors,
-                        onCommand: onApprovalCommand
+                        isHandled: isApprovalHandled,
+                        onCommand: onApprovalCommand,
+                        onInspectCode: onInspectApprovalCode
                     )
-                    .frame(maxWidth: UIScreen.main.bounds.width * 0.82, alignment: .leading)
+                    .frame(maxWidth: messageBubbleMaxWidth(usesWideLayout: true), alignment: .leading)
+                } else {
+                    CollapsibleMessageContent(
+                        text: message.content,
+                        textColor: message.isUser ? colors.userBubbleFg : colors.assistantFg,
+                        colors: colors,
+                        onCopyTable: onCopyTable,
+                        onDownloadTable: onDownloadTable,
+                        onFullscreenTable: onFullscreenTable
+                    )
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                        .background(
+                            RoundedCornerShape(
+                                topLeft: message.isUser ? 16 : 4,
+                                topRight: message.isUser ? 4 : 16,
+                                bottomLeft: 16,
+                                bottomRight: 16
+                            )
+                            .fill(message.isUser ? colors.userBubble : colors.assistantBg)
+                        )
+                        .frame(
+                            maxWidth: maxBubbleWidth,
+                            alignment: message.isUser ? .trailing : .leading
+                        )
                 }
+
+                Text(message.timestamp)
+                    .font(.system(size: 11, weight: .regular))
+                    .foregroundColor(colors.textSecondary)
             }
 
             if !message.isUser {
@@ -93,70 +110,93 @@ struct MessageBubbleView: View {
     }
 }
 
-struct ApprovalRequest: Equatable {
-    let title: String
-
-    static func detect(in content: String) -> ApprovalRequest? {
-        let lowercased = content.lowercased()
-        guard lowercased.contains("dangerous command requires approval"),
-              lowercased.contains("/approve"),
-              lowercased.contains("/deny") else {
-            return nil
-        }
-        return ApprovalRequest(title: "危险命令审批")
-    }
+private func messageBubbleMaxWidth(usesWideLayout: Bool) -> CGFloat {
+    #if os(iOS)
+    UIScreen.main.bounds.width * (usesWideLayout ? 0.94 : 0.82)
+    #else
+    usesWideLayout ? 620 : 320
+    #endif
 }
 
 private struct ApprovalActionsView: View {
     let request: ApprovalRequest
     let colors: MochiColors
+    let isHandled: Bool
     let onCommand: (String) -> Void
+    let onInspectCode: (ApprovalRequest) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(request.title)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundColor(colors.textSecondary)
-
+        VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 8) {
-                ApprovalCommandButton(
-                    title: "批准",
-                    systemImage: "checkmark",
-                    foreground: colors.onPrimary,
-                    background: colors.primary,
-                    command: "/approve",
-                    onCommand: onCommand
-                )
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 15, weight: .semibold))
+                Text(request.title)
+                    .font(.system(size: 15, weight: .semibold))
+                Spacer(minLength: 0)
+            }
+            .foregroundColor(Color(red: 1.0, green: 0.76, blue: 0.29))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(Color(red: 0.37, green: 0.18, blue: 0.04))
 
-                ApprovalCommandButton(
-                    title: "本会话",
-                    systemImage: "checkmark.shield",
-                    foreground: colors.textPrimary,
-                    background: colors.inputBg,
-                    command: "/approve session",
-                    onCommand: onCommand
-                )
+            VStack(alignment: .leading, spacing: 12) {
+                if !request.command.isEmpty {
+                    Button {
+                        onInspectCode(request)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(request.commandPreview)
+                                .font(.system(size: 13, weight: .regular, design: .monospaced))
+                                .foregroundColor(Color.white.opacity(0.88))
+                                .lineLimit(4)
+                                .multilineTextAlignment(.leading)
+                                .frame(maxWidth: .infinity, alignment: .leading)
 
-                ApprovalCommandButton(
-                    title: "永久",
-                    systemImage: "checkmark.seal",
-                    foreground: colors.textPrimary,
-                    background: colors.inputBg,
-                    command: "/approve always",
-                    onCommand: onCommand
-                )
+                            Divider().background(Color.white.opacity(0.18))
 
-                ApprovalCommandButton(
-                    title: "拒绝",
-                    systemImage: "xmark",
-                    foreground: colors.recordingRed,
-                    background: colors.recordingRed.opacity(0.12),
-                    command: "/deny",
+                            HStack {
+                                Text("\(request.lineCount) 行代码")
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundColor(colors.textSecondary)
+                                Spacer()
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .foregroundColor(colors.textSecondary)
+                            }
+                        }
+                        .padding(10)
+                        .background(Color.black.opacity(0.55))
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(Color.white.opacity(0.14), lineWidth: 1)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                if !request.reason.isEmpty {
+                    Text("Reason: \(request.reason)")
+                        .font(.system(size: 14, weight: .regular))
+                        .foregroundColor(colors.textPrimary)
+                        .lineSpacing(4)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                if isHandled {
+                    Text("已处理，本条审批不会再次发送")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(colors.textSecondary)
+                }
+
+                ApprovalButtonGrid(
+                    colors: colors,
+                    isDisabled: isHandled,
                     onCommand: onCommand
                 )
             }
+            .padding(12)
         }
-        .padding(10)
         .background(colors.surface)
         .overlay(
             RoundedRectangle(cornerRadius: 8)
@@ -166,29 +206,93 @@ private struct ApprovalActionsView: View {
     }
 }
 
+private struct ApprovalButtonGrid: View {
+    let colors: MochiColors
+    let isDisabled: Bool
+    let onCommand: (String) -> Void
+
+    private let columns = [
+        GridItem(.flexible(), spacing: 8),
+        GridItem(.flexible(), spacing: 8)
+    ]
+
+    var body: some View {
+        LazyVGrid(columns: columns, spacing: 8) {
+            ApprovalCommandButton(
+                title: "Allow Once",
+                systemImage: "checkmark",
+                foreground: colors.onPrimary,
+                background: colors.primary,
+                command: "/approve",
+                isDisabled: isDisabled,
+                onCommand: onCommand
+            )
+
+            ApprovalCommandButton(
+                title: "Session",
+                systemImage: "checkmark.shield",
+                foreground: colors.textPrimary,
+                background: colors.inputBg,
+                command: "/approve session",
+                isDisabled: isDisabled,
+                onCommand: onCommand
+            )
+
+            ApprovalCommandButton(
+                title: "Always",
+                systemImage: "checkmark.seal",
+                foreground: colors.textPrimary,
+                background: colors.inputBg,
+                command: "/approve always",
+                isDisabled: isDisabled,
+                onCommand: onCommand
+            )
+
+            ApprovalCommandButton(
+                title: "Deny",
+                systemImage: "xmark",
+                foreground: colors.recordingRed,
+                background: colors.recordingRed.opacity(0.12),
+                command: "/deny",
+                isDisabled: isDisabled,
+                onCommand: onCommand
+            )
+        }
+    }
+}
+
 private struct ApprovalCommandButton: View {
     let title: String
     let systemImage: String
     let foreground: Color
     let background: Color
     let command: String
+    let isDisabled: Bool
     let onCommand: (String) -> Void
 
     var body: some View {
         Button {
+            guard !isDisabled else { return }
             onCommand(command)
         } label: {
-            Label(title, systemImage: systemImage)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundColor(foreground)
-                .lineLimit(1)
-                .minimumScaleFactor(0.75)
-                .padding(.horizontal, 9)
-                .padding(.vertical, 7)
-                .background(background)
-                .cornerRadius(8)
+            HStack(spacing: 7) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 13, weight: .bold))
+                Text(title)
+                    .font(.system(size: 14, weight: .semibold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+            }
+            .foregroundColor(foreground)
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 10)
+            .background(background)
+            .cornerRadius(8)
         }
         .buttonStyle(.plain)
+        .disabled(isDisabled)
+        .opacity(isDisabled ? 0.45 : 1)
     }
 }
 
@@ -205,6 +309,9 @@ struct CollapsibleMessageContent: View {
     let text: String
     let textColor: Color
     let colors: MochiColors
+    let onCopyTable: (MarkdownTable) -> Void
+    let onDownloadTable: (MarkdownTable) -> Void
+    let onFullscreenTable: (MarkdownTable) -> Void
 
     @State private var isExpanded = false
 
@@ -249,7 +356,10 @@ struct CollapsibleMessageContent: View {
             MarkdownMessageBody(
                 text: displayText,
                 textColor: textColor,
-                colors: colors
+                colors: colors,
+                onCopyTable: onCopyTable,
+                onDownloadTable: onDownloadTable,
+                onFullscreenTable: onFullscreenTable
             )
 
             if shouldShowToggle {
@@ -359,7 +469,8 @@ struct MessageContentAnalysis {
     let preview: String
 }
 
-private let collapsedLineLimit = 8
+private let collapsedLineLimit = 10
+private let markdownTableFoldRowLimit = 10
 private let collapsedCharacterLimit = 650
 private let denseContinuousCharacterLimit = 900
 
@@ -369,12 +480,23 @@ func analyzeMessageContent(_ text: String) -> MessageContentAnalysis {
         return MessageContentAnalysis(kind: .denseEncoded, preview: "")
     }
 
+    if containsMarkdownTable(text) {
+        return MessageContentAnalysis(kind: .normal, preview: text)
+    }
+
     let lines = text.components(separatedBy: .newlines)
     if lines.count > collapsedLineLimit || text.count > collapsedCharacterLimit {
         return MessageContentAnalysis(kind: .longText, preview: collapsedPreview(for: text))
     }
 
     return MessageContentAnalysis(kind: .normal, preview: text)
+}
+
+func containsMarkdownTable(_ text: String) -> Bool {
+    parseBlocks(text).contains { block in
+        if case .table = block { return true }
+        return false
+    }
 }
 
 func collapsedPreview(for text: String) -> String {
@@ -409,6 +531,9 @@ struct MarkdownMessageBody: View {
     let text: String
     let textColor: Color
     let colors: MochiColors
+    let onCopyTable: (MarkdownTable) -> Void
+    let onDownloadTable: (MarkdownTable) -> Void
+    let onFullscreenTable: (MarkdownTable) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -419,7 +544,14 @@ struct MarkdownMessageBody: View {
                         MarkdownText(text: value, textColor: textColor, font: .system(size: 15))
                     }
                 case .table(let table):
-                    MarkdownTableView(table: table, colors: colors, textColor: textColor)
+                    MarkdownTableView(
+                        table: table,
+                        colors: colors,
+                        textColor: textColor,
+                        onCopy: onCopyTable,
+                        onDownload: onDownloadTable,
+                        onFullscreen: onFullscreenTable
+                    )
                 }
             }
         }
@@ -448,30 +580,161 @@ struct MarkdownText: View {
     }
 }
 
-struct MarkdownTable {
+struct MarkdownTable: Identifiable, Equatable {
     let headers: [String]
     let rows: [[String]]
+
+    var id: String {
+        markdownSource
+    }
+
+    var markdownSource: String {
+        let allRows = [headers] + rows
+        return allRows.enumerated().map { index, row in
+            let cells = normalizedCells(row, width: headers.count)
+                .map { $0.replacingOccurrences(of: "\n", with: " ") }
+            let line = "| " + cells.joined(separator: " | ") + " |"
+            if index == 0 {
+                let separator = "| " + Array(repeating: "---", count: headers.count).joined(separator: " | ") + " |"
+                return line + "\n" + separator
+            }
+            return line
+        }
+        .joined(separator: "\n")
+    }
+
+    var csvSource: String {
+        ([headers] + rows)
+            .map { row in
+                normalizedCells(row, width: headers.count)
+                    .map(csvEscapedCell)
+                    .joined(separator: ",")
+            }
+            .joined(separator: "\n")
+    }
+
+    var shouldFoldRows: Bool {
+        rows.count > markdownTableFoldRowLimit
+    }
+
+    var hiddenRowCount: Int {
+        max(0, rows.count - markdownTableFoldRowLimit)
+    }
+
+    func visibleRows(isExpanded: Bool) -> [[String]] {
+        guard shouldFoldRows, !isExpanded else { return rows }
+        return Array(rows.prefix(markdownTableFoldRowLimit))
+    }
+
+    private func normalizedCells(_ cells: [String], width: Int) -> [String] {
+        if cells.count == width { return cells }
+        if cells.count > width { return Array(cells.prefix(width)) }
+        return cells + Array(repeating: "", count: width - cells.count)
+    }
+
+    private func csvEscapedCell(_ value: String) -> String {
+        let normalized = value.replacingOccurrences(of: "\r\n", with: "\n")
+        let needsEscaping = normalized.contains(",") || normalized.contains("\"") || normalized.contains("\n")
+        guard needsEscaping else { return normalized }
+        return "\"" + normalized.replacingOccurrences(of: "\"", with: "\"\"") + "\""
+    }
 }
 
 struct MarkdownTableView: View {
     let table: MarkdownTable
     let colors: MochiColors
     let textColor: Color
+    let onCopy: (MarkdownTable) -> Void
+    let onDownload: (MarkdownTable) -> Void
+    let onFullscreen: (MarkdownTable) -> Void
+    @State private var isExpanded = false
+
+    private var visibleTable: MarkdownTable {
+        MarkdownTable(headers: table.headers, rows: table.visibleRows(isExpanded: isExpanded))
+    }
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: true) {
-            VStack(alignment: .leading, spacing: 0) {
-                tableRow(table.headers, isHeader: true)
-                ForEach(Array(table.rows.enumerated()), id: \.offset) { _, row in
-                    tableRow(row, isHeader: false)
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                Text("表格")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(textColor.opacity(0.72))
+                Spacer()
+                TableToolButton(systemImage: "doc.on.doc", accessibilityLabel: "复制表格") {
+                    onCopy(table)
+                }
+                TableToolButton(systemImage: "square.and.arrow.down", accessibilityLabel: "下载表格") {
+                    onDownload(table)
+                }
+                TableToolButton(systemImage: "arrow.up.left.and.arrow.down.right", accessibilityLabel: "全屏查看表格") {
+                    onFullscreen(table)
                 }
             }
-            .overlay(
-                RoundedRectangle(cornerRadius: 6)
-                    .stroke(colors.divider.opacity(0.8), lineWidth: 1)
-            )
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(colors.surface.opacity(0.72))
+
+            ScrollView(.horizontal, showsIndicators: true) {
+                MarkdownTableGrid(table: visibleTable, colors: colors, textColor: textColor)
+            }
+
+            if table.shouldFoldRows {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.16)) {
+                        isExpanded.toggle()
+                    }
+                } label: {
+                    HStack(spacing: 5) {
+                        Text(isExpanded ? "收起表格" : "展开全部 \(table.rows.count) 行")
+                            .font(.system(size: 12, weight: .medium))
+                        Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                            .font(.system(size: 11, weight: .semibold))
+                    }
+                    .foregroundColor(textColor.opacity(0.78))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 9)
+                    .background(colors.surface.opacity(0.42))
+                }
+                .buttonStyle(.plain)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(colors.divider.opacity(0.8), lineWidth: 1)
+        )
+    }
+}
+
+private struct TableToolButton: View {
+    let systemImage: String
+    let accessibilityLabel: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 15, weight: .semibold))
+                .frame(width: 30, height: 30)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(accessibilityLabel)
+    }
+}
+
+struct MarkdownTableGrid: View {
+    let table: MarkdownTable
+    let colors: MochiColors
+    let textColor: Color
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            tableRow(table.headers, isHeader: true)
+            ForEach(Array(table.rows.enumerated()), id: \.offset) { _, row in
+                tableRow(row, isHeader: false)
+            }
+        }
     }
 
     private func tableRow(_ cells: [String], isHeader: Bool) -> some View {

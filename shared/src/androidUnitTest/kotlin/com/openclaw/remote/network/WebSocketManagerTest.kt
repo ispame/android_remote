@@ -261,6 +261,24 @@ class WebSocketManagerTest {
     fun accessTokenFailuresAreTerminalErrors() {
         assertEquals(true, isTerminalAuthError("INVALID_ACCESS_TOKEN"))
         assertEquals(true, isTerminalAuthError("expired_access_token"))
+        assertEquals(true, isTerminalAuthError("ACCESS_TOKEN_REVOKED"))
         assertEquals(false, isTerminalAuthError("TARGET_NOT_FOUND"))
+    }
+
+    @Test
+    fun accessTokenFailuresRequestSilentRefreshBeforeClearingLogin() {
+        assertEquals(AuthRecoveryAction.REFRESH_SESSION, authRecoveryActionForWsError("ACCESS_TOKEN_EXPIRED"))
+        assertEquals(AuthRecoveryAction.REFRESH_SESSION, authRecoveryActionForWsError("expired_access_token"))
+        assertEquals(AuthRecoveryAction.REFRESH_SESSION, authRecoveryActionForWsError("INVALID_ACCESS_TOKEN"))
+        assertEquals(AuthRecoveryAction.REQUIRE_LOGIN, authRecoveryActionForWsError("ACCESS_TOKEN_REVOKED"))
+        assertEquals(AuthRecoveryAction.NONE, authRecoveryActionForWsError("TARGET_NOT_FOUND"))
+    }
+
+    @Test
+    fun refreshTokenFailuresRequireUserLoginAgain() {
+        assertEquals(true, refreshFailureRequiresLogin("HTTP 401: REFRESH_TOKEN_EXPIRED: Refresh token expired"))
+        assertEquals(true, refreshFailureRequiresLogin("HTTP 401: INVALID_REFRESH_TOKEN: Refresh token not found"))
+        assertEquals(true, refreshFailureRequiresLogin("HTTP 401: ACCESS_TOKEN_REVOKED: Access token was revoked"))
+        assertEquals(false, refreshFailureRequiresLogin("timeout"))
     }
 }

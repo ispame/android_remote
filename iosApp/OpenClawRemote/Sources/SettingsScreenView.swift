@@ -328,13 +328,6 @@ private struct AgentFormCardView: View {
                 colors: colors
             )
 
-            OutlinedTextField(
-                label: "Token",
-                placeholder: "配对 Token",
-                text: $form.token,
-                colors: colors
-            )
-
             Button(action: onPair) {
                 HStack {
                     Image(systemName: "link")
@@ -375,9 +368,6 @@ struct SettingsScreenView: View {
     @State private var phoneNumber: String = ""
     @State private var smsCode: String = ""
     @State private var isAuthLoading = false
-    @State private var accountId: String = ""
-    @State private var accessToken: String = ""
-    @State private var refreshToken: String = ""
     @State private var currentPassword: String = ""
     @State private var newPassword: String = ""
     @State private var confirmNewPassword: String = ""
@@ -523,41 +513,22 @@ struct SettingsScreenView: View {
                         }
                         .disabled(isAuthLoading)
                     }
-                    HStack(spacing: 12) {
-                        Button {
-                            Task { await refreshSession() }
-                        } label: {
-                            Text("刷新会话")
-                                .font(.system(size: 14, weight: .medium))
-                                .foregroundColor(colors.textPrimary)
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 10)
-                                .background(colors.inputBg)
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 8)
-                                        .stroke(colors.inputBorder, lineWidth: 1)
-                                )
-                                .cornerRadius(8)
-                        }
-                        .disabled(isAuthLoading)
-
-                        Button {
-                            Task { await logoutSession() }
-                        } label: {
-                            Text("退出登录")
-                                .font(.system(size: 14, weight: .medium))
-                                .foregroundColor(colors.textPrimary)
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 10)
-                                .background(colors.inputBg)
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 8)
-                                        .stroke(colors.inputBorder, lineWidth: 1)
-                                )
-                                .cornerRadius(8)
-                        }
-                        .disabled(isAuthLoading)
+                    Button {
+                        Task { await logoutSession() }
+                    } label: {
+                        Text("退出登录")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundColor(colors.textPrimary)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 10)
+                            .background(colors.inputBg)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(colors.inputBorder, lineWidth: 1)
+                            )
+                            .cornerRadius(8)
                     }
+                    .disabled(isAuthLoading)
 
                     SectionTitleView(text: "修改密码", colors: colors)
                     OutlinedSecureField(
@@ -596,24 +567,14 @@ struct SettingsScreenView: View {
                     .disabled(isAuthLoading)
 
                     SectionTitleView(text: "账号会话", colors: colors)
-                    OutlinedTextField(
-                        label: "Account ID",
-                        placeholder: "acct_xxx",
-                        text: $accountId,
-                        colors: colors
-                    )
-                    OutlinedTextField(
-                        label: "Access Token",
-                        placeholder: "access_token",
-                        text: $accessToken,
-                        colors: colors
-                    )
-                    OutlinedTextField(
-                        label: "Refresh Token",
-                        placeholder: "refresh_token",
-                        text: $refreshToken,
-                        colors: colors
-                    )
+                    Text(accountStatusText)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(colors.textPrimary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 12)
+                        .background(colors.inputBg)
+                        .cornerRadius(8)
 
                     SectionTitleView(text: "设备信息", colors: colors)
                     OutlinedTextField(
@@ -674,6 +635,11 @@ struct SettingsScreenView: View {
             ?? settingsManager.selectedProfile.gatewayUrl
     }
 
+    private var accountStatusText: String {
+        let accountId = settingsManager.config.accountId.trimmingCharacters(in: .whitespacesAndNewlines)
+        return accountId.isEmpty ? "未登录" : "已登录 · \(maskedAccountLabel(accountId))"
+    }
+
     private func syncFormsFromProfiles(keepingDraft: Bool) {
         let drafts = keepingDraft ? agentForms.filter(\.isDraft) : []
         var forms = settingsManager.profiles.map { AgentFormState(profile: $0) }
@@ -681,9 +647,6 @@ struct SettingsScreenView: View {
             forms.append(draft)
         }
         agentForms = forms
-        accountId = settingsManager.config.accountId
-        accessToken = settingsManager.config.accessToken
-        refreshToken = settingsManager.config.refreshToken
         deviceLabel = settingsManager.config.deviceLabel
     }
 
@@ -794,7 +757,7 @@ struct SettingsScreenView: View {
             gatewayUrl: gatewayUrl,
             backendId: backendId,
             backendLabel: backendLabel,
-            token: form.token.trimmingCharacters(in: .whitespacesAndNewlines),
+            token: existing?.token ?? form.token.trimmingCharacters(in: .whitespacesAndNewlines),
             isPaired: !backendId.isEmpty && !backendChanged && (existing?.isPaired ?? form.isPaired),
             asrMode: asrMode,
             asrProfileId: asrMode == "router" ? asrProfileId : ""
@@ -814,8 +777,7 @@ struct SettingsScreenView: View {
         for form in agentForms {
             if form.isDraft,
                form.displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-               form.backendId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-               form.token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+               form.backendId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 continue
             }
             _ = saveForm(form, select: form.id == settingsManager.selectedProfileId)
@@ -823,9 +785,9 @@ struct SettingsScreenView: View {
         settingsManager.updateConfig(
             GatewayConfig(
                 gatewayUrl: settingsManager.selectedProfile.gatewayUrl,
-                accountId: accountId.trimmingCharacters(in: .whitespacesAndNewlines),
-                accessToken: accessToken.trimmingCharacters(in: .whitespacesAndNewlines),
-                refreshToken: refreshToken.trimmingCharacters(in: .whitespacesAndNewlines),
+                accountId: settingsManager.config.accountId,
+                accessToken: settingsManager.config.accessToken,
+                refreshToken: settingsManager.config.refreshToken,
                 accessExpiresAt: settingsManager.config.accessExpiresAt,
                 refreshExpiresAt: settingsManager.config.refreshExpiresAt,
                 deviceLabel: deviceLabel.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -931,9 +893,6 @@ struct SettingsScreenView: View {
                 asrProfileId: asrMode == "router" ? asrProfileId : ""
             )
         )
-        accountId = session.accountId
-        accessToken = session.accessToken
-        refreshToken = session.refreshToken
         currentPassword = ""
         newPassword = ""
         confirmNewPassword = ""
@@ -989,7 +948,8 @@ struct SettingsScreenView: View {
 
     @MainActor
     private func changePassword() async {
-        guard !accessToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        let accessToken = settingsManager.config.accessToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !accessToken.isEmpty else {
             statusMessage = "请先登录"
             return
         }
@@ -1016,31 +976,12 @@ struct SettingsScreenView: View {
     }
 
     @MainActor
-    private func refreshSession() async {
-        guard !refreshToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            statusMessage = "当前没有 Refresh Token"
-            return
-        }
-        isAuthLoading = true
-        defer { isAuthLoading = false }
-        do {
-            let session = try await GatewayAuthClient.refresh(
-                gatewayUrl: authGatewayUrl(),
-                refreshToken: refreshToken
-            )
-            applyAuthSession(session)
-            statusMessage = "会话已刷新"
-        } catch {
-            statusMessage = "刷新会话失败：\(error.localizedDescription)"
-        }
-    }
-
-    @MainActor
     private func logoutSession() async {
         isAuthLoading = true
         defer { isAuthLoading = false }
         do {
-            if !refreshToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let refreshToken = settingsManager.config.refreshToken.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !refreshToken.isEmpty {
                 try await GatewayAuthClient.logout(
                     gatewayUrl: authGatewayUrl(),
                     refreshToken: refreshToken
@@ -1067,11 +1008,14 @@ struct SettingsScreenView: View {
                 asrProfileId: asrMode == "router" ? asrProfileId : ""
             )
         )
-        accountId = ""
-        accessToken = ""
-        refreshToken = ""
         statusMessage = "已退出登录"
     }
+}
+
+private func maskedAccountLabel(_ accountId: String) -> String {
+    let value = accountId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard value.count > 12 else { return value }
+    return "\(value.prefix(8))...\(value.suffix(4))"
 }
 
 struct GatewaySmsRequestResponse: Decodable {

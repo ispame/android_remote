@@ -661,11 +661,16 @@ final class WebSocketManager: ObservableObject {
             case "error":
                 let code = json["code"] as? String ?? "unknown"
                 let msg = json["message"] as? String ?? "未知错误"
-                if Self.isTerminalAuthError(code) {
+                let authRecoveryAction = authRecoveryAction(forWebSocketErrorCode: code)
+                if authRecoveryAction != .none {
+                    let task = self.webSocketTask
                     self.intentionalDisconnect = true
                     self.cancelReconnect()
                     self.webSocketTask = nil
                     self.connectionState = .disconnected
+                    self.messageSubject.send(.error(code: code, message: msg))
+                    task?.cancel(with: .goingAway, reason: nil)
+                    return
                 }
                 self.addMessage("错误 (\(code)): \(msg)", senderId: "assistant")
                 self.messageSubject.send(.error(code: code, message: msg))
@@ -1014,13 +1019,6 @@ final class WebSocketManager: ObservableObject {
         return formatter.string(from: Date())
     }
 
-    private static func isTerminalAuthError(_ code: String) -> Bool {
-        let normalized = code.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-        return normalized == "INVALID_ACCESS_TOKEN" ||
-            normalized == "EXPIRED_ACCESS_TOKEN" ||
-            normalized == "ACCESS_TOKEN_EXPIRED" ||
-            normalized == "ACCESS_TOKEN_REVOKED"
-    }
 }
 
 enum WsMessageEvent {

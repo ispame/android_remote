@@ -154,9 +154,6 @@ fun SettingsScreen(
     var phoneNumber by remember { mutableStateOf("") }
     var smsCode by remember { mutableStateOf("") }
     var isAuthBusy by remember { mutableStateOf(false) }
-    var accountId by remember(config) { mutableStateOf(config.accountId) }
-    var accessToken by remember(config) { mutableStateOf(config.accessToken) }
-    var refreshToken by remember(config) { mutableStateOf(config.refreshToken) }
     var currentPassword by remember { mutableStateOf("") }
     var newPassword by remember { mutableStateOf("") }
     var confirmNewPassword by remember { mutableStateOf("") }
@@ -202,9 +199,6 @@ fun SettingsScreen(
             deviceLabel = deviceLabel.ifEmpty { "我的设备" },
         )
         settingsManager.updateConfig(nextConfig)
-        accountId = session.accountId
-        accessToken = session.accessToken
-        refreshToken = session.refreshToken
         currentPassword = ""
         newPassword = ""
         confirmNewPassword = ""
@@ -228,7 +222,7 @@ fun SettingsScreen(
             gatewayUrl = gatewayUrl,
             backendId = backendId,
             backendLabel = backendLabel,
-            token = form.token.trim(),
+            token = existing?.token ?: form.token.trim(),
             isPaired = backendId.isNotEmpty() && !backendChanged && (existing?.isPaired ?: form.isPaired),
             asrMode = asrMode,
             asrProfileId = if (asrMode == "backend") "" else asrProfileId,
@@ -600,73 +594,37 @@ fun SettingsScreen(
                         Text("登录")
                     }
                 }
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    OutlinedButton(
-                        onClick = {
-                            scope.launch {
-                                if (refreshToken.isBlank()) {
-                                    showMessage("当前没有 Refresh Token")
-                                    return@launch
-                                }
-                                isAuthBusy = true
-                                runCatching {
-                                    authClient.refresh(
+                OutlinedButton(
+                    onClick = {
+                        scope.launch {
+                            isAuthBusy = true
+                            runCatching {
+                                if (config.refreshToken.isNotBlank()) {
+                                    authClient.logout(
                                         gatewayUrl = authGatewayUrl(),
-                                        refreshToken = refreshToken,
+                                        refreshToken = config.refreshToken,
                                     )
-                                }.onSuccess {
-                                    applyAuthSession(it)
-                                    showMessage("会话已刷新")
-                                }.onFailure {
-                                    showMessage("刷新会话失败：${it.message ?: "unknown"}")
                                 }
-                                isAuthBusy = false
                             }
-                        },
-                        enabled = !isAuthBusy,
-                        modifier = Modifier.weight(1f),
-                        shape = RoundedCornerShape(8.dp),
-                    ) {
-                        Text("刷新会话")
-                    }
-                    OutlinedButton(
-                        onClick = {
-                            scope.launch {
-                                isAuthBusy = true
-                                runCatching {
-                                    if (refreshToken.isNotBlank()) {
-                                        authClient.logout(
-                                            gatewayUrl = authGatewayUrl(),
-                                            refreshToken = refreshToken,
-                                        )
-                                    }
-                                }
-                                viewModel.disconnect()
-                                settingsManager.updateConfig(
-                                    config.copy(
-                                        accountId = "",
-                                        accessToken = "",
-                                        refreshToken = "",
-                                        accessExpiresAt = "",
-                                        refreshExpiresAt = "",
-                                    )
+                            viewModel.disconnect()
+                            settingsManager.updateConfig(
+                                config.copy(
+                                    accountId = "",
+                                    accessToken = "",
+                                    refreshToken = "",
+                                    accessExpiresAt = "",
+                                    refreshExpiresAt = "",
                                 )
-                                accountId = ""
-                                accessToken = ""
-                                refreshToken = ""
-                                showMessage("已退出登录")
-                                isAuthBusy = false
-                            }
-                        },
-                        enabled = !isAuthBusy,
-                        modifier = Modifier.weight(1f),
-                        shape = RoundedCornerShape(8.dp),
-                    ) {
-                        Text("退出登录")
-                    }
+                            )
+                            showMessage("已退出登录")
+                            isAuthBusy = false
+                        }
+                    },
+                    enabled = !isAuthBusy,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(8.dp),
+                ) {
+                    Text("退出登录")
                 }
 
                 HorizontalDivider(color = colors.divider, thickness = 0.5.dp)
@@ -708,7 +666,7 @@ fun SettingsScreen(
                 OutlinedButton(
                     onClick = {
                         scope.launch {
-                            if (accessToken.isBlank()) {
+                            if (config.accessToken.isBlank()) {
                                 showMessage("请先登录")
                                 return@launch
                             }
@@ -720,7 +678,7 @@ fun SettingsScreen(
                             runCatching {
                                 authClient.changePassword(
                                     gatewayUrl = authGatewayUrl(),
-                                    accessToken = accessToken,
+                                    accessToken = config.accessToken,
                                     currentPassword = currentPassword,
                                     newPassword = newPassword,
                                 )
@@ -743,37 +701,15 @@ fun SettingsScreen(
                 HorizontalDivider(color = colors.divider, thickness = 0.5.dp)
 
                 SectionTitle("账号会话", colors)
-                OutlinedTextField(
-                    value = accountId,
-                    onValueChange = { accountId = it },
-                    label = { Text("Account ID") },
-                    placeholder = { Text("acct_xxx") },
+                Text(
+                    text = if (config.accountId.isNotBlank()) {
+                        "已登录 · ${maskedAccountLabel(config.accountId)}"
+                    } else {
+                        "未登录"
+                    },
+                    color = colors.textSecondary,
+                    fontSize = 13.sp,
                     modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    shape = RoundedCornerShape(8.dp),
-                    colors = mochiTextFieldColors(colors),
-                )
-                OutlinedTextField(
-                    value = accessToken,
-                    onValueChange = { accessToken = it },
-                    label = { Text("Access Token") },
-                    placeholder = { Text("access_token") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    visualTransformation = PasswordVisualTransformation(),
-                    shape = RoundedCornerShape(8.dp),
-                    colors = mochiTextFieldColors(colors),
-                )
-                OutlinedTextField(
-                    value = refreshToken,
-                    onValueChange = { refreshToken = it },
-                    label = { Text("Refresh Token") },
-                    placeholder = { Text("refresh_token") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    visualTransformation = PasswordVisualTransformation(),
-                    shape = RoundedCornerShape(8.dp),
-                    colors = mochiTextFieldColors(colors),
                 )
 
                 HorizontalDivider(color = colors.divider, thickness = 0.5.dp)
@@ -797,8 +733,7 @@ fun SettingsScreen(
                             agentForms.forEach { form ->
                                 val emptyDraft = form.isDraft &&
                                     form.displayName.isBlank() &&
-                                    form.backendId.isBlank() &&
-                                    form.token.isBlank()
+                                    form.backendId.isBlank()
                                 if (!emptyDraft && saveForm(form, select = form.id == profilesState.selectedProfileId) == null) {
                                     ok = false
                                 }
@@ -807,9 +742,9 @@ fun SettingsScreen(
                             settingsManager.updateGlobalAsr(asrMode, asrProfileId)
                             settingsManager.updateConfig(
                                 config.copy(
-                                    accountId = accountId.trim(),
-                                    accessToken = accessToken.trim(),
-                                    refreshToken = refreshToken.trim(),
+                                    accountId = config.accountId,
+                                    accessToken = config.accessToken,
+                                    refreshToken = config.refreshToken,
                                     accessExpiresAt = config.accessExpiresAt,
                                     refreshExpiresAt = config.refreshExpiresAt,
                                     deviceLabel = deviceLabel.ifEmpty { "我的设备" },
@@ -1146,16 +1081,6 @@ private fun AgentFormCard(
             shape = RoundedCornerShape(8.dp),
             colors = mochiTextFieldColors(colors),
         )
-        OutlinedTextField(
-            value = form.token,
-            onValueChange = { onChange(form.copy(token = it)) },
-            label = { Text("Token") },
-            placeholder = { Text("配对 Token") },
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = true,
-            shape = RoundedCornerShape(8.dp),
-            colors = mochiTextFieldColors(colors),
-        )
         Button(
             onClick = onPair,
             enabled = form.backendId.isNotBlank(),
@@ -1318,6 +1243,11 @@ private data class AsrProviderProfile(
 
 private fun voiceLabel(voice: MiniMaxVoiceOption): String =
     "${voice.category} · ${voice.name}"
+
+private fun maskedAccountLabel(accountId: String): String {
+    val value = accountId.trim()
+    return if (value.length <= 12) value else "${value.take(8)}...${value.takeLast(4)}"
+}
 
 private suspend fun fetchAsrProfiles(gatewayUrl: String): Pair<String?, List<AsrProviderProfile>> {
     return withContext(Dispatchers.IO) {
