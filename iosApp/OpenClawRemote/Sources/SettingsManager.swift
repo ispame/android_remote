@@ -2,7 +2,7 @@ import Foundation
 import Combine
 
 final class SettingsManager: ObservableObject {
-    static let maxAgentProfiles = 3
+    static let maxAgentProfiles = 20
 
     private let defaults = UserDefaults.standard
     private let profilesKey = "agent_profiles_v1"
@@ -53,7 +53,7 @@ final class SettingsManager: ObservableObject {
                 copy.asrMode = legacyConfig.asrMode == "backend" ? "backend" : "router"
                 copy.asrProfileId = legacyConfig.asrProfileId
                 return copy
-            }
+            }.sortedForAgentList()
         }
         let initialSelectedProfileId = defaults.string(forKey: selectedProfileIdKey)
             .flatMap { id in initialProfiles.contains(where: { $0.id == id }) ? id : nil }
@@ -63,7 +63,7 @@ final class SettingsManager: ObservableObject {
             from: initialProfiles.first { $0.id == initialSelectedProfileId } ?? initialProfiles[0],
             deviceLabel: legacyConfig.deviceLabel
         )
-        profiles = initialProfiles
+        profiles = initialProfiles.sortedForAgentList()
         selectedProfileId = initialSelectedProfileId
         configPublished = activeConfig
         _config.send(activeConfig)
@@ -131,6 +131,7 @@ final class SettingsManager: ObservableObject {
     func deleteProfile(_ profileId: String) {
         guard profiles.count > 1 else { return }
         profiles.removeAll { $0.id == profileId }
+        profiles = profiles.sortedForAgentList()
         if selectedProfileId == profileId {
             selectedProfileId = profiles[0].id
             defaults.set(selectedProfileId, forKey: selectedProfileIdKey)
@@ -155,6 +156,7 @@ final class SettingsManager: ObservableObject {
         } else {
             guard profiles.count < Self.maxAgentProfiles else { return false }
             guard isGatewayCompatible(normalizedProfile.gatewayUrl) else { return false }
+            normalizedProfile.sortIndex = nextSortIndex()
             profiles.append(normalizedProfile)
         }
 
@@ -162,6 +164,7 @@ final class SettingsManager: ObservableObject {
             selectedProfileId = normalizedProfile.id
             defaults.set(normalizedProfile.id, forKey: selectedProfileIdKey)
         }
+        profiles = profiles.sortedForAgentList()
         persistProfiles()
         publishActiveConfig()
         return true
@@ -179,8 +182,10 @@ final class SettingsManager: ObservableObject {
         cleared.isPaired = false
         cleared.asrMode = globalAsrMode
         cleared.asrProfileId = globalAsrProfileId
+        cleared.isPinned = false
         cleared.updatedAt = Date()
         profiles[index] = cleared
+        profiles = profiles.sortedForAgentList()
         if selectedProfileId == profileId {
             persistProfiles()
             publishActiveConfig()
@@ -198,6 +203,19 @@ final class SettingsManager: ObservableObject {
             profiles[index].asrProfileId = normalizedMode == "router" ? profileId : ""
             profiles[index].updatedAt = Date()
         }
+        profiles = profiles.sortedForAgentList()
+        persistProfiles()
+        publishActiveConfig()
+    }
+
+    func setProfilePinned(_ profileId: String, isPinned: Bool) {
+        guard let index = profiles.firstIndex(where: { $0.id == profileId }) else { return }
+        profiles[index].isPinned = isPinned
+        if isPinned {
+            profiles[index].sortIndex = nextPinnedSortIndex()
+        }
+        profiles[index].updatedAt = Date()
+        profiles = profiles.sortedForAgentList()
         persistProfiles()
         publishActiveConfig()
     }
@@ -246,9 +264,10 @@ final class SettingsManager: ObservableObject {
             profiles[index].token = token
             profiles[index].updatedAt = Date()
             selectedProfileId = profiles[index].id
+            profiles = profiles.sortedForAgentList()
             persistProfiles()
             publishActiveConfig()
-            return profiles[index]
+            return profiles.first { $0.id == selectedProfileId }
         }
 
         if profiles.count == 1, profiles[0].backendId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -259,11 +278,13 @@ final class SettingsManager: ObservableObject {
             profiles[0].backendLabel = label ?? backendId
             profiles[0].token = token
             profiles[0].isPaired = false
+            profiles[0].sortIndex = profiles[0].sortIndex == 0 ? nextSortIndex() : profiles[0].sortIndex
             profiles[0].updatedAt = Date()
             selectedProfileId = profiles[0].id
+            profiles = profiles.sortedForAgentList()
             persistProfiles()
             publishActiveConfig()
-            return profiles[0]
+            return profiles.first { $0.id == selectedProfileId }
         }
 
         guard profiles.count < Self.maxAgentProfiles, isGatewayCompatible(gatewayUrl) else {
@@ -281,10 +302,12 @@ final class SettingsManager: ObservableObject {
             token: token,
             isPaired: false,
             asrMode: globalAsrMode,
-            asrProfileId: globalAsrProfileId
+            asrProfileId: globalAsrProfileId,
+            sortIndex: nextSortIndex()
         )
         profiles.append(profile)
         selectedProfileId = profile.id
+        profiles = profiles.sortedForAgentList()
         persistProfiles()
         publishActiveConfig()
         return profile
@@ -294,6 +317,7 @@ final class SettingsManager: ObservableObject {
         guard let index = profiles.firstIndex(where: { $0.id == profile.id }) else { return }
         let normalizedProfile = profile
         profiles[index] = normalizedProfile
+        profiles = profiles.sortedForAgentList()
         if select {
             selectedProfileId = normalizedProfile.id
             defaults.set(normalizedProfile.id, forKey: selectedProfileIdKey)
@@ -309,6 +333,14 @@ final class SettingsManager: ObservableObject {
             .map { AgentProfile.normalizedGatewayKey($0.gatewayUrl) }
         guard let first = configuredGateways.first else { return true }
         return configuredGateways.allSatisfy { $0 == first } && first == target
+    }
+
+    private func nextSortIndex() -> Int {
+        (profiles.map(\.sortIndex).max() ?? 0) + 1
+    }
+
+    private func nextPinnedSortIndex() -> Int {
+        (profiles.filter(\.isPinned).map(\.sortIndex).max() ?? 0) + 1
     }
 
     private func persistProfiles() {

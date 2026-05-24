@@ -277,6 +277,8 @@ struct MainScreenView: View {
     let onToggleTheme: () -> Void
     let onNavigateToSettings: () -> Void
     let onSelectProfile: (String) -> Void
+    var showsTopBar = true
+    var showsHeadsetStrip = true
 
     @State private var inputMode: InputMode = .voice
     @State private var isNearChatBottom = true
@@ -303,24 +305,28 @@ struct MainScreenView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            TopBarView(
-                connectionState: wsManager.connectionState,
-                selectedProfile: selectedProfile,
-                profiles: settingsManager.profiles,
-                profileStatuses: Dictionary(uniqueKeysWithValues: settingsManager.profiles.map { ($0.id, wsManager.availabilityStatus(for: $0)) }),
-                unreadCounts: wsManager.unreadCounts,
-                isDark: isDark,
-                colors: colors,
-                onToggleTheme: onToggleTheme,
-                onNavigateToSettings: onNavigateToSettings,
-                onSelectProfile: onSelectProfile
-            )
+            if showsTopBar {
+                TopBarView(
+                    connectionState: wsManager.connectionState,
+                    selectedProfile: selectedProfile,
+                    profiles: settingsManager.profiles,
+                    profileStatuses: Dictionary(uniqueKeysWithValues: settingsManager.profiles.map { ($0.id, wsManager.availabilityStatus(for: $0)) }),
+                    unreadCounts: wsManager.unreadCounts,
+                    isDark: isDark,
+                    colors: colors,
+                    onToggleTheme: onToggleTheme,
+                    onNavigateToSettings: onNavigateToSettings,
+                    onSelectProfile: onSelectProfile
+                )
 
-            Divider().background(colors.divider)
+                Divider().background(colors.divider)
+            }
 
-            HeadsetStatusStripView(headsetController: headsetController, colors: colors)
+            if showsHeadsetStrip {
+                HeadsetStatusStripView(headsetController: headsetController, colors: colors)
 
-            Divider().background(colors.divider)
+                Divider().background(colors.divider)
+            }
 
             GeometryReader { geometry in
                 ZStack {

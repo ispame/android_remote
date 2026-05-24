@@ -11,17 +11,17 @@ struct OpenClawRemoteApp: App {
     @StateObject private var headsetController: HeadsetConversationController
     @StateObject private var audioRecorder = AudioRecorder()
     @StateObject private var messageSpeechController = MessageSpeechController()
+    @StateObject private var scheduledTaskStore = ScheduledTaskStore()
+    @StateObject private var recordingStore = RecordingStore()
+    @StateObject private var headsetSettingsStore = HeadsetSettingsStore()
 
     @State private var isDark = false
-    @State private var showSettings = false
-    @State private var showQRScanner = false
     @State private var authNotice: String? = nil
     @State private var tokenRefreshTask: Task<Void, Never>? = nil
 
     init() {
         let settings = SettingsManager()
         _settingsManager = StateObject(wrappedValue: settings)
-        let activeProfile = settings.selectedProfile
         let manager = WebSocketManager(
             deviceLabel: settings.config.deviceLabel.isEmpty ? "我的设备" : settings.config.deviceLabel,
             accessToken: settings.config.accessToken
@@ -53,54 +53,35 @@ struct OpenClawRemoteApp: App {
                             authNotice = nil
                         }
                     )
-                } else if showQRScanner {
-                    QRScannerScreenView(
-                        onQRCodeScanned: { scannedText in
-                            showQRScanner = false
-                            handleQRParsed(scannedText)
-                        },
-                        onClose: { showQRScanner = false }
-                    )
-                } else if showSettings {
-                    SettingsScreenView(
-                        wsManager: wsManager,
-                        settingsManager: settingsManager,
-                        isDark: isDark,
-                        colors: colors,
-                        onToggleTheme: { isDark.toggle() },
-                        onRequestPair: { backendId in
-                            applySelectedProfile()
-                            wsManager.requestPair(backendId: backendId)
-                            showSettings = false
-                        },
-                        onUnpair: {
-                            wsManager.unpair()
-                        },
-                        onBack: { showSettings = false },
-                        onNavigateToQRScanner: {
-                            if !settingsManager.configPublished.accessToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                                showQRScanner = true
-                            }
-                        },
-                        onSelectProfile: { profileId in
-                            settingsManager.selectProfile(profileId)
-                            applySelectedProfile()
-                        }
-                    )
                 } else {
-                    MainScreenView(
+                    RootTabView(
                         wsManager: wsManager,
                         settingsManager: settingsManager,
                         audioRecorder: audioRecorder,
                         headsetController: headsetController,
                         messageSpeechController: messageSpeechController,
+                        scheduledTaskStore: scheduledTaskStore,
+                        recordingStore: recordingStore,
+                        headsetSettingsStore: headsetSettingsStore,
                         isDark: isDark,
                         colors: colors,
                         onToggleTheme: { isDark.toggle() },
-                        onNavigateToSettings: { showSettings = true },
                         onSelectProfile: { profileId in
                             settingsManager.selectProfile(profileId)
                             applySelectedProfile()
+                        },
+                        onRequestPair: { backendId in
+                            applySelectedProfile()
+                            wsManager.requestPair(backendId: backendId)
+                        },
+                        onQRCodeScanned: { scannedText in
+                            handleQRParsed(scannedText)
+                        },
+                        onSwitchAccount: {
+                            clearAuthSession(message: "请登录新账号")
+                        },
+                        onLogout: {
+                            clearAuthSession(message: "已退出登录")
                         }
                     )
                 }
@@ -111,10 +92,6 @@ struct OpenClawRemoteApp: App {
             }
             .onReceive(settingsManager.$configPublished) { config in
                 scheduleTokenRefresh(for: config)
-                if config.accessToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    showQRScanner = false
-                    showSettings = false
-                }
             }
             .onAppear {
                 let isSystemDark = UITraitCollection.current.userInterfaceStyle == .dark
@@ -239,8 +216,6 @@ struct OpenClawRemoteApp: App {
     private func clearAuthSession(message: String) {
         tokenRefreshTask?.cancel()
         tokenRefreshTask = nil
-        showQRScanner = false
-        showSettings = false
         authNotice = message
         wsManager.disconnect()
         let current = settingsManager.configPublished

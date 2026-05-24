@@ -205,6 +205,8 @@ struct AgentProfile: Identifiable, Codable, Equatable {
     var asrProfileId: String
     var createdAt: Date
     var updatedAt: Date
+    var isPinned: Bool
+    var sortIndex: Int
 
     init(
         id: String = UUID().uuidString,
@@ -218,7 +220,9 @@ struct AgentProfile: Identifiable, Codable, Equatable {
         asrMode: String = "router",
         asrProfileId: String = "",
         createdAt: Date = Date(),
-        updatedAt: Date = Date()
+        updatedAt: Date = Date(),
+        isPinned: Bool = false,
+        sortIndex: Int = 0
     ) {
         self.id = id
         self.platform = platform
@@ -232,6 +236,43 @@ struct AgentProfile: Identifiable, Codable, Equatable {
         self.asrProfileId = asrProfileId
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+        self.isPinned = isPinned
+        self.sortIndex = sortIndex
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case platform
+        case displayName
+        case gatewayUrl
+        case backendId
+        case backendLabel
+        case token
+        case isPaired
+        case asrMode
+        case asrProfileId
+        case createdAt
+        case updatedAt
+        case isPinned
+        case sortIndex
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(String.self, forKey: .id) ?? UUID().uuidString
+        platform = try container.decodeIfPresent(AgentPlatform.self, forKey: .platform) ?? .openclaw
+        displayName = try container.decodeIfPresent(String.self, forKey: .displayName) ?? ""
+        gatewayUrl = try container.decodeIfPresent(String.self, forKey: .gatewayUrl) ?? "wss://boson-tech.top/ws"
+        backendId = try container.decodeIfPresent(String.self, forKey: .backendId) ?? ""
+        backendLabel = try container.decodeIfPresent(String.self, forKey: .backendLabel)
+        token = try container.decodeIfPresent(String.self, forKey: .token) ?? ""
+        isPaired = try container.decodeIfPresent(Bool.self, forKey: .isPaired) ?? false
+        asrMode = try container.decodeIfPresent(String.self, forKey: .asrMode) ?? "router"
+        asrProfileId = try container.decodeIfPresent(String.self, forKey: .asrProfileId) ?? ""
+        createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
+        updatedAt = try container.decodeIfPresent(Date.self, forKey: .updatedAt) ?? createdAt
+        isPinned = try container.decodeIfPresent(Bool.self, forKey: .isPinned) ?? false
+        sortIndex = try container.decodeIfPresent(Int.self, forKey: .sortIndex) ?? 0
     }
 
     var resolvedDisplayName: String {
@@ -249,6 +290,23 @@ struct AgentProfile: Identifiable, Codable, Equatable {
         gatewayUrl
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
+    }
+}
+
+extension Array where Element == AgentProfile {
+    func sortedForAgentList() -> [AgentProfile] {
+        sorted { left, right in
+            if left.isPinned != right.isPinned {
+                return left.isPinned && !right.isPinned
+            }
+            if left.isPinned, right.isPinned, left.sortIndex != right.sortIndex {
+                return left.sortIndex < right.sortIndex
+            }
+            if left.updatedAt != right.updatedAt {
+                return left.updatedAt > right.updatedAt
+            }
+            return left.resolvedDisplayName.localizedCaseInsensitiveCompare(right.resolvedDisplayName) == .orderedAscending
+        }
     }
 }
 
