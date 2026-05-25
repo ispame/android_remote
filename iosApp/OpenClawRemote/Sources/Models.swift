@@ -429,6 +429,51 @@ struct GatewayConfig {
     }
 }
 
+struct RecordingSettings: Equatable {
+    static let defaultPrompt = "以下是录音，根据录音，分析是否有要解决的问题或者要收集的信息，如果有，列出任务执行的计划并按照计划执行；如果有定时任务，置顶定时任务"
+
+    var primaryAgentProfileId: String
+    var deliverToAgent: Bool
+    var prompt: String
+    var asrProfileId: String
+
+    init(
+        primaryAgentProfileId: String = "",
+        deliverToAgent: Bool = true,
+        prompt: String = Self.defaultPrompt,
+        asrProfileId: String = ""
+    ) {
+        self.primaryAgentProfileId = primaryAgentProfileId
+        self.deliverToAgent = deliverToAgent
+        self.prompt = prompt
+        self.asrProfileId = asrProfileId
+    }
+}
+
+struct AudioAsrPayload {
+    var jsonObject: [String: Any]
+
+    static func chat(mode: String, profileId: String) -> AudioAsrPayload {
+        var payload: [String: Any] = [
+            "mode": mode == "backend" ? "backend" : "router"
+        ]
+        if !profileId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            payload["profile_id"] = profileId
+        }
+        return AudioAsrPayload(jsonObject: payload)
+    }
+
+    static func recording(settings: RecordingSettings, source: RecordingInputSource) -> AudioAsrPayload {
+        var payload = chat(mode: "router", profileId: settings.asrProfileId).jsonObject
+        let trimmedPrompt = settings.prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        payload["intent"] = "recording"
+        payload["source"] = source.rawValue
+        payload["deliver_to_agent"] = settings.deliverToAgent
+        payload["agent_prompt"] = trimmedPrompt.isEmpty ? RecordingSettings.defaultPrompt : settings.prompt
+        return AudioAsrPayload(jsonObject: payload)
+    }
+}
+
 struct AsrProviderProfile: Identifiable, Equatable {
     let id: String
     let provider: String

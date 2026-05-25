@@ -478,6 +478,7 @@ final class WebSocketManager: ObservableObject {
         let base64 = data.base64EncodedString()
         let messageId = "msg_\(UUID().uuidString)"
         let clientMessageId = UUID().uuidString
+        let asrPayload = AudioAsrPayload.chat(mode: asrMode, profileId: asrProfileId).jsonObject
         let frame: [String: Any] = [
             "type": "message",
             "backend_id": backendId,
@@ -492,10 +493,7 @@ final class WebSocketManager: ObservableObject {
                 "sample_rate": 16000,
                 "channels": 1
             ],
-            "asr": [
-                "mode": asrMode,
-                "profile_id": asrProfileId
-            ]
+            "asr": asrPayload
         ]
         addLocalMessageWithStatus("正在识别...", senderId: "user", status: .sending, seq: nil, clientMessageId: clientMessageId)
         if let activeProfileId {
@@ -511,6 +509,29 @@ final class WebSocketManager: ObservableObject {
 
     @discardableResult
     func sendAudioForAsr(_ data: Data, profileId: String) -> String? {
+        sendAudioForAsr(
+            data,
+            profileId: profileId,
+            asrPayload: AudioAsrPayload.chat(mode: asrMode, profileId: asrProfileId).jsonObject
+        )
+    }
+
+    @discardableResult
+    func sendRecordingAudioForAsr(
+        _ data: Data,
+        profileId: String,
+        settings: RecordingSettings,
+        source: RecordingInputSource
+    ) -> String? {
+        sendAudioForAsr(
+            data,
+            profileId: profileId,
+            asrPayload: AudioAsrPayload.recording(settings: settings, source: source).jsonObject
+        )
+    }
+
+    @discardableResult
+    private func sendAudioForAsr(_ data: Data, profileId: String, asrPayload: [String: Any]) -> String? {
         let state = profileId == activeProfileId
             ? currentRuntimeStateSnapshot()
             : (profileStates[profileId] ?? ProfileRuntimeState())
@@ -533,10 +554,7 @@ final class WebSocketManager: ObservableObject {
                 "sample_rate": 16000,
                 "channels": 1
             ],
-            "asr": [
-                "mode": asrMode,
-                "profile_id": asrProfileId
-            ]
+            "asr": asrPayload
         ]
         let msg = ChatMessage(
             content: "正在识别...",

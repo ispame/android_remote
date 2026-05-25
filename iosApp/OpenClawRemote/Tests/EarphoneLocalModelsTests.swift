@@ -16,6 +16,10 @@ struct EarphoneLocalModelsTests {
         try testAgentTaskServiceClearsLoadingOnRouterError()
         try testRecordingStoreCreatesAndDeletesMetadata()
         try testRecordingStoreBackfillsAsrByClientMessageId()
+        try testRecordingSettingsDefaultToFirstConfiguredAgent()
+        try testRecordingSettingsFallbackWhenPrimaryAgentIsDeleted()
+        try testRecordingAsrPayloadIncludesRecordingContext()
+        try testChatAsrPayloadOmitsRecordingContext()
         try testHeadsetDefaultFakeData()
         try testHeadsetSettingsAddsDemoDevice()
         try testHeadsetSettingsStorePersistsEQAndShortcuts()
@@ -226,6 +230,72 @@ struct EarphoneLocalModelsTests {
 
         try expect(store.recordings(for: "agent-1").first?.id == item.id, "recording should still be listed")
         try expect(store.recordings(for: "agent-1").first?.asrText == "转写完成", "ASR result should backfill matching recording")
+    }
+
+    private static func testRecordingSettingsDefaultToFirstConfiguredAgent() throws {
+        let defaults = try temporaryDefaults()
+        let settings = SettingsManager(defaults: defaults)
+        let older = profile(id: "older", name: "Older", isPinned: false, sortIndex: 0, updatedAt: Date(timeIntervalSince1970: 100))
+        let pinned = profile(id: "pinned", name: "Pinned", isPinned: true, sortIndex: 1, updatedAt: Date(timeIntervalSince1970: 50))
+
+        _ = settings.saveProfile(older, select: true)
+        _ = settings.saveProfile(pinned, select: false)
+
+        try expect(settings.recordingSettings.primaryAgentProfileId == "pinned", "default recording primary agent should follow sorted configured agents")
+        try expect(settings.primaryRecordingProfile?.id == "pinned", "primary recording profile should resolve to the default primary agent")
+        try expect(settings.recordingSettings.deliverToAgent, "recordings should be delivered to Agent by default")
+        try expect(settings.recordingSettings.prompt == RecordingSettings.defaultPrompt, "recording prompt should use the default value")
+    }
+
+    private static func testRecordingSettingsFallbackWhenPrimaryAgentIsDeleted() throws {
+        let defaults = try temporaryDefaults()
+        let settings = SettingsManager(defaults: defaults)
+        let primary = profile(id: "primary", name: "Primary", isPinned: true, sortIndex: 1, updatedAt: Date(timeIntervalSince1970: 100))
+        let fallback = profile(id: "fallback", name: "Fallback", isPinned: false, sortIndex: 0, updatedAt: Date(timeIntervalSince1970: 200))
+
+        _ = settings.saveProfile(primary, select: true)
+        _ = settings.saveProfile(fallback, select: false)
+        settings.updateRecordingSettings(RecordingSettings(
+            primaryAgentProfileId: "primary",
+            deliverToAgent: true,
+            prompt: "自定义录音提示",
+            asrProfileId: "doubao"
+        ))
+
+        settings.deleteProfile("primary")
+
+        try expect(settings.recordingSettings.primaryAgentProfileId == "fallback", "deleted primary recording agent should fall back to the next configured agent")
+        try expect(settings.recordingSettings.prompt == "自定义录音提示", "fallback should preserve the customized prompt")
+        try expect(settings.recordingSettings.asrProfileId == "doubao", "fallback should preserve the selected recording ASR model")
+    }
+
+    private static func testRecordingAsrPayloadIncludesRecordingContext() throws {
+        let settings = RecordingSettings(
+            primaryAgentProfileId: "agent-1",
+            deliverToAgent: false,
+            prompt: "请分析这段录音",
+            asrProfileId: "doubao"
+        )
+
+        let payload = AudioAsrPayload.recording(settings: settings, source: .phone).jsonObject
+
+        try expect(payload["mode"] as? String == "router", "recording ASR should use router mode")
+        try expect(payload["profile_id"] as? String == "doubao", "recording ASR should use the selected recording model")
+        try expect(payload["intent"] as? String == "recording", "recording ASR should mark recording intent")
+        try expect(payload["source"] as? String == "phone", "recording ASR should include source")
+        try expect(payload["deliver_to_agent"] as? Bool == false, "recording ASR should carry delivery preference")
+        try expect(payload["agent_prompt"] as? String == "请分析这段录音", "recording ASR should carry custom prompt")
+    }
+
+    private static func testChatAsrPayloadOmitsRecordingContext() throws {
+        let payload = AudioAsrPayload.chat(mode: "router", profileId: "doubao").jsonObject
+
+        try expect(payload["mode"] as? String == "router", "chat ASR should preserve mode")
+        try expect(payload["profile_id"] as? String == "doubao", "chat ASR should preserve profile id")
+        try expect(payload["intent"] == nil, "chat ASR should not include recording intent")
+        try expect(payload["source"] == nil, "chat ASR should not include recording source")
+        try expect(payload["deliver_to_agent"] == nil, "chat ASR should not include recording delivery preference")
+        try expect(payload["agent_prompt"] == nil, "chat ASR should not include recording prompt")
     }
 
     private static func testHeadsetDefaultFakeData() throws {

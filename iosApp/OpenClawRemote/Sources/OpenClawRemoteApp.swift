@@ -13,7 +13,7 @@ struct OpenClawRemoteApp: App {
     @StateObject private var messageSpeechController = MessageSpeechController()
     @StateObject private var scheduledTaskStore = ScheduledTaskStore()
     @StateObject private var agentTaskService: AgentTaskService
-    @StateObject private var recordingStore = RecordingStore()
+    @StateObject private var recordingStore: RecordingStore
     @StateObject private var headsetSettingsStore = HeadsetSettingsStore()
 
     @State private var isDark = false
@@ -32,9 +32,12 @@ struct OpenClawRemoteApp: App {
         let taskService = AgentTaskService()
         taskService.bind(to: manager)
         _agentTaskService = StateObject(wrappedValue: taskService)
+        let recordings = RecordingStore()
+        _recordingStore = StateObject(wrappedValue: recordings)
         _headsetController = StateObject(wrappedValue: HeadsetConversationController(
             wsManager: manager,
-            settingsManager: settings
+            settingsManager: settings,
+            recordingStore: recordings
         ))
     }
 

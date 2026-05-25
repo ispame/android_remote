@@ -275,28 +275,34 @@ struct TasksTabView: View {
     }
 
     private func addRecording() {
-        if headsetIsReady {
-            _ = try? recordingStore.createRecording(
-                agentId: selectedAgent.id,
-                audioData: Data(),
-                asrText: "耳机录音已开启，等待 ASR 文本生成。",
-                source: .headset
-            )
-            statusMessage = "已创建耳机录音记录"
+        guard let recordingProfile = settingsManager.primaryRecordingProfile else {
+            statusMessage = "请先配置主 Agent"
             return
         }
 
         if isPhoneRecording {
             audioRecorder.stopRecording { data in
-                let clientMessageId = wsManager.sendAudioForAsr(data, profileId: selectedAgent.id)
+                let recordingSettings = settingsManager.recordingSettings
+                let clientMessageId = wsManager.sendRecordingAudioForAsr(
+                    data,
+                    profileId: recordingProfile.id,
+                    settings: recordingSettings,
+                    source: .phone
+                )
                 _ = try? recordingStore.createRecording(
-                    agentId: selectedAgent.id,
+                    agentId: recordingProfile.id,
                     audioData: data,
                     asrText: "",
                     source: .phone,
                     clientMessageId: clientMessageId
                 )
-                statusMessage = clientMessageId == nil ? "手机录音已保存；Agent 未配对，未发送 ASR" : "手机录音已保存，等待 ASR 文本"
+                if clientMessageId == nil {
+                    statusMessage = "手机录音已保存；主 Agent 未连接，未发送 ASR"
+                } else if recordingSettings.deliverToAgent {
+                    statusMessage = "手机录音已保存，等待 ASR 文本和 Agent 处理"
+                } else {
+                    statusMessage = "手机录音已保存，等待 ASR 文本"
+                }
             }
             isPhoneRecording = false
         } else {
@@ -304,13 +310,6 @@ struct TasksTabView: View {
             isPhoneRecording = true
             statusMessage = "手机麦克风录音中，再点一次保存"
         }
-    }
-
-    private var headsetIsReady: Bool {
-        if case .ready = headsetController.connectionState {
-            return true
-        }
-        return false
     }
 }
 

@@ -4,15 +4,21 @@ import Combine
 final class SettingsManager: ObservableObject {
     static let maxAgentProfiles = 20
 
-    private let defaults = UserDefaults.standard
+    private let defaults: UserDefaults
     private let profilesKey = "agent_profiles_v1"
     private let selectedProfileIdKey = "selected_agent_profile_id"
+    private let primaryRecordingAgentProfileIdKey = "primary_agent_profile_id"
+    private let recordingDeliverToAgentKey = "recording_deliver_to_agent"
+    private let recordingPromptKey = "recording_prompt"
+    private let recordingAsrProfileIdKey = "recording_asr_profile_id"
 
     @Published private(set) var profiles: [AgentProfile]
     @Published private(set) var selectedProfileId: String
+    @Published private(set) var recordingSettings = RecordingSettings()
     @Published var configPublished: GatewayConfig
 
     private let _config = CurrentValueSubject<GatewayConfig, Never>(GatewayConfig())
+    private var recordingSettingsReady = false
 
     var config: GatewayConfig { _config.value }
 
@@ -32,6 +38,14 @@ final class SettingsManager: ObservableObject {
         profiles.count < Self.maxAgentProfiles
     }
 
+    var primaryRecordingProfile: AgentProfile? {
+        configuredProfiles.first { $0.id == recordingSettings.primaryAgentProfileId } ?? configuredProfiles.first
+    }
+
+    private var configuredProfiles: [AgentProfile] {
+        profiles.filter { !$0.backendId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    }
+
     var globalAsrMode: String {
         let value = defaults.string(forKey: "asr_mode") ?? selectedProfile.asrMode
         return value == "backend" ? "backend" : "router"
@@ -41,7 +55,8 @@ final class SettingsManager: ObservableObject {
         defaults.string(forKey: "asr_profile_id") ?? selectedProfile.asrProfileId
     }
 
-    init() {
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
         let legacyConfig = Self.loadLegacyConfig(from: defaults)
         let loadedProfiles = Self.loadProfiles(from: defaults, key: profilesKey)
         let initialProfiles: [AgentProfile]
@@ -61,10 +76,14 @@ final class SettingsManager: ObservableObject {
 
         let activeConfig = Self.makeConfig(
             from: initialProfiles.first { $0.id == initialSelectedProfileId } ?? initialProfiles[0],
-            deviceLabel: legacyConfig.deviceLabel
+            deviceLabel: legacyConfig.deviceLabel,
+            defaults: defaults
         )
-        profiles = initialProfiles.sortedForAgentList()
+        let sortedInitialProfiles = initialProfiles.sortedForAgentList()
+        profiles = sortedInitialProfiles
         selectedProfileId = initialSelectedProfileId
+        recordingSettings = Self.loadRecordingSettings(from: defaults, profiles: sortedInitialProfiles)
+        recordingSettingsReady = true
         configPublished = activeConfig
         _config.send(activeConfig)
         persistProfiles()
@@ -97,6 +116,16 @@ final class SettingsManager: ObservableObject {
         let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
         defaults.set(trimmed.isEmpty ? "我的设备" : trimmed, forKey: "device_label")
         publishActiveConfig()
+    }
+
+    func updateRecordingSettings(_ settings: RecordingSettings) {
+        var normalized = settings
+        normalized.primaryAgentProfileId = resolvedPrimaryRecordingProfileId(settings.primaryAgentProfileId)
+        if normalized.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            normalized.prompt = RecordingSettings.defaultPrompt
+        }
+        recordingSettings = normalized
+        persistRecordingSettings()
     }
 
     func setLastLoginMode(_ mode: String) {
@@ -358,15 +387,48 @@ final class SettingsManager: ObservableObject {
             defaults.set(data, forKey: profilesKey)
         }
         defaults.set(selectedProfileId, forKey: selectedProfileIdKey)
+        if recordingSettingsReady {
+            reconcileRecordingPrimaryAgent()
+        }
     }
 
     private func publishActiveConfig() {
         let active = selectedProfile
         let deviceLabel = defaults.string(forKey: "device_label") ?? "我的设备"
-        let config = Self.makeConfig(from: active, deviceLabel: deviceLabel)
+        let config = Self.makeConfig(from: active, deviceLabel: deviceLabel, defaults: defaults)
         _config.send(config)
         configPublished = config
         mirrorLegacyKeys(from: active)
+    }
+
+    private func persistRecordingSettings() {
+        defaults.set(recordingSettings.primaryAgentProfileId, forKey: primaryRecordingAgentProfileIdKey)
+        defaults.set(recordingSettings.deliverToAgent, forKey: recordingDeliverToAgentKey)
+        defaults.set(recordingSettings.prompt, forKey: recordingPromptKey)
+        defaults.set(recordingSettings.asrProfileId, forKey: recordingAsrProfileIdKey)
+    }
+
+    private func reconcileRecordingPrimaryAgent() {
+        let resolved = hasExplicitPrimaryRecordingAgent
+            ? resolvedPrimaryRecordingProfileId(recordingSettings.primaryAgentProfileId)
+            : (configuredProfiles.first?.id ?? "")
+        guard resolved != recordingSettings.primaryAgentProfileId else { return }
+        recordingSettings.primaryAgentProfileId = resolved
+        if hasExplicitPrimaryRecordingAgent {
+            persistRecordingSettings()
+        }
+    }
+
+    private func resolvedPrimaryRecordingProfileId(_ requestedId: String) -> String {
+        if configuredProfiles.contains(where: { $0.id == requestedId }) {
+            return requestedId
+        }
+        return configuredProfiles.first?.id ?? ""
+    }
+
+    private var hasExplicitPrimaryRecordingAgent: Bool {
+        guard let saved = defaults.string(forKey: primaryRecordingAgentProfileIdKey) else { return false }
+        return !saved.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private func mirrorLegacyKeys(from profile: AgentProfile) {
@@ -439,22 +501,44 @@ final class SettingsManager: ObservableObject {
         )
     }
 
-    private static func makeConfig(from profile: AgentProfile, deviceLabel: String) -> GatewayConfig {
+    private static func loadRecordingSettings(from defaults: UserDefaults, profiles: [AgentProfile]) -> RecordingSettings {
+        let configuredProfiles = profiles.filter { !$0.backendId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        let savedPrimaryId = defaults.string(forKey: "primary_agent_profile_id") ?? ""
+        let primaryAgentProfileId = configuredProfiles.contains(where: { $0.id == savedPrimaryId })
+            ? savedPrimaryId
+            : (configuredProfiles.first?.id ?? "")
+        let savedPrompt = defaults.string(forKey: "recording_prompt") ?? ""
+        let prompt = savedPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? RecordingSettings.defaultPrompt
+            : savedPrompt
+        let deliverToAgent = defaults.object(forKey: "recording_deliver_to_agent") as? Bool ?? true
+        let recordingAsrProfileId = defaults.string(forKey: "recording_asr_profile_id")
+            ?? defaults.string(forKey: "asr_profile_id")
+            ?? ""
+        return RecordingSettings(
+            primaryAgentProfileId: primaryAgentProfileId,
+            deliverToAgent: deliverToAgent,
+            prompt: prompt,
+            asrProfileId: recordingAsrProfileId
+        )
+    }
+
+    private static func makeConfig(from profile: AgentProfile, deviceLabel: String, defaults: UserDefaults) -> GatewayConfig {
         GatewayConfig(
             gatewayUrl: profile.gatewayUrl,
-            accountId: UserDefaults.standard.string(forKey: "account_id") ?? "",
-            accessToken: UserDefaults.standard.string(forKey: "access_token") ?? "",
-            refreshToken: UserDefaults.standard.string(forKey: "refresh_token") ?? "",
-            accessExpiresAt: UserDefaults.standard.string(forKey: "access_expires_at") ?? "",
-            refreshExpiresAt: UserDefaults.standard.string(forKey: "refresh_expires_at") ?? "",
+            accountId: defaults.string(forKey: "account_id") ?? "",
+            accessToken: defaults.string(forKey: "access_token") ?? "",
+            refreshToken: defaults.string(forKey: "refresh_token") ?? "",
+            accessExpiresAt: defaults.string(forKey: "access_expires_at") ?? "",
+            refreshExpiresAt: defaults.string(forKey: "refresh_expires_at") ?? "",
             deviceLabel: deviceLabel.isEmpty ? "我的设备" : deviceLabel,
             token: profile.token,
             pairedBackendId: profile.backendId.isEmpty ? nil : profile.backendId,
             pairedBackendLabel: profile.backendLabel ?? profile.resolvedDisplayName,
             asrMode: profile.asrMode,
             asrProfileId: profile.asrProfileId,
-            lastLoginMode: UserDefaults.standard.string(forKey: "last_login_mode") ?? "",
-            lastPhoneNumber: UserDefaults.standard.string(forKey: "last_phone_number") ?? ""
+            lastLoginMode: defaults.string(forKey: "last_login_mode") ?? "",
+            lastPhoneNumber: defaults.string(forKey: "last_phone_number") ?? ""
         )
     }
 }

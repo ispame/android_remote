@@ -38,6 +38,7 @@ final class HeadsetConversationController: NSObject, ObservableObject {
 
     private let wsManager: WebSocketManager
     private let settingsManager: SettingsManager
+    private let recordingStore: RecordingStore?
     private let synthesizer = AVSpeechSynthesizer()
     private let promptTonePlayer = HeadsetPromptTonePlayer()
     private var cancellables = Set<AnyCancellable>()
@@ -74,10 +75,12 @@ final class HeadsetConversationController: NSObject, ObservableObject {
     init(
         wsManager: WebSocketManager,
         settingsManager: SettingsManager,
+        recordingStore: RecordingStore? = nil,
         bleManager: A9UltraBLEManager = A9UltraBLEManager()
     ) {
         self.wsManager = wsManager
         self.settingsManager = settingsManager
+        self.recordingStore = recordingStore
         self.bleManager = bleManager
         super.init()
         synthesizer.delegate = self
@@ -299,7 +302,24 @@ final class HeadsetConversationController: NSObject, ObservableObject {
 
         sessionState = .processing(side)
         let wav = WAVEncoder.encodePCM16Mono16k(pcm)
-        if wsManager.sendAudio(wav, profileId: profile.id) {
+        let recordingSettings = settingsManager.recordingSettings
+        if let clientMessageId = wsManager.sendRecordingAudioForAsr(
+            wav,
+            profileId: profile.id,
+            settings: recordingSettings,
+            source: .headset
+        ) {
+            _ = try? recordingStore?.createRecording(
+                agentId: profile.id,
+                audioData: wav,
+                asrText: "",
+                source: .headset,
+                clientMessageId: clientMessageId
+            )
+            guard recordingSettings.deliverToAgent else {
+                sessionState = .idle
+                return
+            }
             pendingReplyProfileToSide[profile.id] = side
         } else {
             sessionState = .idle
@@ -328,10 +348,7 @@ final class HeadsetConversationController: NSObject, ObservableObject {
     }
 
     private func profile(for side: HeadsetSide) -> AgentProfile? {
-        let profiles = settingsManager.profiles
-        // 两只耳朵共用第一个配置的 Agent profile
-        guard !profiles.isEmpty else { return nil }
-        let profile = profiles[0]
+        guard let profile = settingsManager.primaryRecordingProfile else { return nil }
         guard !profile.backendId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
         return profile
     }
