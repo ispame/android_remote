@@ -5,8 +5,14 @@ struct EarphoneLocalModelsTests {
     static func main() throws {
         try testAgentProfileDecodesPinnedDefaults()
         try testAgentProfilesSortPinnedFirst()
+        try testAgentProfilesSortPinnedBeforeUnreadActivity()
+        try testAgentProfilesSortUnreadBeforeReadActivity()
+        try testAgentProfilesSortRecentActivityWithinUnreadGroup()
+        try testAgentProfilesSortFallsBackWithoutActivity()
         try testCronValidatorAcceptsFiveFieldExpressions()
+        try testAgentTaskItemParsesProtocolPayload()
         try testRecordingStoreCreatesAndDeletesMetadata()
+        try testRecordingStoreBackfillsAsrByClientMessageId()
         try testHeadsetSettingsStorePersistsEQAndShortcuts()
         print("EarphoneLocalModelsTests passed")
     }
@@ -46,6 +52,69 @@ struct EarphoneLocalModelsTests {
         try expect(sorted.map(\.id) == ["pinned-first", "pinned-later", "recent", "old"], "pinned agents should sort first, then recent agents")
     }
 
+    private static func testAgentProfilesSortPinnedBeforeUnreadActivity() throws {
+        let pinnedOld = profile(id: "pinned-old", name: "Pinned Old", isPinned: true, sortIndex: 1, updatedAt: Date(timeIntervalSince1970: 100))
+        let unreadRecent = profile(id: "unread-recent", name: "Unread Recent", isPinned: false, sortIndex: 0, updatedAt: Date(timeIntervalSince1970: 500))
+        let activities = [
+            "pinned-old": AgentListActivity(latestMessagePreview: "older", latestMessageAt: Date(timeIntervalSince1970: 120)),
+            "unread-recent": AgentListActivity(latestMessagePreview: "newer", latestMessageAt: Date(timeIntervalSince1970: 900))
+        ]
+
+        let sorted = [unreadRecent, pinnedOld].sortedForAgentList(
+            unreadCounts: ["unread-recent": 2],
+            activities: activities
+        )
+
+        try expect(sorted.map(\.id) == ["pinned-old", "unread-recent"], "pinned agents should sort before unread unpinned agents")
+    }
+
+    private static func testAgentProfilesSortUnreadBeforeReadActivity() throws {
+        let readRecent = profile(id: "read-recent", name: "Read Recent", isPinned: false, sortIndex: 0, updatedAt: Date(timeIntervalSince1970: 100))
+        let unreadOld = profile(id: "unread-old", name: "Unread Old", isPinned: false, sortIndex: 0, updatedAt: Date(timeIntervalSince1970: 100))
+        let activities = [
+            "read-recent": AgentListActivity(latestMessagePreview: "newer", latestMessageAt: Date(timeIntervalSince1970: 900)),
+            "unread-old": AgentListActivity(latestMessagePreview: "older", latestMessageAt: Date(timeIntervalSince1970: 200))
+        ]
+
+        let sorted = [readRecent, unreadOld].sortedForAgentList(
+            unreadCounts: ["unread-old": 1],
+            activities: activities
+        )
+
+        try expect(sorted.map(\.id) == ["unread-old", "read-recent"], "unread unpinned agents should sort before read unpinned agents")
+    }
+
+    private static func testAgentProfilesSortRecentActivityWithinUnreadGroup() throws {
+        let olderUnread = profile(id: "older-unread", name: "Older Unread", isPinned: false, sortIndex: 0, updatedAt: Date(timeIntervalSince1970: 100))
+        let newerUnread = profile(id: "newer-unread", name: "Newer Unread", isPinned: false, sortIndex: 0, updatedAt: Date(timeIntervalSince1970: 100))
+        let statusUpdated = profile(id: "status-updated", name: "Status Updated", isPinned: false, sortIndex: 0, updatedAt: Date(timeIntervalSince1970: 100))
+        let activities = [
+            "older-unread": AgentListActivity(latestMessagePreview: "older", latestMessageAt: Date(timeIntervalSince1970: 200)),
+            "newer-unread": AgentListActivity(latestMessagePreview: "newer", latestMessageAt: Date(timeIntervalSince1970: 900)),
+            "status-updated": AgentListActivity(lastStatus: .available, lastStatusChangedAt: Date(timeIntervalSince1970: 600))
+        ]
+
+        let sorted = [olderUnread, statusUpdated, newerUnread].sortedForAgentList(
+            unreadCounts: ["older-unread": 1, "newer-unread": 1, "status-updated": 1],
+            activities: activities
+        )
+
+        try expect(sorted.map(\.id) == ["newer-unread", "status-updated", "older-unread"], "unread agents should sort by newest message or status activity")
+    }
+
+    private static func testAgentProfilesSortFallsBackWithoutActivity() throws {
+        let alpha = profile(id: "alpha", name: "Alpha", isPinned: false, sortIndex: 0, updatedAt: Date(timeIntervalSince1970: 100))
+        let beta = profile(id: "beta", name: "Beta", isPinned: false, sortIndex: 0, updatedAt: Date(timeIntervalSince1970: 100))
+        let recent = profile(id: "recent", name: "Recent", isPinned: false, sortIndex: 0, updatedAt: Date(timeIntervalSince1970: 300))
+
+        let sorted = [beta, recent, alpha].sortedForAgentList(
+            unreadCounts: [:],
+            activities: [:]
+        )
+
+        try expect(sorted.map(\.id) == ["recent", "alpha", "beta"], "agents without activity should fall back to updated date and display name")
+    }
+
     private static func testCronValidatorAcceptsFiveFieldExpressions() throws {
         try expect(CronExpressionValidator.isValid("*/15 * * * *"), "step minute cron should be valid")
         try expect(CronExpressionValidator.isValid("0 9 * * 1-5"), "weekday cron should be valid")
@@ -69,6 +138,44 @@ struct EarphoneLocalModelsTests {
 
         try expect(store.recordings(for: "agent-1").isEmpty, "deleted recording metadata should disappear")
         try expect(!FileManager.default.fileExists(atPath: item.fileURL.path), "deleted recording audio file should be removed")
+    }
+
+    private static func testAgentTaskItemParsesProtocolPayload() throws {
+        let item = AgentTaskItem(json: [
+            "task_id": "task-1",
+            "backend_id": "backend-1",
+            "title": "Morning brief",
+            "prompt": "Summarize overnight alerts",
+            "schedule": "0 8 * * *",
+            "schedule_display": "每天 08:00",
+            "enabled": true,
+            "state": "scheduled",
+            "source": "hermes",
+            "updated_at": "2026-05-24T00:00:00+08:00"
+        ])
+
+        try expect(item?.taskId == "task-1", "task id should parse from protocol payload")
+        try expect(item?.backendId == "backend-1", "backend id should parse from protocol payload")
+        try expect(item?.scheduleDisplay == "每天 08:00", "schedule display should parse from protocol payload")
+        try expect(item?.source == "hermes", "source should parse from protocol payload")
+    }
+
+    private static func testRecordingStoreBackfillsAsrByClientMessageId() throws {
+        let defaults = try temporaryDefaults()
+        let directory = try temporaryDirectory()
+        let store = RecordingStore(defaults: defaults, documentsDirectory: directory)
+
+        let item = try store.createRecording(
+            agentId: "agent-1",
+            audioData: Data([0x01]),
+            source: .phone,
+            clientMessageId: "client-audio-1"
+        )
+
+        store.updateAsrText(clientMessageId: "client-audio-1", text: "转写完成")
+
+        try expect(store.recordings(for: "agent-1").first?.id == item.id, "recording should still be listed")
+        try expect(store.recordings(for: "agent-1").first?.asrText == "转写完成", "ASR result should backfill matching recording")
     }
 
     private static func testHeadsetSettingsStorePersistsEQAndShortcuts() throws {

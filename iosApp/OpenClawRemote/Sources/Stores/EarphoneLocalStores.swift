@@ -77,7 +77,8 @@ final class RecordingStore: ObservableObject {
         audioData: Data,
         asrText: String = "",
         source: RecordingInputSource = .phone,
-        duration: TimeInterval = 0
+        duration: TimeInterval = 0,
+        clientMessageId: String? = nil
     ) throws -> RecordingItem {
         let id = UUID().uuidString
         let directory = documentsDirectory.appendingPathComponent("Recordings", isDirectory: true)
@@ -92,7 +93,8 @@ final class RecordingStore: ObservableObject {
             duration: duration,
             asrText: asrText,
             fileURL: fileURL,
-            source: source
+            source: source,
+            clientMessageId: clientMessageId
         )
         items.insert(item, at: 0)
         persist()
@@ -104,6 +106,12 @@ final class RecordingStore: ObservableObject {
             items[index] = item
             persist()
         }
+    }
+
+    func updateAsrText(clientMessageId: String, text: String) {
+        guard let index = items.firstIndex(where: { $0.clientMessageId == clientMessageId }) else { return }
+        items[index].asrText = text
+        persist()
     }
 
     func deleteRecording(id: String) throws {

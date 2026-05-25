@@ -7,6 +7,7 @@ struct RootTabView: View {
     @ObservedObject var headsetController: HeadsetConversationController
     @ObservedObject var messageSpeechController: MessageSpeechController
     @ObservedObject var scheduledTaskStore: ScheduledTaskStore
+    @ObservedObject var agentTaskService: AgentTaskService
     @ObservedObject var recordingStore: RecordingStore
     @ObservedObject var headsetSettingsStore: HeadsetSettingsStore
     let isDark: Bool
@@ -49,6 +50,7 @@ struct RootTabView: View {
                     audioRecorder: audioRecorder,
                     headsetController: headsetController,
                     scheduledTaskStore: scheduledTaskStore,
+                    agentTaskService: agentTaskService,
                     recordingStore: recordingStore,
                     colors: colors
                 )

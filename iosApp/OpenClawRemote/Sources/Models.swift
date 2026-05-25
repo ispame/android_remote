@@ -1,6 +1,6 @@
 import Foundation
 
-enum ConnectionState {
+enum ConnectionState: Equatable {
     case disconnected
     case connecting
     case connected
@@ -8,13 +8,13 @@ enum ConnectionState {
     case paired
 }
 
-enum PairingState {
+enum PairingState: Equatable {
     case unpaired
     case pending
     case paired
 }
 
-enum AgentAvailabilityStatus {
+enum AgentAvailabilityStatus: Equatable {
     case unconfigured
     case unpaired
     case pairing
@@ -293,8 +293,54 @@ struct AgentProfile: Identifiable, Codable, Equatable {
     }
 }
 
+struct AgentListActivity: Equatable {
+    var latestMessagePreview: String?
+    var latestMessageAt: Date?
+    var lastStatus: AgentAvailabilityStatus?
+    var lastStatusChangedAt: Date?
+
+    init(
+        latestMessagePreview: String? = nil,
+        latestMessageAt: Date? = nil,
+        lastStatus: AgentAvailabilityStatus? = nil,
+        lastStatusChangedAt: Date? = nil
+    ) {
+        self.latestMessagePreview = latestMessagePreview
+        self.latestMessageAt = latestMessageAt
+        self.lastStatus = lastStatus
+        self.lastStatusChangedAt = lastStatusChangedAt
+    }
+
+    var latestActivityAt: Date? {
+        switch (latestMessageAt, lastStatusChangedAt) {
+        case (.some(let messageAt), .some(let statusAt)):
+            return max(messageAt, statusAt)
+        case (.some(let messageAt), nil):
+            return messageAt
+        case (nil, .some(let statusAt)):
+            return statusAt
+        case (nil, nil):
+            return nil
+        }
+    }
+}
+
 extension Array where Element == AgentProfile {
     func sortedForAgentList() -> [AgentProfile] {
+        sortedForAgentListInternal(unreadCounts: nil, activities: nil)
+    }
+
+    func sortedForAgentList(
+        unreadCounts: [String: Int],
+        activities: [String: AgentListActivity]
+    ) -> [AgentProfile] {
+        sortedForAgentListInternal(unreadCounts: unreadCounts, activities: activities)
+    }
+
+    private func sortedForAgentListInternal(
+        unreadCounts: [String: Int]?,
+        activities: [String: AgentListActivity]?
+    ) -> [AgentProfile] {
         sorted { left, right in
             if left.isPinned != right.isPinned {
                 return left.isPinned && !right.isPinned
@@ -302,6 +348,30 @@ extension Array where Element == AgentProfile {
             if left.isPinned, right.isPinned, left.sortIndex != right.sortIndex {
                 return left.sortIndex < right.sortIndex
             }
+
+            if !left.isPinned, !right.isPinned, let unreadCounts {
+                let leftUnread = (unreadCounts[left.id] ?? 0) > 0
+                let rightUnread = (unreadCounts[right.id] ?? 0) > 0
+                if leftUnread != rightUnread {
+                    return leftUnread && !rightUnread
+                }
+            }
+
+            if !left.isPinned, !right.isPinned, let activities {
+                let leftActivity = activities[left.id]?.latestActivityAt
+                let rightActivity = activities[right.id]?.latestActivityAt
+                switch (leftActivity, rightActivity) {
+                case (.some(let leftDate), .some(let rightDate)) where leftDate != rightDate:
+                    return leftDate > rightDate
+                case (.some, nil):
+                    return true
+                case (nil, .some):
+                    return false
+                default:
+                    break
+                }
+            }
+
             if left.updatedAt != right.updatedAt {
                 return left.updatedAt > right.updatedAt
             }
@@ -323,6 +393,8 @@ struct GatewayConfig {
     var pairedBackendLabel: String?
     var asrMode: String
     var asrProfileId: String
+    var lastLoginMode: String
+    var lastPhoneNumber: String
 
     init(
         gatewayUrl: String = "wss://boson-tech.top/ws",
@@ -336,7 +408,9 @@ struct GatewayConfig {
         pairedBackendId: String? = nil,
         pairedBackendLabel: String? = nil,
         asrMode: String = "router",
-        asrProfileId: String = ""
+        asrProfileId: String = "",
+        lastLoginMode: String = "",
+        lastPhoneNumber: String = ""
     ) {
         self.gatewayUrl = gatewayUrl
         self.accountId = accountId
@@ -350,6 +424,8 @@ struct GatewayConfig {
         self.pairedBackendLabel = pairedBackendLabel
         self.asrMode = asrMode
         self.asrProfileId = asrProfileId
+        self.lastLoginMode = lastLoginMode
+        self.lastPhoneNumber = lastPhoneNumber
     }
 }
 

@@ -24,14 +24,25 @@ final class WebSocketManager: ObservableObject {
     private var webSocketTask: URLSessionWebSocketTask?
     private let session = URLSession(configuration: .default)
 
-    @Published var connectionState: ConnectionState = .disconnected
-    @Published var pairingState: PairingState = .unpaired
+    @Published var connectionState: ConnectionState = .disconnected {
+        didSet {
+            guard oldValue != connectionState else { return }
+            refreshKnownStatusActivities()
+        }
+    }
+    @Published var pairingState: PairingState = .unpaired {
+        didSet {
+            guard oldValue != pairingState, let activeProfileId else { return }
+            refreshStatusActivity(profileId: activeProfileId)
+        }
+    }
     @Published private(set) var messages: [ChatMessage] = []
     @Published private(set) var historyLoading = false
     @Published private(set) var historyError: String?
     @Published private(set) var historyHasMore = false
     @Published private(set) var historyLoaded = false
     @Published private(set) var unreadCounts: [String: Int] = [:]
+    @Published private(set) var agentListActivities: [String: AgentListActivity] = [:]
 
     private let messageSubject = PassthroughSubject<WsMessageEvent, Never>()
     var messageChannel: AnyPublisher<WsMessageEvent, Never> {
@@ -41,6 +52,7 @@ final class WebSocketManager: ObservableObject {
     private var activeProfileId: String?
     private var activePlatform: AgentPlatform = .openclaw
     private var profileStates: [String: ProfileRuntimeState] = [:]
+    private var knownProfiles: [String: AgentProfile] = [:]
     private var profileIdsByBackendId: [String: String] = [:]
     private var pendingHistoryProfileId: String?
     private var pendingAudioProfileIdsByClientMessageId: [String: String] = [:]
@@ -75,8 +87,10 @@ final class WebSocketManager: ObservableObject {
 
     func syncProfiles(_ profiles: [AgentProfile]) {
         let knownIds = Set(profiles.map(\.id))
+        knownProfiles = Dictionary(uniqueKeysWithValues: profiles.map { ($0.id, $0) })
         profileStates = profileStates.filter { knownIds.contains($0.key) }
         unreadCounts = unreadCounts.filter { knownIds.contains($0.key) }
+        agentListActivities = agentListActivities.filter { knownIds.contains($0.key) }
         profileIdsByBackendId = [:]
 
         for profile in profiles {
@@ -97,6 +111,7 @@ final class WebSocketManager: ObservableObject {
                 unreadCounts[profile.id] = 0
             }
         }
+        refreshKnownStatusActivities(markChanges: false)
     }
 
     func applyProfile(_ profile: AgentProfile, deviceLabel: String, accessToken: String) {
@@ -160,17 +175,58 @@ final class WebSocketManager: ObservableObject {
         }
     }
 
+    private func refreshKnownStatusActivities(markChanges: Bool = true) {
+        for profile in knownProfiles.values {
+            recordStatusActivity(
+                profileId: profile.id,
+                status: availabilityStatus(for: profile),
+                markChange: markChanges
+            )
+        }
+    }
+
+    private func refreshStatusActivity(profileId: String, markChanges: Bool = true) {
+        guard let profile = knownProfiles[profileId] else { return }
+        recordStatusActivity(
+            profileId: profileId,
+            status: availabilityStatus(for: profile),
+            markChange: markChanges
+        )
+    }
+
+    private func recordStatusActivity(
+        profileId: String,
+        status: AgentAvailabilityStatus,
+        markChange: Bool,
+        at date: Date = Date()
+    ) {
+        var activity = agentListActivities[profileId] ?? AgentListActivity()
+        if activity.lastStatus == nil {
+            activity.lastStatus = status
+        } else if activity.lastStatus != status {
+            activity.lastStatus = status
+            if markChange {
+                activity.lastStatusChangedAt = date
+            }
+        }
+        setAgentListActivity(activity, profileId: profileId)
+    }
+
     func clearProfileState(profileId: String) {
         profileStates[profileId] = ProfileRuntimeState()
         unreadCounts[profileId] = 0
+        setAgentListActivity(AgentListActivity(), profileId: profileId)
         if profileId == activeProfileId {
             loadRuntimeState(ProfileRuntimeState())
         }
+        refreshStatusActivity(profileId: profileId, markChanges: false)
     }
 
     func removeProfileState(profileId: String) {
         profileStates.removeValue(forKey: profileId)
+        knownProfiles.removeValue(forKey: profileId)
         unreadCounts.removeValue(forKey: profileId)
+        agentListActivities.removeValue(forKey: profileId)
         profileIdsByBackendId = profileIdsByBackendId.filter { $0.value != profileId }
         pendingAudioProfileIdsByClientMessageId = pendingAudioProfileIdsByClientMessageId.filter { $0.value != profileId }
         if pendingHistoryProfileId == profileId {
@@ -332,6 +388,91 @@ final class WebSocketManager: ObservableObject {
         sendJson(frame)
     }
 
+    @discardableResult
+    func requestTaskList(requestId: String, backendId: String, includeDisabled: Bool) -> Bool {
+        guard canSendBackendRequest(backendId) else { return false }
+        sendJson([
+            "type": "task_list_request",
+            "request_id": requestId,
+            "backend_id": backendId,
+            "include_disabled": includeDisabled
+        ])
+        return true
+    }
+
+    @discardableResult
+    func createAgentTask(
+        requestId: String,
+        backendId: String,
+        title: String,
+        prompt: String,
+        schedule: String?,
+        enabled: Bool
+    ) -> Bool {
+        guard canSendBackendRequest(backendId) else { return false }
+        var frame: [String: Any] = [
+            "type": "task_create_request",
+            "request_id": requestId,
+            "backend_id": backendId,
+            "title": title,
+            "prompt": prompt,
+            "enabled": enabled
+        ]
+        if let schedule, !schedule.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            frame["schedule"] = schedule
+        }
+        sendJson(frame)
+        return true
+    }
+
+    @discardableResult
+    func updateAgentTask(
+        requestId: String,
+        backendId: String,
+        taskId: String,
+        title: String,
+        prompt: String,
+        schedule: String,
+        enabled: Bool
+    ) -> Bool {
+        guard canSendBackendRequest(backendId) else { return false }
+        sendJson([
+            "type": "task_update_request",
+            "request_id": requestId,
+            "backend_id": backendId,
+            "task_id": taskId,
+            "title": title,
+            "prompt": prompt,
+            "schedule": schedule,
+            "enabled": enabled
+        ])
+        return true
+    }
+
+    @discardableResult
+    func deleteAgentTask(requestId: String, backendId: String, taskId: String) -> Bool {
+        guard canSendBackendRequest(backendId) else { return false }
+        sendJson([
+            "type": "task_delete_request",
+            "request_id": requestId,
+            "backend_id": backendId,
+            "task_id": taskId
+        ])
+        return true
+    }
+
+    @discardableResult
+    func requestApprovalHistory(requestId: String, backendId: String, limit: Int) -> Bool {
+        guard canSendBackendRequest(backendId) else { return false }
+        sendJson([
+            "type": "approval_history_request",
+            "request_id": requestId,
+            "backend_id": backendId,
+            "limit": limit
+        ])
+        return true
+    }
+
     func sendAudio(_ data: Data) {
         guard pairingState == .paired, let backendId = registeredBackendId else { return }
         let base64 = data.base64EncodedString()
@@ -365,10 +506,15 @@ final class WebSocketManager: ObservableObject {
 
     @discardableResult
     func sendAudio(_ data: Data, profileId: String) -> Bool {
+        sendAudioForAsr(data, profileId: profileId) != nil
+    }
+
+    @discardableResult
+    func sendAudioForAsr(_ data: Data, profileId: String) -> String? {
         let state = profileId == activeProfileId
             ? currentRuntimeStateSnapshot()
             : (profileStates[profileId] ?? ProfileRuntimeState())
-        guard state.pairingState == .paired, let backendId = state.registeredBackendId else { return false }
+        guard state.pairingState == .paired, let backendId = state.registeredBackendId else { return nil }
 
         let base64 = data.base64EncodedString()
         let messageId = "msg_\(UUID().uuidString)"
@@ -403,7 +549,7 @@ final class WebSocketManager: ObservableObject {
         appendMessage(msg, profileId: profileId)
         pendingAudioProfileIdsByClientMessageId[clientMessageId] = profileId
         sendJson(frame)
-        return true
+        return clientMessageId
     }
 
     func unpair() {
@@ -430,9 +576,21 @@ final class WebSocketManager: ObservableObject {
             state.preferredBackendLabel = nil
             state.pairingState = .unpaired
             profileStates[profileId] = state
+            refreshStatusActivity(profileId: profileId)
         }
         profileIdsByBackendId.removeValue(forKey: backendId)
         messageSubject.send(.unpaired(profileId: profileId))
+    }
+
+    private func canSendBackendRequest(_ backendId: String) -> Bool {
+        let normalizedBackendId = backendId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedBackendId.isEmpty else { return false }
+        switch connectionState {
+        case .registered, .paired:
+            return true
+        case .connecting, .connected, .disconnected:
+            return false
+        }
     }
 
     private func normalizeGatewayUrl(_ urlString: String) -> String? {
@@ -642,6 +800,21 @@ final class WebSocketManager: ObservableObject {
                     ?? self.activeProfileId
                 self.handleHistoryResponse(json, profileId: responseProfileId)
 
+            case "task_list_response":
+                self.messageSubject.send(.taskListResponse(TaskListResponsePayload(json: json)))
+
+            case "task_create_response":
+                self.messageSubject.send(.taskCreateResponse(TaskMutationResponsePayload(json: json)))
+
+            case "task_update_response":
+                self.messageSubject.send(.taskUpdateResponse(TaskMutationResponsePayload(json: json)))
+
+            case "task_delete_response":
+                self.messageSubject.send(.taskDeleteResponse(TaskMutationResponsePayload(json: json)))
+
+            case "approval_history_response":
+                self.messageSubject.send(.approvalHistoryResponse(ApprovalHistoryResponsePayload(json: json)))
+
             case "message_ack", "ack":
                 break
 
@@ -703,6 +876,7 @@ final class WebSocketManager: ObservableObject {
                 state.preferredBackendLabel = backendLabel
                 state.pairingState = .paired
                 profileStates[profileId] = state
+                refreshStatusActivity(profileId: profileId)
             }
             profileIdsByBackendId[backendId] = profileId
             messageSubject.send(.paired(profileId: profileId, backendId: backendId, backendLabel: backendLabel))
@@ -710,6 +884,11 @@ final class WebSocketManager: ObservableObject {
             if profileId == activeProfileId {
                 pairingState = .unpaired
                 persistActiveRuntimeState()
+            } else {
+                var state = profileStates[profileId] ?? ProfileRuntimeState()
+                state.pairingState = .unpaired
+                profileStates[profileId] = state
+                refreshStatusActivity(profileId: profileId)
             }
             appendMessage("配对请求被拒绝", senderId: "assistant", profileId: profileId)
         }
@@ -750,6 +929,7 @@ final class WebSocketManager: ObservableObject {
             state.preferredBackendLabel = nil
             state.pairingState = .unpaired
             profileStates[profileId] = state
+            refreshStatusActivity(profileId: profileId)
         }
         messageSubject.send(.unpaired(profileId: profileId))
         appendMessage("已解除配对", senderId: "assistant", profileId: profileId)
@@ -821,6 +1001,9 @@ final class WebSocketManager: ObservableObject {
         if !newMessages.isEmpty {
             state.messages = newMessages + state.messages
         }
+        for message in parsed {
+            updateMessageActivity(profileId: profileId, message: message, fallbackDate: .distantPast)
+        }
         state.historyHasMore = json["has_more"] as? Bool ?? false
         state.historyLoaded = true
         state.historyError = nil
@@ -833,6 +1016,9 @@ final class WebSocketManager: ObservableObject {
         let text = json["text"] as? String
         let error = json["error"] as? String
         guard let clientMessageId else { return }
+        if let payload = ASRResultEventPayload(json: json) {
+            messageSubject.send(.asrResult(payload))
+        }
         let profileId = pendingAudioProfileIdsByClientMessageId.removeValue(forKey: clientMessageId) ?? activeProfileId
         guard let profileId else { return }
         var state = profileId == activeProfileId ? currentRuntimeStateSnapshot() : (profileStates[profileId] ?? ProfileRuntimeState())
@@ -858,6 +1044,7 @@ final class WebSocketManager: ObservableObject {
             clientMessageId: old.clientMessageId
         )
         state.messages = updatedMessages
+        updateMessageActivity(profileId: profileId, message: updatedMessages[idx], forcePreview: true)
         saveRuntimeState(state, profileId: profileId)
     }
 
@@ -913,6 +1100,38 @@ final class WebSocketManager: ObservableObject {
         "\(message.senderId)|\(message.rawTimestamp ?? message.timestamp)|\(message.content)"
     }
 
+    private func setAgentListActivity(_ activity: AgentListActivity, profileId: String) {
+        var activities = agentListActivities
+        activities[profileId] = activity
+        agentListActivities = activities
+    }
+
+    private func updateMessageActivity(
+        profileId: String,
+        message: ChatMessage,
+        fallbackDate: Date = Date(),
+        forcePreview: Bool = false
+    ) {
+        guard let preview = messagePreview(for: message.content) else { return }
+        let messageDate = message.rawTimestamp
+            .flatMap { HistoryMessagePayload.date(from: $0) } ?? fallbackDate
+        var activity = agentListActivities[profileId] ?? AgentListActivity()
+        if forcePreview || activity.latestMessageAt == nil || messageDate >= activity.latestMessageAt! {
+            activity.latestMessagePreview = preview
+            activity.latestMessageAt = messageDate
+            setAgentListActivity(activity, profileId: profileId)
+        }
+    }
+
+    private func messagePreview(for content: String) -> String? {
+        let preview = content
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return preview.isEmpty ? nil : preview
+    }
+
     @discardableResult
     private func addLocalMessageWithStatus(_ content: String, senderId: String, status: MessageStatus, seq: Int?, clientMessageId: String? = nil) -> ChatMessage {
         let msg = ChatMessage(content: content, timestamp: timestamp(), senderId: senderId, status: status, seq: seq, clientMessageId: clientMessageId)
@@ -949,6 +1168,7 @@ final class WebSocketManager: ObservableObject {
                 unreadCounts[profileId, default: 0] += 1
             }
         }
+        updateMessageActivity(profileId: profileId, message: message)
         messageSubject.send(.newMessage(profileId: profileId, message))
     }
 
@@ -1026,6 +1246,12 @@ enum WsMessageEvent {
     case paired(profileId: String, backendId: String, backendLabel: String)
     case unpaired(profileId: String)
     case newMessage(profileId: String, ChatMessage)
+    case taskListResponse(TaskListResponsePayload)
+    case taskCreateResponse(TaskMutationResponsePayload)
+    case taskUpdateResponse(TaskMutationResponsePayload)
+    case taskDeleteResponse(TaskMutationResponsePayload)
+    case approvalHistoryResponse(ApprovalHistoryResponsePayload)
+    case asrResult(ASRResultEventPayload)
     case sessionPreempted(replacementTerminalLabel: String?)
     case error(code: String, message: String)
 }

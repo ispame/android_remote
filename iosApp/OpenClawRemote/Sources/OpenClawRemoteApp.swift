@@ -12,6 +12,7 @@ struct OpenClawRemoteApp: App {
     @StateObject private var audioRecorder = AudioRecorder()
     @StateObject private var messageSpeechController = MessageSpeechController()
     @StateObject private var scheduledTaskStore = ScheduledTaskStore()
+    @StateObject private var agentTaskService: AgentTaskService
     @StateObject private var recordingStore = RecordingStore()
     @StateObject private var headsetSettingsStore = HeadsetSettingsStore()
 
@@ -28,6 +29,9 @@ struct OpenClawRemoteApp: App {
         )
         manager.syncProfiles(settings.profiles)
         _wsManager = StateObject(wrappedValue: manager)
+        let taskService = AgentTaskService()
+        taskService.bind(to: manager)
+        _agentTaskService = StateObject(wrappedValue: taskService)
         _headsetController = StateObject(wrappedValue: HeadsetConversationController(
             wsManager: manager,
             settingsManager: settings
@@ -46,8 +50,8 @@ struct OpenClawRemoteApp: App {
                         config: settingsManager.configPublished,
                         colors: colors,
                         notice: authNotice,
-                        onAuthenticated: { session, gatewayUrl, terminalLabel in
-                            applyAuthSession(session, gatewayUrl: gatewayUrl, terminalLabel: terminalLabel)
+                        onAuthenticated: { session, gatewayUrl, terminalLabel, loginMode, phoneNumber in
+                            applyAuthSession(session, gatewayUrl: gatewayUrl, terminalLabel: terminalLabel, loginMode: loginMode, phoneNumber: phoneNumber)
                         },
                         onNoticeShown: {
                             authNotice = nil
@@ -61,6 +65,7 @@ struct OpenClawRemoteApp: App {
                         headsetController: headsetController,
                         messageSpeechController: messageSpeechController,
                         scheduledTaskStore: scheduledTaskStore,
+                        agentTaskService: agentTaskService,
                         recordingStore: recordingStore,
                         headsetSettingsStore: headsetSettingsStore,
                         isDark: isDark,
@@ -184,13 +189,24 @@ struct OpenClawRemoteApp: App {
             }
         case .newMessage(_, _):
             break
+        case .taskListResponse,
+             .taskCreateResponse,
+             .taskUpdateResponse,
+             .taskDeleteResponse,
+             .approvalHistoryResponse:
+            break
+        case .asrResult(let payload):
+            guard payload.success, let text = payload.text else { break }
+            recordingStore.updateAsrText(clientMessageId: payload.clientMessageId, text: text)
         }
     }
 
     private func applyAuthSession(
         _ session: GatewayAuthSessionResponse,
         gatewayUrl: String,
-        terminalLabel: String
+        terminalLabel: String,
+        loginMode: String,
+        phoneNumber: String
     ) {
         let current = settingsManager.configPublished
         settingsManager.updateConfig(
@@ -206,7 +222,9 @@ struct OpenClawRemoteApp: App {
                 pairedBackendId: current.pairedBackendId,
                 pairedBackendLabel: current.pairedBackendLabel,
                 asrMode: current.asrMode,
-                asrProfileId: current.asrProfileId
+                asrProfileId: current.asrProfileId,
+                lastLoginMode: loginMode,
+                lastPhoneNumber: phoneNumber
             )
         )
         authNotice = nil
@@ -232,7 +250,9 @@ struct OpenClawRemoteApp: App {
                 pairedBackendId: current.pairedBackendId,
                 pairedBackendLabel: current.pairedBackendLabel,
                 asrMode: current.asrMode,
-                asrProfileId: current.asrProfileId
+                asrProfileId: current.asrProfileId,
+                lastLoginMode: current.lastLoginMode,
+                lastPhoneNumber: current.lastPhoneNumber
             )
         )
     }

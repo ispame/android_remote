@@ -7,7 +7,6 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		0C2200A9BA5D0E561704B9D7 /* Pods_OpenClawRemote.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C9342A3201E9B250E7EBFD1E /* Pods_OpenClawRemote.framework */; };
 		1B5B33DFF38C672BE1947434 /* InputAreaView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2DD481DC8CD7C44EB62100B1 /* InputAreaView.swift */; };
 		3F714AF4F704E166FDC5DC8A /* QRScannerScreenView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A609FE540C0EE0FA6D377651 /* QRScannerScreenView.swift */; };
 		40322FDC2A44A520F247A030 /* RootTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 946F3E489BE259CFEA074CD7 /* RootTabView.swift */; };
@@ -17,13 +16,16 @@
 		62B40259D739BDC54D685713 /* EarphoneLocalModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 63155F121643AE1EC381DFB9 /* EarphoneLocalModels.swift */; };
 		63974BB6FBBEFB347265A4AB /* A9UltraBLEManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFF62CA2DACEAB18522B07FE /* A9UltraBLEManager.swift */; };
 		689254496DC5E3A6E2E1858A /* ABMateProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A35BA9D214C277B34416F0C /* ABMateProtocol.swift */; };
+		6C76DCFE77B6428A07D48185 /* AgentTaskService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 863303DD7B9B435FD91AA29F /* AgentTaskService.swift */; };
 		757F44AF1E57EADB8B1A4FD7 /* SettingsManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 588828949ADF26913AD9F483 /* SettingsManager.swift */; };
 		786EA1B3EB480BF0320C0DAF /* HeadsetPromptTonePlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE3AD6551BE12ADBCD28809B /* HeadsetPromptTonePlayer.swift */; };
 		7AA92872F90BDAD555943317 /* SimpleSettingsTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 494F3D124DB916CDB7F922CA /* SimpleSettingsTabView.swift */; };
 		7C346FFD960C00641EA59882 /* HeadsetConversationController.swift in Sources */ = {isa = PBXBuildFile; fileRef = FBEAEB450F34C85C45512B3F /* HeadsetConversationController.swift */; };
 		895CCA6DF685313BBF44A9A8 /* MessageBubbleView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7373BB88261A2851504B020F /* MessageBubbleView.swift */; };
 		8D23C9E4C82B76B0AF0E1473 /* AuthRecoveryPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D02B25F69B1B6290DDA3FDF /* AuthRecoveryPolicy.swift */; };
+		8D293ED93005ED628A2AC3D3 /* AgentTaskModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA99CF9EC0C0759B08A5E4E0 /* AgentTaskModels.swift */; };
 		916447AB25FB0B3836E6DCBE /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 4CE1DF8496D56DC00F4FE1A9 /* LaunchScreen.storyboard */; };
+		9370B501EF788A5498CF1818 /* Pods_OpenClawRemote.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B27E22F8A4595C431A3223ED /* Pods_OpenClawRemote.framework */; };
 		953448EA4BD143E79D81431D /* AudioRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = D8723AA06B30B5639AC2D8FF /* AudioRecorder.swift */; };
 		97BCF21F9FEFBE50BB814EDC /* MainScreenView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0485DBA11E12B632C6AA47D7 /* MainScreenView.swift */; };
 		9B6D09E6E8C642FA37310D6F /* HeadsetAudio.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A7B5EDF4DC4CA8A16435AB7 /* HeadsetAudio.swift */; };
@@ -44,14 +46,12 @@
 /* Begin PBXFileReference section */
 		0485DBA11E12B632C6AA47D7 /* MainScreenView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainScreenView.swift; sourceTree = "<group>"; };
 		0C60717D2A2A02F7B79A6551 /* MochiColors.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MochiColors.swift; sourceTree = "<group>"; };
-		227D17F330592ED4A7CEAE01 /* Pods-OpenClawRemote.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-OpenClawRemote.release.xcconfig"; path = "Target Support Files/Pods-OpenClawRemote/Pods-OpenClawRemote.release.xcconfig"; sourceTree = "<group>"; };
 		2DD481DC8CD7C44EB62100B1 /* InputAreaView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InputAreaView.swift; sourceTree = "<group>"; };
 		34BEE752760A7FD40F723C88 /* OpusDecoderBridge.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = OpusDecoderBridge.m; sourceTree = "<group>"; };
 		3A602978B2C24D4294DF971F /* SettingsScreenView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsScreenView.swift; sourceTree = "<group>"; };
 		494F3D124DB916CDB7F922CA /* SimpleSettingsTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SimpleSettingsTabView.swift; sourceTree = "<group>"; };
 		4CE1DF8496D56DC00F4FE1A9 /* LaunchScreen.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = LaunchScreen.storyboard; sourceTree = "<group>"; };
 		54F44A7556003A94BF41818D /* OpenClawRemote.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OpenClawRemote.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		560EB0CFD1C9A1AADA99F11C /* Pods-OpenClawRemote.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-OpenClawRemote.debug.xcconfig"; path = "Target Support Files/Pods-OpenClawRemote/Pods-OpenClawRemote.debug.xcconfig"; sourceTree = "<group>"; };
 		57E4B5479FB4EB89A59AD424 /* EarphoneLocalStores.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EarphoneLocalStores.swift; sourceTree = "<group>"; };
 		588828949ADF26913AD9F483 /* SettingsManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsManager.swift; sourceTree = "<group>"; };
 		5A35BA9D214C277B34416F0C /* ABMateProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ABMateProtocol.swift; sourceTree = "<group>"; };
@@ -65,14 +65,18 @@
 		79B57CE4BEC7A0885C2C6FB4 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		7A4955135A9774CBE701184A /* OpenClawRemoteApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenClawRemoteApp.swift; sourceTree = "<group>"; };
 		7D02B25F69B1B6290DDA3FDF /* AuthRecoveryPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthRecoveryPolicy.swift; sourceTree = "<group>"; };
+		863303DD7B9B435FD91AA29F /* AgentTaskService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentTaskService.swift; sourceTree = "<group>"; };
 		90479CF918A09AE199E83FAE /* EarphoneSharedViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EarphoneSharedViews.swift; sourceTree = "<group>"; };
 		946F3E489BE259CFEA074CD7 /* RootTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootTabView.swift; sourceTree = "<group>"; };
 		A609FE540C0EE0FA6D377651 /* QRScannerScreenView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QRScannerScreenView.swift; sourceTree = "<group>"; };
 		A6FF090AB17E92E2BE7DA7FA /* AgentsTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentsTabView.swift; sourceTree = "<group>"; };
 		ACC1BA8D2A85A4A40055F08E /* MochiTypography.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MochiTypography.swift; sourceTree = "<group>"; };
+		B27E22F8A4595C431A3223ED /* Pods_OpenClawRemote.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Pods_OpenClawRemote.framework; sourceTree = BUILT_PRODUCTS_DIR; };
+		BA99CF9EC0C0759B08A5E4E0 /* AgentTaskModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentTaskModels.swift; sourceTree = "<group>"; };
 		BF27902A11DB4EFB0E211233 /* WebSocketManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebSocketManager.swift; sourceTree = "<group>"; };
-		C9342A3201E9B250E7EBFD1E /* Pods_OpenClawRemote.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Pods_OpenClawRemote.framework; sourceTree = BUILT_PRODUCTS_DIR; };
+		CC3E02E2C53F30B646483BA2 /* Pods-OpenClawRemote.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-OpenClawRemote.release.xcconfig"; path = "Target Support Files/Pods-OpenClawRemote/Pods-OpenClawRemote.release.xcconfig"; sourceTree = "<group>"; };
 		CFF62CA2DACEAB18522B07FE /* A9UltraBLEManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = A9UltraBLEManager.swift; sourceTree = "<group>"; };
+		D0B613F270534D9FC37C175B /* Pods-OpenClawRemote.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-OpenClawRemote.debug.xcconfig"; path = "Target Support Files/Pods-OpenClawRemote/Pods-OpenClawRemote.debug.xcconfig"; sourceTree = "<group>"; };
 		D8723AA06B30B5639AC2D8FF /* AudioRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioRecorder.swift; sourceTree = "<group>"; };
 		D9D61AD927982A4ACE6F1128 /* OpenClawRemote-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "OpenClawRemote-Bridging-Header.h"; sourceTree = "<group>"; };
 		EB31F81F478C695F9929F943 /* MessageSpeechController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageSpeechController.swift; sourceTree = "<group>"; };
@@ -82,11 +86,11 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
-		2E3AC5DF283578EE014CEE4C /* Frameworks */ = {
+		454D4F63A978C36BD9F959CD /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				0C2200A9BA5D0E561704B9D7 /* Pods_OpenClawRemote.framework in Frameworks */,
+				9370B501EF788A5498CF1818 /* Pods_OpenClawRemote.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -104,6 +108,7 @@
 		3B1DAD74F0562A66113C1BF4 /* Models */ = {
 			isa = PBXGroup;
 			children = (
+				BA99CF9EC0C0759B08A5E4E0 /* AgentTaskModels.swift */,
 				63155F121643AE1EC381DFB9 /* EarphoneLocalModels.swift */,
 			);
 			path = Models;
@@ -129,26 +134,26 @@
 				4CE1DF8496D56DC00F4FE1A9 /* LaunchScreen.storyboard */,
 				893917C58E04C23AC21F869F /* Sources */,
 				0638353D6639E542F59D0912 /* Products */,
-				826E149EA7C0C7F35FC0A9E4 /* Pods */,
-				630D34E980CFCCBB5599CD59 /* Frameworks */,
+				80499048D2D93994CCFC2384 /* Pods */,
+				847C9CC7D310AA815B519388 /* Frameworks */,
 			);
 			sourceTree = "<group>";
 		};
-		630D34E980CFCCBB5599CD59 /* Frameworks */ = {
+		80499048D2D93994CCFC2384 /* Pods */ = {
 			isa = PBXGroup;
 			children = (
-				C9342A3201E9B250E7EBFD1E /* Pods_OpenClawRemote.framework */,
-			);
-			name = Frameworks;
-			sourceTree = "<group>";
-		};
-		826E149EA7C0C7F35FC0A9E4 /* Pods */ = {
-			isa = PBXGroup;
-			children = (
-				560EB0CFD1C9A1AADA99F11C /* Pods-OpenClawRemote.debug.xcconfig */,
-				227D17F330592ED4A7CEAE01 /* Pods-OpenClawRemote.release.xcconfig */,
+				D0B613F270534D9FC37C175B /* Pods-OpenClawRemote.debug.xcconfig */,
+				CC3E02E2C53F30B646483BA2 /* Pods-OpenClawRemote.release.xcconfig */,
 			);
 			path = Pods;
+			sourceTree = "<group>";
+		};
+		847C9CC7D310AA815B519388 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				B27E22F8A4595C431A3223ED /* Pods_OpenClawRemote.framework */,
+			);
+			name = Frameworks;
 			sourceTree = "<group>";
 		};
 		893917C58E04C23AC21F869F /* Sources */ = {
@@ -195,6 +200,7 @@
 		DD4F6A0BA15DE0A0643A4075 /* Stores */ = {
 			isa = PBXGroup;
 			children = (
+				863303DD7B9B435FD91AA29F /* AgentTaskService.swift */,
 				57E4B5479FB4EB89A59AD424 /* EarphoneLocalStores.swift */,
 			);
 			path = Stores;
@@ -207,11 +213,11 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 9DC830C1DB564014ED8B3085 /* Build configuration list for PBXNativeTarget "OpenClawRemote" */;
 			buildPhases = (
-				F705122334ACB4133DEA9ADC /* [CP] Check Pods Manifest.lock */,
+				5653C703E7D66A07C6D3992E /* [CP] Check Pods Manifest.lock */,
 				FB92072CDD8931FF1C69EB7E /* Sources */,
 				6AB989F2846EFCE8ED135BF6 /* Resources */,
-				2E3AC5DF283578EE014CEE4C /* Frameworks */,
-				532D40097F8A1EA0407C793A /* [CP] Embed Pods Frameworks */,
+				454D4F63A978C36BD9F959CD /* Frameworks */,
+				E3895B3278A817643DF34E33 /* [CP] Embed Pods Frameworks */,
 			);
 			buildRules = (
 			);
@@ -268,28 +274,7 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
-		532D40097F8A1EA0407C793A /* [CP] Embed Pods Frameworks */ = {
-			isa = PBXShellScriptBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			inputFileListPaths = (
-				"${PODS_ROOT}/Target Support Files/Pods-OpenClawRemote/Pods-OpenClawRemote-frameworks-${CONFIGURATION}-input-files.xcfilelist",
-			);
-			inputPaths = (
-			);
-			name = "[CP] Embed Pods Frameworks";
-			outputFileListPaths = (
-				"${PODS_ROOT}/Target Support Files/Pods-OpenClawRemote/Pods-OpenClawRemote-frameworks-${CONFIGURATION}-output-files.xcfilelist",
-			);
-			outputPaths = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-			shellPath = /bin/sh;
-			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-OpenClawRemote/Pods-OpenClawRemote-frameworks.sh\"\n";
-			showEnvVarsInLog = 0;
-		};
-		F705122334ACB4133DEA9ADC /* [CP] Check Pods Manifest.lock */ = {
+		5653C703E7D66A07C6D3992E /* [CP] Check Pods Manifest.lock */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -311,6 +296,27 @@
 			shellScript = "diff \"${PODS_PODFILE_DIR_PATH}/Podfile.lock\" \"${PODS_ROOT}/Manifest.lock\" > /dev/null\nif [ $? != 0 ] ; then\n    # print error to STDERR\n    echo \"error: The sandbox is not in sync with the Podfile.lock. Run 'pod install' or update your CocoaPods installation.\" >&2\n    exit 1\nfi\n# This output is used by Xcode 'outputs' to avoid re-running this script phase.\necho \"SUCCESS\" > \"${SCRIPT_OUTPUT_FILE_0}\"\n";
 			showEnvVarsInLog = 0;
 		};
+		E3895B3278A817643DF34E33 /* [CP] Embed Pods Frameworks */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+				"${PODS_ROOT}/Target Support Files/Pods-OpenClawRemote/Pods-OpenClawRemote-frameworks-${CONFIGURATION}-input-files.xcfilelist",
+			);
+			inputPaths = (
+			);
+			name = "[CP] Embed Pods Frameworks";
+			outputFileListPaths = (
+				"${PODS_ROOT}/Target Support Files/Pods-OpenClawRemote/Pods-OpenClawRemote-frameworks-${CONFIGURATION}-output-files.xcfilelist",
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-OpenClawRemote/Pods-OpenClawRemote-frameworks.sh\"\n";
+			showEnvVarsInLog = 0;
+		};
 /* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
@@ -320,6 +326,8 @@
 			files = (
 				63974BB6FBBEFB347265A4AB /* A9UltraBLEManager.swift in Sources */,
 				689254496DC5E3A6E2E1858A /* ABMateProtocol.swift in Sources */,
+				8D293ED93005ED628A2AC3D3 /* AgentTaskModels.swift in Sources */,
+				6C76DCFE77B6428A07D48185 /* AgentTaskService.swift in Sources */,
 				C5BACC2298682E9D9CBE0671 /* AgentsTabView.swift in Sources */,
 				E4796E04C1AAB516C163666E /* ApprovalRequest.swift in Sources */,
 				953448EA4BD143E79D81431D /* AudioRecorder.swift in Sources */,
@@ -355,7 +363,7 @@
 /* Begin XCBuildConfiguration section */
 		5FBBAFCDA12DD46354CD9789 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = 227D17F330592ED4A7CEAE01 /* Pods-OpenClawRemote.release.xcconfig */;
+			baseConfigurationReference = CC3E02E2C53F30B646483BA2 /* Pods-OpenClawRemote.release.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
@@ -503,7 +511,7 @@
 		};
 		DD0050F6AB6B03A87DCFB008 /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = 560EB0CFD1C9A1AADA99F11C /* Pods-OpenClawRemote.debug.xcconfig */;
+			baseConfigurationReference = D0B613F270534D9FC37C175B /* Pods-OpenClawRemote.debug.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";

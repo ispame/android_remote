@@ -77,6 +77,8 @@ final class SettingsManager: ObservableObject {
         defaults.set(config.accessExpiresAt, forKey: "access_expires_at")
         defaults.set(config.refreshExpiresAt, forKey: "refresh_expires_at")
         defaults.set(config.deviceLabel, forKey: "device_label")
+        defaults.set(config.lastLoginMode, forKey: "last_login_mode")
+        defaults.set(config.lastPhoneNumber, forKey: "last_phone_number")
         var profile = selectedProfile
         profile.gatewayUrl = config.gatewayUrl
         profile.backendId = config.pairedBackendId ?? profile.backendId
@@ -95,6 +97,14 @@ final class SettingsManager: ObservableObject {
         let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
         defaults.set(trimmed.isEmpty ? "我的设备" : trimmed, forKey: "device_label")
         publishActiveConfig()
+    }
+
+    func setLastLoginMode(_ mode: String) {
+        defaults.set(mode, forKey: "last_login_mode")
+        var updatedConfig = configPublished
+        updatedConfig.lastLoginMode = mode
+        _config.send(updatedConfig)
+        configPublished = updatedConfig
     }
 
     func updateGatewayUrl(_ url: String) {
@@ -408,7 +418,9 @@ final class SettingsManager: ObservableObject {
             pairedBackendId: defaults.string(forKey: "paired_backend_id"),
             pairedBackendLabel: defaults.string(forKey: "paired_backend_label"),
             asrMode: defaults.string(forKey: "asr_mode") ?? "router",
-            asrProfileId: defaults.string(forKey: "asr_profile_id") ?? ""
+            asrProfileId: defaults.string(forKey: "asr_profile_id") ?? "",
+            lastLoginMode: defaults.string(forKey: "last_login_mode") ?? "",
+            lastPhoneNumber: defaults.string(forKey: "last_phone_number") ?? ""
         )
     }
 
@@ -440,7 +452,9 @@ final class SettingsManager: ObservableObject {
             pairedBackendId: profile.backendId.isEmpty ? nil : profile.backendId,
             pairedBackendLabel: profile.backendLabel ?? profile.resolvedDisplayName,
             asrMode: profile.asrMode,
-            asrProfileId: profile.asrProfileId
+            asrProfileId: profile.asrProfileId,
+            lastLoginMode: UserDefaults.standard.string(forKey: "last_login_mode") ?? "",
+            lastPhoneNumber: UserDefaults.standard.string(forKey: "last_phone_number") ?? ""
         )
     }
 }

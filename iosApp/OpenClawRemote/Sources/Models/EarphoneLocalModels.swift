@@ -106,6 +106,50 @@ struct RecordingItem: Identifiable, Codable, Equatable {
     var asrText: String
     var fileURL: URL
     var source: RecordingInputSource
+    var clientMessageId: String?
+
+    init(
+        id: String,
+        agentId: String,
+        createdAt: Date,
+        duration: TimeInterval,
+        asrText: String,
+        fileURL: URL,
+        source: RecordingInputSource,
+        clientMessageId: String? = nil
+    ) {
+        self.id = id
+        self.agentId = agentId
+        self.createdAt = createdAt
+        self.duration = duration
+        self.asrText = asrText
+        self.fileURL = fileURL
+        self.source = source
+        self.clientMessageId = clientMessageId
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case agentId
+        case createdAt
+        case duration
+        case asrText
+        case fileURL
+        case source
+        case clientMessageId
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        agentId = try container.decode(String.self, forKey: .agentId)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        duration = try container.decode(TimeInterval.self, forKey: .duration)
+        asrText = try container.decode(String.self, forKey: .asrText)
+        fileURL = try container.decode(URL.self, forKey: .fileURL)
+        source = try container.decode(RecordingInputSource.self, forKey: .source)
+        clientMessageId = try container.decodeIfPresent(String.self, forKey: .clientMessageId)
+    }
 }
 
 struct HeadsetDevice: Identifiable, Codable, Equatable {

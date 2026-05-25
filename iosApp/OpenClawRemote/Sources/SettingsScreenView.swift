@@ -111,26 +111,46 @@ struct OutlinedSecureField: View {
     @Binding var text: String
     let colors: MochiColors
 
+    @State private var isRevealed = false
+
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(label)
                 .font(.system(size: 12, weight: .regular))
                 .foregroundColor(colors.textSecondary)
 
-            SecureField(placeholder, text: $text)
+            HStack(spacing: 0) {
+                Group {
+                    if isRevealed {
+                        TextField(placeholder, text: $text)
+                            .textContentType(.oneTimeCode)
+                    } else {
+                        SecureField(placeholder, text: $text)
+                            .textContentType(.password)
+                    }
+                }
                 .font(.system(size: 15, weight: .regular))
                 .foregroundColor(colors.inputText)
-                .textContentType(.password)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
-                .background(
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 8)
-                            .fill(colors.inputBg)
-                        RoundedRectangle(cornerRadius: 8)
-                            .strokeBorder(colors.inputBorder, lineWidth: 1)
-                    }
-                )
+
+                Button {
+                    isRevealed.toggle()
+                } label: {
+                    Image(systemName: isRevealed ? "eye.slash" : "eye")
+                        .font(.system(size: 16))
+                        .foregroundColor(colors.textSecondary)
+                }
+                .padding(.leading, 8)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .background(
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(colors.inputBg)
+                    RoundedRectangle(cornerRadius: 8)
+                        .strokeBorder(colors.inputBorder, lineWidth: 1)
+                }
+            )
         }
     }
 }
@@ -1275,7 +1295,7 @@ struct AuthScreenView: View {
     let config: GatewayConfig
     let colors: MochiColors
     let notice: String?
-    let onAuthenticated: (GatewayAuthSessionResponse, String, String) -> Void
+    let onAuthenticated: (GatewayAuthSessionResponse, String, String, String, String) -> Void
     let onNoticeShown: () -> Void
 
     @State private var authMode: AppAuthMode = .login
@@ -1288,6 +1308,7 @@ struct AuthScreenView: View {
     @State private var confirmPassword: String = ""
     @State private var isLoading = false
     @State private var statusMessage: String?
+    @State private var acceptedTerms = false
 
     var body: some View {
         ZStack {
@@ -1295,20 +1316,9 @@ struct AuthScreenView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
-                    AuthHeaderView(colors: colors)
+                    AuthHeaderView(colors: colors, authMode: authMode)
 
                     VStack(alignment: .leading, spacing: 16) {
-                        if authMode != .forgot {
-                            Picker("认证", selection: $authMode) {
-                                Text("登录").tag(AppAuthMode.login)
-                                Text("注册").tag(AppAuthMode.register)
-                            }
-                            .pickerStyle(.segmented)
-
-                            Divider()
-                                .background(colors.divider)
-                        }
-
                         switch authMode {
                         case .login:
                             loginFields
@@ -1317,11 +1327,6 @@ struct AuthScreenView: View {
                         case .forgot:
                             forgotFields
                         }
-
-                        Divider()
-                            .background(colors.divider)
-
-                        connectionFields
                     }
                     .padding(16)
                     .background(
@@ -1343,6 +1348,12 @@ struct AuthScreenView: View {
             }
         }
         .onAppear {
+            if !config.lastPhoneNumber.isEmpty {
+                phoneNumber = config.lastPhoneNumber
+                authMode = .login
+            } else {
+                authMode = .register
+            }
             if gatewayUrl.isEmpty {
                 gatewayUrl = config.gatewayUrl.isEmpty ? "wss://boson-tech.top/ws" : config.gatewayUrl
             }
@@ -1352,6 +1363,9 @@ struct AuthScreenView: View {
             if let notice, !notice.isEmpty {
                 statusMessage = notice
                 onNoticeShown()
+            }
+            if !config.lastLoginMode.isEmpty, let mode = AppLoginMode(rawValue: config.lastLoginMode) {
+                loginMode = mode
             }
         }
         .onChange(of: notice) { value in
@@ -1388,13 +1402,7 @@ struct AuthScreenView: View {
     }
 
     private var loginFields: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Picker("登录方式", selection: $loginMode) {
-                Text("密码").tag(AppLoginMode.password)
-                Text("验证码").tag(AppLoginMode.sms)
-            }
-            .pickerStyle(.segmented)
-
+        VStack(alignment: .leading, spacing: 16) {
             OutlinedTextField(
                 label: "手机号",
                 placeholder: "+8613800138000",
@@ -1405,52 +1413,144 @@ struct AuthScreenView: View {
             if loginMode == .password {
                 OutlinedSecureField(
                     label: "密码",
-                    placeholder: "password",
+                    placeholder: "请输入密码",
                     text: $password,
                     colors: colors
                 )
-                primaryButton("密码登录", systemImage: "lock.fill") {
-                    Task { await loginWithPassword() }
+            } else {
+                smsCodeRow(purpose: "login")
+            }
+
+            primaryButton("登录", systemImage: "arrow.right") {
+                Task {
+                    if loginMode == .password {
+                        await loginWithPassword()
+                    } else {
+                        await loginWithSms()
+                    }
                 }
+            }
+
+            HStack {
                 Button {
+                    if loginMode == .password {
+                        loginMode = .sms
+                        password = ""
+                    } else {
+                        loginMode = .password
+                        smsCode = ""
+                    }
+                } label: {
+                    Text(loginMode == .password ? "验证码登录" : "密码登录")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(colors.primary)
+                }
+
+                Spacer()
+
+                Button("忘记密码") {
                     authMode = .forgot
                     smsCode = ""
                     password = ""
                     confirmPassword = ""
-                } label: {
-                    HStack(spacing: 5) {
-                        Text("忘记密码")
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 11, weight: .semibold))
-                    }
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(colors.primary)
                 }
-                .frame(maxWidth: .infinity, alignment: .trailing)
-                .buttonStyle(.plain)
-            } else {
-                smsCodeRow(purpose: "login")
-                primaryButton("验证码登录", systemImage: "message.fill") {
-                    Task { await loginWithSms() }
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(colors.textSecondary)
+            }
+
+            Divider()
+                .background(colors.divider)
+
+            Button {
+                authMode = .register
+                phoneNumber = ""
+                password = ""
+                smsCode = ""
+                confirmPassword = ""
+                acceptedTerms = false
+            } label: {
+                HStack(spacing: 4) {
+                    Text("还没有账号？")
+                        .font(.system(size: 13, weight: .regular))
+                        .foregroundColor(colors.textSecondary)
+                    Text("立即注册")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(colors.primary)
                 }
             }
+            .frame(maxWidth: .infinity)
+            .buttonStyle(.plain)
         }
     }
 
     private var registerFields: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("填写以下信息完成注册")
+                .font(.system(size: 14, weight: .regular))
+                .foregroundColor(colors.textSecondary)
+
             OutlinedTextField(
                 label: "手机号",
                 placeholder: "+8613800138000",
                 text: $phoneNumber,
                 colors: colors
             )
+
+            OutlinedSecureField(
+                label: "设置密码",
+                placeholder: "请设置登录密码",
+                text: $password,
+                colors: colors
+            )
+
             smsCodeRow(purpose: "register")
-            OutlinedSecureField(label: "设置密码", placeholder: "password", text: $password, colors: colors)
-            OutlinedSecureField(label: "确认密码", placeholder: "confirm password", text: $confirmPassword, colors: colors)
-            primaryButton("注册并登录", systemImage: "person.badge.plus") {
+
+            Button {
+                acceptedTerms.toggle()
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: acceptedTerms ? "checkmark.square.fill" : "square")
+                        .font(.system(size: 16))
+                        .foregroundColor(acceptedTerms ? colors.primary : colors.textSecondary)
+                    Text("我已阅读并同意")
+                        .font(.system(size: 13, weight: .regular))
+                        .foregroundColor(colors.textSecondary)
+                    Text("《用户协议》")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(colors.primary)
+                    Text("和")
+                        .font(.system(size: 13, weight: .regular))
+                        .foregroundColor(colors.textSecondary)
+                    Text("《隐私政策》")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(colors.primary)
+                }
+            }
+            .buttonStyle(.plain)
+
+            primaryButton("注册", systemImage: "person.badge.plus") {
                 Task { await registerPassword() }
             }
+            .disabled(!acceptedTerms)
+            .opacity(acceptedTerms ? 1 : 0.6)
+
+            Divider()
+                .background(colors.divider)
+
+            Button {
+                authMode = .login
+            } label: {
+                HStack(spacing: 4) {
+                    Text("已有账号？")
+                        .font(.system(size: 13, weight: .regular))
+                        .foregroundColor(colors.textSecondary)
+                    Text("直接登录")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(colors.primary)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .buttonStyle(.plain)
         }
     }
 
@@ -1607,7 +1707,7 @@ struct AuthScreenView: View {
                 terminalLabel: normalizedTerminalLabel(),
                 platform: "ios"
             )
-            onAuthenticated(session, normalizedGatewayUrl(), normalizedTerminalLabel())
+            onAuthenticated(session, normalizedGatewayUrl(), normalizedTerminalLabel(), AppLoginMode.password.rawValue, phoneNumber)
         } catch {
             statusMessage = "登录失败：\(error.localizedDescription)"
         }
@@ -1630,7 +1730,7 @@ struct AuthScreenView: View {
                 terminalLabel: normalizedTerminalLabel(),
                 platform: "ios"
             )
-            onAuthenticated(session, normalizedGatewayUrl(), normalizedTerminalLabel())
+            onAuthenticated(session, normalizedGatewayUrl(), normalizedTerminalLabel(), AppLoginMode.sms.rawValue, phoneNumber)
         } catch {
             statusMessage = "登录失败：\(error.localizedDescription)"
         }
@@ -1656,7 +1756,7 @@ struct AuthScreenView: View {
                 terminalLabel: normalizedTerminalLabel(),
                 platform: "ios"
             )
-            onAuthenticated(session, normalizedGatewayUrl(), normalizedTerminalLabel())
+            onAuthenticated(session, normalizedGatewayUrl(), normalizedTerminalLabel(), AppLoginMode.password.rawValue, phoneNumber)
         } catch {
             statusMessage = "注册失败：\(error.localizedDescription)"
         }
@@ -1680,7 +1780,7 @@ struct AuthScreenView: View {
                 code: smsCode,
                 password: password
             )
-            onAuthenticated(session, normalizedGatewayUrl(), normalizedTerminalLabel())
+            onAuthenticated(session, normalizedGatewayUrl(), normalizedTerminalLabel(), AppLoginMode.password.rawValue, phoneNumber)
         } catch {
             statusMessage = "重置失败：\(error.localizedDescription)"
         }
@@ -1689,6 +1789,18 @@ struct AuthScreenView: View {
 
 private struct AuthHeaderView: View {
     let colors: MochiColors
+    let authMode: AppAuthMode
+
+    private var subtitle: String {
+        switch authMode {
+        case .login:
+            return "欢迎回来"
+        case .register:
+            return "注册新账号"
+        case .forgot:
+            return "找回密码"
+        }
+    }
 
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
@@ -1702,12 +1814,12 @@ private struct AuthHeaderView: View {
             .frame(width: 46, height: 46)
 
             VStack(alignment: .leading, spacing: 4) {
-                Text("OpenClaw Remote")
+                Text("Boson Relay")
                     .font(.system(size: 26, weight: .semibold))
                     .foregroundColor(colors.textPrimary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.82)
-                Text("登录后连接你的 Agent")
+                Text(subtitle)
                     .font(.system(size: 14, weight: .regular))
                     .foregroundColor(colors.textSecondary)
                     .lineLimit(1)

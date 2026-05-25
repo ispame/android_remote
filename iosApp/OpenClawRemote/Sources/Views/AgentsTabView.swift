@@ -14,7 +14,10 @@ struct AgentsTabView: View {
     let onRequestScan: () -> Void
 
     private var profiles: [AgentProfile] {
-        let sorted = settingsManager.profiles.sortedForAgentList()
+        let sorted = settingsManager.profiles.sortedForAgentList(
+            unreadCounts: wsManager.unreadCounts,
+            activities: wsManager.agentListActivities
+        )
         if sorted.count == 1,
            sorted[0].backendId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
            sorted[0].token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -45,16 +48,9 @@ struct AgentsTabView: View {
                             profile: profile,
                             status: wsManager.availabilityStatus(for: profile),
                             unreadCount: wsManager.unreadCount(for: profile.id),
+                            activity: wsManager.agentListActivities[profile.id],
                             colors: colors
                         )
-                    }
-                    .swipeActions(edge: .leading, allowsFullSwipe: true) {
-                        Button {
-                            settingsManager.setProfilePinned(profile.id, isPinned: !profile.isPinned)
-                        } label: {
-                            Label(profile.isPinned ? "取消置顶" : "置顶", systemImage: "pin.fill")
-                        }
-                        .tint(.orange)
                     }
                     .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                         Button(role: .destructive) {
@@ -62,6 +58,12 @@ struct AgentsTabView: View {
                         } label: {
                             Label("删除", systemImage: "trash")
                         }
+                        Button {
+                            settingsManager.setProfilePinned(profile.id, isPinned: !profile.isPinned)
+                        } label: {
+                            Label(profile.isPinned ? "取消置顶" : "置顶", systemImage: "pin.fill")
+                        }
+                        .tint(.orange)
                     }
                     .onAppear {
                         wsManager.syncProfiles(settingsManager.profiles)
@@ -110,6 +112,7 @@ private struct AgentRowView: View {
     let profile: AgentProfile
     let status: AgentAvailabilityStatus
     let unreadCount: Int
+    let activity: AgentListActivity?
     let colors: MochiColors
 
     private var statusColor: Color {
@@ -119,6 +122,12 @@ private struct AgentRowView: View {
         case .unconfigured, .unpaired: return colors.textSecondary
         case .offline: return colors.recordingRed
         }
+    }
+
+    private var recentPreview: String {
+        let preview = activity?.latestMessagePreview?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return preview?.isEmpty == false ? preview! : "暂无对话"
     }
 
     var body: some View {
@@ -145,11 +154,16 @@ private struct AgentRowView: View {
                             .font(.system(size: 11, weight: .semibold))
                             .foregroundColor(.orange)
                     }
+                    if unreadCount > 0 {
+                        Circle()
+                            .fill(colors.recordingRed)
+                            .frame(width: 8, height: 8)
+                    }
                 }
                 Text("\(profile.platform.label) · \(status.label)")
                     .font(.system(size: 12))
                     .foregroundColor(statusColor)
-                Text(profile.gatewayUrl)
+                Text(recentPreview)
                     .font(.system(size: 12))
                     .foregroundColor(.secondary)
                     .lineLimit(1)
@@ -157,13 +171,9 @@ private struct AgentRowView: View {
 
             Spacer(minLength: 8)
 
-            if unreadCount > 0 {
-                Text("\(unreadCount)")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(.white)
-                    .frame(minWidth: 22, minHeight: 22)
-                    .background(Circle().fill(colors.recordingRed))
-            }
+            Image(systemName: "chevron.right")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(colors.textSecondary.opacity(0.6))
         }
         .padding(.vertical, 6)
     }

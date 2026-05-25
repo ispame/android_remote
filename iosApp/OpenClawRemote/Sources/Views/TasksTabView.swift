@@ -6,6 +6,7 @@ struct TasksTabView: View {
     @ObservedObject var audioRecorder: AudioRecorder
     @ObservedObject var headsetController: HeadsetConversationController
     @ObservedObject var scheduledTaskStore: ScheduledTaskStore
+    @ObservedObject var agentTaskService: AgentTaskService
     @ObservedObject var recordingStore: RecordingStore
     let colors: MochiColors
 
@@ -19,6 +20,11 @@ struct TasksTabView: View {
     }
 
     private var approvalItems: [ApprovalHistoryItem] {
+        let remote = agentTaskService.approvals(for: selectedAgent.id)
+        if !remote.isEmpty {
+            return remote
+        }
+
         let parsed = wsManager.messages.compactMap { message -> ApprovalHistoryItem? in
             guard let request = ApprovalRequest.detect(in: message.content) else { return nil }
             return ApprovalHistoryItem(
@@ -46,8 +52,8 @@ struct TasksTabView: View {
         ]
     }
 
-    private var scheduledTasks: [ScheduledTask] {
-        scheduledTaskStore.tasks(for: selectedAgent.id)
+    private var scheduledTasks: [AgentTaskItem] {
+        agentTaskService.tasks(for: selectedAgent.id)
     }
 
     private var recordings: [RecordingItem] {
@@ -96,17 +102,25 @@ struct TasksTabView: View {
         }
         .sheet(isPresented: $showTaskEditor) {
             CompatibleNavigationStack {
-                ScheduledTaskDetailView(
-                    task: ScheduledTask(
-                        agentId: selectedAgent.id,
-                        title: "",
-                        prompt: "",
-                        cronExpression: "0 9 * * 1-5"
-                    ),
-                    store: scheduledTaskStore,
+                AgentTaskDetailView(
+                    profile: selectedAgent,
+                    task: nil,
+                    taskService: agentTaskService,
                     colors: colors
                 )
             }
+        }
+        .onAppear {
+            agentTaskService.refreshTasks(for: selectedAgent)
+            agentTaskService.refreshApprovals(for: selectedAgent)
+        }
+        .onChange(of: selectedAgent.id) { _ in
+            agentTaskService.refreshTasks(for: selectedAgent)
+            agentTaskService.refreshApprovals(for: selectedAgent)
+        }
+        .refreshable {
+            agentTaskService.refreshTasks(for: selectedAgent)
+            agentTaskService.refreshApprovals(for: selectedAgent)
         }
     }
 
@@ -139,15 +153,42 @@ struct TasksTabView: View {
 
     private var scheduledSection: some View {
         Section("定时任务") {
-            if scheduledTasks.isEmpty {
+            if agentTaskService.isLoading(selectedAgent.id) {
+                HStack {
+                    ProgressView()
+                    Text("正在读取 Agent 任务")
+                        .foregroundColor(.secondary)
+                }
+            }
+
+            if let error = agentTaskService.errorsByProfileId[selectedAgent.id] {
+                Text(error)
+                    .font(.system(size: 13))
+                    .foregroundColor(colors.recordingRed)
+            }
+
+            if agentTaskService.capabilityByProfileId[selectedAgent.id] == "conversationManaged" {
+                Text("该 Agent 当前由对话管理任务。新增或修改会转交给 Agent 继续确认。")
+                    .font(.system(size: 13))
+                    .foregroundColor(.secondary)
+            }
+
+            if let message = agentTaskService.operationMessagesByProfileId[selectedAgent.id] {
+                Text(message)
+                    .font(.system(size: 13))
+                    .foregroundColor(colors.primary)
+            }
+
+            if scheduledTasks.isEmpty && !agentTaskService.isLoading(selectedAgent.id) {
                 Text("点击右上角 + 新增定时任务")
                     .foregroundColor(.secondary)
             } else {
                 ForEach(scheduledTasks) { task in
                     NavigationLink(
-                        destination: ScheduledTaskDetailView(
+                        destination: AgentTaskDetailView(
+                            profile: selectedAgent,
                             task: task,
-                            store: scheduledTaskStore,
+                            taskService: agentTaskService,
                             colors: colors
                         )
                     ) {
@@ -156,11 +197,11 @@ struct TasksTabView: View {
                                 Text(task.title.isEmpty ? "未命名任务" : task.title)
                                     .font(.system(size: 15, weight: .semibold))
                                 Spacer()
-                                Text(task.isEnabled ? "启用" : "暂停")
+                                Text(task.enabled ? "启用" : "暂停")
                                     .font(.system(size: 12, weight: .medium))
-                                    .foregroundColor(task.isEnabled ? colors.onlineGreen : .secondary)
+                                    .foregroundColor(task.enabled ? colors.onlineGreen : .secondary)
                             }
-                            Text(task.cronExpression)
+                            Text(task.scheduleDisplay ?? task.schedule)
                                 .font(.system(size: 13, design: .monospaced))
                                 .foregroundColor(colors.primary)
                             Text(task.prompt)
@@ -169,9 +210,13 @@ struct TasksTabView: View {
                                 .lineLimit(2)
                         }
                     }
-                }
-                .onDelete { offsets in
-                    offsets.map { scheduledTasks[$0].id }.forEach(scheduledTaskStore.delete)
+                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                        Button(role: .destructive) {
+                            agentTaskService.deleteTask(for: selectedAgent, task: task)
+                        } label: {
+                            Label("删除", systemImage: "trash")
+                        }
+                    }
                 }
             }
         }
@@ -243,13 +288,15 @@ struct TasksTabView: View {
 
         if isPhoneRecording {
             audioRecorder.stopRecording { data in
+                let clientMessageId = wsManager.sendAudioForAsr(data, profileId: selectedAgent.id)
                 _ = try? recordingStore.createRecording(
                     agentId: selectedAgent.id,
                     audioData: data,
                     asrText: "",
-                    source: .phone
+                    source: .phone,
+                    clientMessageId: clientMessageId
                 )
-                statusMessage = "手机录音已保存"
+                statusMessage = clientMessageId == nil ? "手机录音已保存；Agent 未配对，未发送 ASR" : "手机录音已保存，等待 ASR 文本"
             }
             isPhoneRecording = false
         } else {
@@ -307,6 +354,140 @@ private struct ApprovalHistoryDetailView: View {
         }
         .navigationTitle(item.title)
         .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+private struct AgentTaskDetailView: View {
+    let profile: AgentProfile
+    let task: AgentTaskItem?
+    @ObservedObject var taskService: AgentTaskService
+    let colors: MochiColors
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var title: String
+    @State private var prompt: String
+    @State private var schedule: String
+    @State private var isEnabled: Bool
+
+    init(
+        profile: AgentProfile,
+        task: AgentTaskItem?,
+        taskService: AgentTaskService,
+        colors: MochiColors
+    ) {
+        self.profile = profile
+        self.task = task
+        self.taskService = taskService
+        self.colors = colors
+        _title = State(initialValue: task?.title ?? "")
+        _prompt = State(initialValue: task?.prompt ?? "")
+        _schedule = State(initialValue: task?.schedule ?? "")
+        _isEnabled = State(initialValue: task?.enabled ?? true)
+    }
+
+    private var trimmedTitle: String {
+        title.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var trimmedPrompt: String {
+        prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var trimmedSchedule: String {
+        schedule.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var canSave: Bool {
+        !trimmedTitle.isEmpty &&
+        !trimmedPrompt.isEmpty &&
+        (trimmedSchedule.isEmpty || CronExpressionValidator.isValid(trimmedSchedule))
+    }
+
+    var body: some View {
+        Form {
+            Section("任务") {
+                TextField("标题", text: $title)
+                TextEditor(text: $prompt)
+                    .frame(minHeight: 140)
+                Toggle("启用", isOn: $isEnabled)
+            }
+            Section("Cron") {
+                TextField("可留空，由 Agent 继续确认", text: $schedule)
+                    .font(.system(size: 14, design: .monospaced))
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                if !trimmedSchedule.isEmpty && !CronExpressionValidator.isValid(trimmedSchedule) {
+                    Text("请输入 5 段 cron，例如 */15 * * * *；留空则由 Agent 在对话中确认。")
+                        .font(.system(size: 12))
+                        .foregroundColor(colors.recordingRed)
+                }
+            }
+            if let task {
+                Section("状态") {
+                    Text(task.state)
+                    if let nextRunAt = task.nextRunAt, !nextRunAt.isEmpty {
+                        Text("下次执行：\(nextRunAt)")
+                    }
+                    if let lastStatus = task.lastStatus, !lastStatus.isEmpty {
+                        Text("上次状态：\(lastStatus)")
+                    }
+                    if let lastError = task.lastError, !lastError.isEmpty {
+                        Text(lastError)
+                            .foregroundColor(colors.recordingRed)
+                    }
+                }
+            }
+        }
+        .navigationTitle(task == nil ? "新增定时任务" : "定时任务")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+                Button("返回") { dismiss() }
+            }
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button {
+                    startNewTaskDraft()
+                } label: {
+                    Image(systemName: "plus")
+                }
+                .accessibilityLabel("新增定时任务")
+            }
+            ToolbarItem(placement: .confirmationAction) {
+                Button("保存") {
+                    save()
+                    dismiss()
+                }
+                .disabled(!canSave)
+            }
+        }
+    }
+
+    private func save() {
+        if let task {
+            taskService.updateTask(
+                for: profile,
+                task: task,
+                title: trimmedTitle,
+                prompt: trimmedPrompt,
+                schedule: trimmedSchedule,
+                enabled: isEnabled
+            )
+        } else {
+            taskService.createTask(
+                for: profile,
+                title: trimmedTitle,
+                prompt: trimmedPrompt,
+                schedule: trimmedSchedule.isEmpty ? nil : trimmedSchedule,
+                enabled: isEnabled
+            )
+        }
+    }
+
+    private func startNewTaskDraft() {
+        title = ""
+        prompt = ""
+        schedule = ""
+        isEnabled = true
     }
 }
 
