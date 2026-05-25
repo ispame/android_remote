@@ -1241,6 +1241,8 @@ final class WebSocketManager: ObservableObject {
 
 }
 
+extension WebSocketManager: AgentTaskRequestClient {}
+
 enum WsMessageEvent {
     case registered(String)
     case paired(profileId: String, backendId: String, backendLabel: String)

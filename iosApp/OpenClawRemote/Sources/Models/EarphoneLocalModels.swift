@@ -243,6 +243,21 @@ struct HeadsetLocalSettings: Codable, Equatable {
         currentFirmwareVersion: "1.0.0",
         latestFirmwareVersion: "1.0.3"
     )
+
+    mutating func addDemoDevice() {
+        let nextNumber = devices.count + 1
+        let id = "demo-\(nextNumber)"
+        devices.append(
+            HeadsetDevice(
+                id: id,
+                name: "A9 Ultra \(nextNumber)",
+                isPaired: false,
+                leftBattery: 100,
+                rightBattery: 100
+            )
+        )
+        selectedDeviceId = id
+    }
 }
 
 extension EQPreset {

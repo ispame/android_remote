@@ -17,11 +17,6 @@ struct HeadsetTabView: View {
         settings.eqPresets.first { $0.id == settings.selectedEQPresetId } ?? settings.eqPresets[0]
     }
 
-    @State private var audioSettingsExpanded = false
-    @State private var shortcutSettingsExpanded = false
-    @State private var otaExpanded = false
-    @State private var findHeadsetExpanded = false
-
     var body: some View {
         List {
             Section {
@@ -38,7 +33,7 @@ struct HeadsetTabView: View {
                                 .foregroundColor(.secondary)
                         }
                         Spacer()
-                        StatusDot(color: headsetIsReady ? colors.onlineGreen : colors.textSecondary)
+                        StatusDot(color: selectedDevice.isPaired ? colors.onlineGreen : colors.textSecondary)
                     }
 
                     HStack(spacing: 16) {
@@ -58,49 +53,46 @@ struct HeadsetTabView: View {
             }
 
             Section("设置") {
-                ExpandableSettingsRow(
-                    icon: "slider.horizontal.3",
-                    title: "音频设置",
-                    detail: selectedPreset.name,
-                    isExpanded: $audioSettingsExpanded,
-                    colors: colors
-                ) {
-                    HeadsetAudioSettingsView(headsetSettingsStore: headsetSettingsStore)
-                        .listRowInsets(EdgeInsets())
+                NavigationLink {
+                    HeadsetAudioSettingsView(
+                        headsetSettingsStore: headsetSettingsStore,
+                        colors: colors
+                    )
+                    .hideTabBarWhileVisible()
+                } label: {
+                    SettingsEntryRow(
+                        icon: "slider.horizontal.3",
+                        title: "EQ 音频",
+                        detail: selectedPreset.name,
+                        colors: colors
+                    )
                 }
 
-                ExpandableSettingsRow(
-                    icon: "hand.tap.fill",
-                    title: "耳机快捷键",
-                    detail: shortcutSummary,
-                    isExpanded: $shortcutSettingsExpanded,
-                    colors: colors
-                ) {
+                NavigationLink {
                     HeadsetShortcutSettingsView(headsetSettingsStore: headsetSettingsStore)
-                        .listRowInsets(EdgeInsets())
+                        .hideTabBarWhileVisible()
+                } label: {
+                    SettingsEntryRow(
+                        icon: "hand.tap.fill",
+                        title: "耳机快捷键",
+                        detail: shortcutSummary,
+                        colors: colors
+                    )
                 }
 
-                ExpandableSettingsRow(
+                SettingsEntryRow(
                     icon: "arrow.triangle.2.circlepath",
                     title: "OTA 升级",
                     detail: firmwareVersionLine,
-                    isExpanded: $otaExpanded,
                     colors: colors
-                ) {
-                    HeadsetOTAPlaceholderView(settings: settings, colors: colors)
-                        .listRowInsets(EdgeInsets())
-                }
+                )
 
-                ExpandableSettingsRow(
+                SettingsEntryRow(
                     icon: "location.magnifyingglass",
                     title: "查找耳机",
-                    detail: nil,
-                    isExpanded: $findHeadsetExpanded,
+                    detail: "暂未实现",
                     colors: colors
-                ) {
-                    FindHeadsetView(colors: colors)
-                        .listRowInsets(EdgeInsets())
-                }
+                )
             }
         }
         .listStyle(.insetGrouped)
@@ -124,95 +116,20 @@ struct HeadsetTabView: View {
     }
 
     private var firmwareVersionLine: String {
-        return "直接升级"
+        if settings.currentFirmwareVersion == settings.latestFirmwareVersion {
+            return "已是最新"
+        }
+        return "\(settings.currentFirmwareVersion) → \(settings.latestFirmwareVersion)"
     }
 
     private func addFakeDevice() {
         headsetSettingsStore.update { settings in
-            let id = "demo-\(settings.devices.count + 1)"
-            settings.devices.append(
-                HeadsetDevice(
-                    id: id,
-                    name: "A9 Ultra \(settings.devices.count + 1)",
-                    isPaired: false,
-                    leftBattery: 100,
-                    rightBattery: 100
-                )
-            )
-            settings.selectedDeviceId = id
+            settings.addDemoDevice()
         }
-    }
-
-    private var headsetIsReady: Bool {
-        if case .ready = headsetController.connectionState {
-            return true
-        }
-        return false
     }
 
     private var connectionLabel: String {
-        switch headsetController.connectionState {
-        case .idle:
-            return selectedDevice.isPaired ? "已配对，等待连接" : "未配对"
-        case .scanning:
-            return "正在查找耳机"
-        case .connecting(let name):
-            return "正在连接 \(name)"
-        case .connected(let name):
-            return "\(name) 校验中"
-        case .ready(let name):
-            return "\(name) 已就绪"
-        case .unsupportedProduct(let productId):
-            return "不支持的设备 0x\(String(productId, radix: 16))"
-        case .bluetoothUnavailable(let message):
-            return message
-        }
-    }
-}
-
-private struct ExpandableSettingsRow<Content: View>: View {
-    let icon: String
-    let title: String
-    let detail: String?
-    @Binding var isExpanded: Bool
-    let colors: MochiColors
-    @ViewBuilder let content: () -> Content
-
-    var body: some View {
-        VStack(spacing: 0) {
-            Button {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    isExpanded.toggle()
-                }
-            } label: {
-                HStack(spacing: 12) {
-                    Image(systemName: icon)
-                        .font(.system(size: 17, weight: .semibold))
-                        .foregroundColor(colors.primary)
-                        .frame(width: 28, height: 28)
-                    Text(title)
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundColor(colors.textPrimary)
-                    Spacer()
-                    if let detail {
-                        Text(detail)
-                            .font(.system(size: 13))
-                            .foregroundColor(.secondary)
-                            .lineLimit(1)
-                    }
-                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(.secondary)
-                }
-                .padding(.vertical, 8)
-            }
-            .buttonStyle(.plain)
-
-            if isExpanded {
-                content()
-                    .transition(.opacity.combined(with: .move(edge: .top)))
-            }
-        }
+        selectedDevice.isPaired ? "已配对" : "未配对"
     }
 }
 
@@ -244,6 +161,7 @@ private struct SettingsEntryRow: View {
 
 private struct HeadsetAudioSettingsView: View {
     @ObservedObject var headsetSettingsStore: HeadsetSettingsStore
+    let colors: MochiColors
 
     private var settings: HeadsetLocalSettings {
         headsetSettingsStore.settings
@@ -253,33 +171,37 @@ private struct HeadsetAudioSettingsView: View {
         settings.eqPresets.first { $0.id == settings.selectedEQPresetId } ?? settings.eqPresets[0]
     }
 
-    @State private var audioSettingsExpanded = false
-    @State private var shortcutSettingsExpanded = false
-    @State private var otaExpanded = false
-    @State private var findHeadsetExpanded = false
-
     var body: some View {
         List {
-            Section("音频设置") {
+            Section("EQ 预设") {
                 Picker("预设", selection: selectedPresetBinding) {
                     ForEach(settings.eqPresets) { preset in
                         Text(preset.name).tag(preset.id)
                     }
                 }
+            }
 
+            Section(selectedPreset.name) {
                 ForEach(selectedPreset.bands) { band in
                     VStack(alignment: .leading, spacing: 8) {
-                        Text(band.frequency)
-                            .font(.system(size: 14, weight: .semibold))
+                        HStack {
+                            Text(band.frequency)
+                                .font(.system(size: 14, weight: .semibold))
+                            Spacer()
+                            Text(formatGain(band.gain))
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundColor(colors.primary)
+                        }
                         Slider(
                             value: bandBinding(presetId: selectedPreset.id, bandId: band.id),
                             in: -6...6,
                             step: 1
                         )
+                        .accentColor(colors.primary)
                         HStack {
-                            Text("Low")
+                            Text("-6 dB")
                             Spacer()
-                            Text("High")
+                            Text("+6 dB")
                         }
                         .font(.system(size: 12, weight: .medium))
                         .foregroundColor(.secondary)
@@ -322,6 +244,13 @@ private struct HeadsetAudioSettingsView: View {
             }
         )
     }
+
+    private func formatGain(_ gain: Double) -> String {
+        if gain > 0 {
+            return "+\(Int(gain)) dB"
+        }
+        return "\(Int(gain)) dB"
+    }
 }
 
 private struct HeadsetShortcutSettingsView: View {
@@ -333,11 +262,13 @@ private struct HeadsetShortcutSettingsView: View {
 
     var body: some View {
         List {
-            Section("耳机快捷键") {
-                ForEach(shortcuts) { shortcut in
-                    Picker("\(shortcut.side.label) \(shortcut.gesture.label)", selection: shortcutBinding(shortcut.id)) {
-                        ForEach(HeadsetShortcut.actionOptions, id: \.self) { action in
-                            Text(action).tag(action)
+            ForEach(HeadsetSideSelection.allCases) { side in
+                Section(side.label) {
+                    ForEach(HeadsetGestureSelection.allCases) { gesture in
+                        Picker(gesture.label, selection: shortcutBinding(side: side, gesture: gesture)) {
+                            ForEach(HeadsetShortcut.actionOptions, id: \.self) { action in
+                                Text(action).tag(action)
+                            }
                         }
                     }
                 }
@@ -348,80 +279,29 @@ private struct HeadsetShortcutSettingsView: View {
         .navigationBarTitleDisplayMode(.inline)
     }
 
-    private func shortcutBinding(_ id: String) -> Binding<String> {
-        Binding(
+    private func shortcutBinding(side: HeadsetSideSelection, gesture: HeadsetGestureSelection) -> Binding<String> {
+        let id = "\(side.rawValue)-\(gesture.rawValue)"
+        return Binding(
             get: {
                 shortcuts.first { $0.id == id }?.action ?? "无操作"
             },
             set: { newValue in
                 headsetSettingsStore.update { settings in
-                    guard let index = settings.shortcuts.firstIndex(where: { $0.id == id }) else { return }
-                    settings.shortcuts[index].action = newValue
+                    if let index = settings.shortcuts.firstIndex(where: { $0.id == id }) {
+                        settings.shortcuts[index].action = newValue
+                    } else {
+                        settings.shortcuts.append(
+                            HeadsetShortcut(
+                                id: id,
+                                side: side,
+                                gesture: gesture,
+                                action: newValue
+                            )
+                        )
+                    }
                 }
             }
         )
-    }
-}
-
-private struct HeadsetOTAPlaceholderView: View {
-    let settings: HeadsetLocalSettings
-    let colors: MochiColors
-
-    var body: some View {
-        List {
-            Section {
-                HStack {
-                    Text("OTA 版本")
-                        .font(.system(size: 15))
-                    Spacer()
-                    Button("直接升级") {}
-                        .foregroundColor(colors.primary)
-                        .buttonStyle(.borderless)
-                }
-                .padding(.vertical, 3)
-            } footer: {
-                Text("升级入口预留，暂未接入实际 OTA 流程")
-            }
-        }
-        .listStyle(.insetGrouped)
-        .navigationTitle("OTA 升级")
-        .navigationBarTitleDisplayMode(.inline)
-    }
-}
-
-private struct FindHeadsetView: View {
-    let colors: MochiColors
-
-    var body: some View {
-        List {
-            Section {
-                Text("查找耳机功能开发中")
-                    .font(.system(size: 15))
-                    .foregroundColor(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .center)
-                    .padding(.vertical, 40)
-            } footer: {
-                Text("该功能即将推出")
-            }
-        }
-        .listStyle(.insetGrouped)
-        .navigationTitle("查找耳机")
-        .navigationBarTitleDisplayMode(.inline)
-    }
-}
-
-private struct UnsupportedHeadsetFeatureView: View {
-    let title: String
-    let systemName: String
-
-    var body: some View {
-        EmptyStateView(
-            systemName: systemName,
-            title: title,
-            message: "暂不支持"
-        )
-        .navigationTitle(title)
-        .navigationBarTitleDisplayMode(.inline)
     }
 }
 

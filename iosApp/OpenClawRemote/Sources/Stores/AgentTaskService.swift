@@ -1,6 +1,31 @@
 import Foundation
 import Combine
 
+protocol AgentTaskRequestClient: AnyObject {
+    var messageChannel: AnyPublisher<WsMessageEvent, Never> { get }
+
+    func requestTaskList(requestId: String, backendId: String, includeDisabled: Bool) -> Bool
+    func createAgentTask(
+        requestId: String,
+        backendId: String,
+        title: String,
+        prompt: String,
+        schedule: String?,
+        enabled: Bool
+    ) -> Bool
+    func updateAgentTask(
+        requestId: String,
+        backendId: String,
+        taskId: String,
+        title: String,
+        prompt: String,
+        schedule: String,
+        enabled: Bool
+    ) -> Bool
+    func deleteAgentTask(requestId: String, backendId: String, taskId: String) -> Bool
+    func requestApprovalHistory(requestId: String, backendId: String, limit: Int) -> Bool
+}
+
 final class AgentTaskService: ObservableObject {
     private enum RequestKind {
         case list
@@ -19,9 +44,11 @@ final class AgentTaskService: ObservableObject {
     private let defaults: UserDefaults
     private let cacheKey = "agent_task_cache_v1"
     private let timeoutInterval: TimeInterval
+    private let timeoutScheduler: (TimeInterval, @escaping () -> Void) -> AnyCancellable
     private var cancellable: AnyCancellable?
-    private weak var wsManager: WebSocketManager?
+    private weak var requestClient: AgentTaskRequestClient?
     private var pending: [String: PendingRequest] = [:]
+    private var timeoutCancellables: [String: AnyCancellable] = [:]
 
     @Published private(set) var tasksByProfileId: [String: [AgentTaskItem]]
     @Published private(set) var approvalsByProfileId: [String: [ApprovalHistoryItem]]
@@ -30,17 +57,22 @@ final class AgentTaskService: ObservableObject {
     @Published private(set) var capabilityByProfileId: [String: String] = [:]
     @Published private(set) var operationMessagesByProfileId: [String: String] = [:]
 
-    init(defaults: UserDefaults = .standard, timeoutInterval: TimeInterval = 12) {
+    init(
+        defaults: UserDefaults = .standard,
+        timeoutInterval: TimeInterval = 12,
+        timeoutScheduler: @escaping (TimeInterval, @escaping () -> Void) -> AnyCancellable = AgentTaskService.defaultTimeoutScheduler
+    ) {
         self.defaults = defaults
         self.timeoutInterval = timeoutInterval
+        self.timeoutScheduler = timeoutScheduler
         let cache = Self.loadCache(from: defaults, key: cacheKey)
         self.tasksByProfileId = cache.tasksByProfileId
         self.approvalsByProfileId = [:]
     }
 
-    func bind(to wsManager: WebSocketManager) {
-        self.wsManager = wsManager
-        cancellable = wsManager.messageChannel
+    func bind(to client: AgentTaskRequestClient) {
+        self.requestClient = client
+        cancellable = client.messageChannel
             .receive(on: DispatchQueue.main)
             .sink { [weak self] event in
                 self?.handle(event)
@@ -66,14 +98,9 @@ final class AgentTaskService: ObservableObject {
             return
         }
         let requestId = makeRequestId("task-list")
-        pending[requestId] = PendingRequest(
-            profileId: profile.id,
-            kind: .list,
-            deadline: Date().addingTimeInterval(timeoutInterval)
-        )
-        loadingProfileIds.insert(profile.id)
+        trackRequest(requestId, profileId: profile.id, kind: .list)
         errorsByProfileId[profile.id] = nil
-        if wsManager?.requestTaskList(requestId: requestId, backendId: profile.backendId, includeDisabled: true) != true {
+        if requestClient?.requestTaskList(requestId: requestId, backendId: profile.backendId, includeDisabled: true) != true {
             finishRequest(requestId)
             setError("任务请求发送失败", profileId: profile.id)
         }
@@ -83,12 +110,10 @@ final class AgentTaskService: ObservableObject {
         clearExpiredRequests()
         guard canSendTaskRequest(for: profile) else { return }
         let requestId = makeRequestId("approval-list")
-        pending[requestId] = PendingRequest(
-            profileId: profile.id,
-            kind: .approvals,
-            deadline: Date().addingTimeInterval(timeoutInterval)
-        )
-        _ = wsManager?.requestApprovalHistory(requestId: requestId, backendId: profile.backendId, limit: 50)
+        trackRequest(requestId, profileId: profile.id, kind: .approvals)
+        if requestClient?.requestApprovalHistory(requestId: requestId, backendId: profile.backendId, limit: 50) != true {
+            finishRequest(requestId)
+        }
     }
 
     func createTask(
@@ -104,13 +129,9 @@ final class AgentTaskService: ObservableObject {
             return
         }
         let requestId = makeRequestId("task-create")
-        pending[requestId] = PendingRequest(
-            profileId: profile.id,
-            kind: .create,
-            deadline: Date().addingTimeInterval(timeoutInterval)
-        )
+        trackRequest(requestId, profileId: profile.id, kind: .create)
         operationMessagesByProfileId[profile.id] = nil
-        if wsManager?.createAgentTask(
+        if requestClient?.createAgentTask(
             requestId: requestId,
             backendId: profile.backendId,
             title: title,
@@ -137,12 +158,8 @@ final class AgentTaskService: ObservableObject {
             return
         }
         let requestId = makeRequestId("task-update")
-        pending[requestId] = PendingRequest(
-            profileId: profile.id,
-            kind: .update,
-            deadline: Date().addingTimeInterval(timeoutInterval)
-        )
-        if wsManager?.updateAgentTask(
+        trackRequest(requestId, profileId: profile.id, kind: .update)
+        if requestClient?.updateAgentTask(
             requestId: requestId,
             backendId: profile.backendId,
             taskId: task.taskId,
@@ -163,12 +180,8 @@ final class AgentTaskService: ObservableObject {
             return
         }
         let requestId = makeRequestId("task-delete")
-        pending[requestId] = PendingRequest(
-            profileId: profile.id,
-            kind: .delete,
-            deadline: Date().addingTimeInterval(timeoutInterval)
-        )
-        if wsManager?.deleteAgentTask(requestId: requestId, backendId: profile.backendId, taskId: task.taskId) != true {
+        trackRequest(requestId, profileId: profile.id, kind: .delete)
+        if requestClient?.deleteAgentTask(requestId: requestId, backendId: profile.backendId, taskId: task.taskId) != true {
             finishRequest(requestId)
             setError("删除任务请求发送失败", profileId: profile.id)
         }
@@ -187,6 +200,8 @@ final class AgentTaskService: ObservableObject {
             handleTaskDeleteResponse(payload)
         case .approvalHistoryResponse(let payload):
             handleApprovalHistoryResponse(payload)
+        case .error(_, let message):
+            handleRouterError(message: message)
         default:
             break
         }
@@ -197,7 +212,6 @@ final class AgentTaskService: ObservableObject {
         let profileId = request?.profileId ?? profileId(forBackendId: payload.backendId)
         guard let profileId else { return }
         finishRequest(payload.requestId)
-        loadingProfileIds.remove(profileId)
 
         if let error = payload.error, !error.isEmpty {
             setError(error, profileId: profileId)
@@ -291,18 +305,62 @@ final class AgentTaskService: ObservableObject {
         errorsByProfileId[profileId] = error
     }
 
-    private func finishRequest(_ requestId: String) {
-        if let profileId = pending[requestId]?.profileId {
-            loadingProfileIds.remove(profileId)
+    private func trackRequest(_ requestId: String, profileId: String, kind: RequestKind) {
+        pending[requestId] = PendingRequest(
+            profileId: profileId,
+            kind: kind,
+            deadline: Date().addingTimeInterval(timeoutInterval)
+        )
+        timeoutCancellables[requestId]?.cancel()
+        timeoutCancellables[requestId] = timeoutScheduler(timeoutInterval) { [weak self] in
+            self?.expireRequest(requestId)
         }
-        pending.removeValue(forKey: requestId)
+        refreshLoadingState(profileId: profileId)
+    }
+
+    private func finishRequest(_ requestId: String) {
+        let request = pending.removeValue(forKey: requestId)
+        timeoutCancellables.removeValue(forKey: requestId)?.cancel()
+        if let profileId = request?.profileId {
+            refreshLoadingState(profileId: profileId)
+        }
     }
 
     private func clearExpiredRequests(now: Date = Date()) {
         let expired = pending.filter { $0.value.deadline <= now }
-        for (requestId, request) in expired {
-            pending.removeValue(forKey: requestId)
-            setError("请求超时，请稍后重试", profileId: request.profileId)
+        for requestId in expired.keys {
+            expireRequest(requestId)
+        }
+    }
+
+    private func expireRequest(_ requestId: String) {
+        guard let request = pending[requestId] else { return }
+        finishRequest(requestId)
+        setError("请求超时，请稍后重试", profileId: request.profileId)
+    }
+
+    private func handleRouterError(message: String) {
+        let requestIds = Array(pending.keys)
+        for requestId in requestIds {
+            guard let request = pending[requestId] else { continue }
+            finishRequest(requestId)
+            switch request.kind {
+            case .list, .create, .update, .delete:
+                setError(message, profileId: request.profileId)
+            case .approvals:
+                break
+            }
+        }
+    }
+
+    private func refreshLoadingState(profileId: String) {
+        let hasPendingTaskList = pending.values.contains { request in
+            request.profileId == profileId && request.kind == .list
+        }
+        if hasPendingTaskList {
+            loadingProfileIds.insert(profileId)
+        } else {
+            loadingProfileIds.remove(profileId)
         }
     }
 
@@ -333,6 +391,14 @@ final class AgentTaskService: ObservableObject {
             return AgentTaskCache(tasksByProfileId: [:])
         }
         return cache
+    }
+
+    private static func defaultTimeoutScheduler(_ interval: TimeInterval, _ action: @escaping () -> Void) -> AnyCancellable {
+        let workItem = DispatchWorkItem(block: action)
+        DispatchQueue.main.asyncAfter(deadline: .now() + interval, execute: workItem)
+        return AnyCancellable {
+            workItem.cancel()
+        }
     }
 }
 

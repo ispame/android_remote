@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 
 @main
 struct EarphoneLocalModelsTests {
@@ -11,8 +12,12 @@ struct EarphoneLocalModelsTests {
         try testAgentProfilesSortFallsBackWithoutActivity()
         try testCronValidatorAcceptsFiveFieldExpressions()
         try testAgentTaskItemParsesProtocolPayload()
+        try testAgentTaskServiceExpiresPendingTaskRequest()
+        try testAgentTaskServiceClearsLoadingOnRouterError()
         try testRecordingStoreCreatesAndDeletesMetadata()
         try testRecordingStoreBackfillsAsrByClientMessageId()
+        try testHeadsetDefaultFakeData()
+        try testHeadsetSettingsAddsDemoDevice()
         try testHeadsetSettingsStorePersistsEQAndShortcuts()
         print("EarphoneLocalModelsTests passed")
     }
@@ -160,6 +165,51 @@ struct EarphoneLocalModelsTests {
         try expect(item?.source == "hermes", "source should parse from protocol payload")
     }
 
+    private static func testAgentTaskServiceExpiresPendingTaskRequest() throws {
+        let defaults = try temporaryDefaults()
+        var timeoutActions: [() -> Void] = []
+        let service = AgentTaskService(
+            defaults: defaults,
+            timeoutInterval: 0.1,
+            timeoutScheduler: { _, action in
+                timeoutActions.append(action)
+                return AnyCancellable {}
+            }
+        )
+        let client = FakeAgentTaskRequestClient()
+        service.bind(to: client)
+
+        let profile = profile(id: "hermes", name: "Hermes")
+        service.refreshTasks(for: profile)
+
+        try expect(client.taskListRequests.count == 1, "refresh should send one task list request")
+        try expect(service.isLoading(profile.id), "pending task list request should mark profile loading")
+
+        timeoutActions.first?()
+        drainMainQueue()
+
+        try expect(!service.isLoading(profile.id), "timeout should clear task loading state")
+        try expect(service.errorsByProfileId[profile.id] == "请求超时，请稍后重试", "timeout should surface a profile error")
+    }
+
+    private static func testAgentTaskServiceClearsLoadingOnRouterError() throws {
+        let defaults = try temporaryDefaults()
+        let service = AgentTaskService(defaults: defaults, timeoutScheduler: { _, _ in AnyCancellable {} })
+        let client = FakeAgentTaskRequestClient()
+        service.bind(to: client)
+
+        let profile = profile(id: "hermes", name: "Hermes")
+        service.refreshTasks(for: profile)
+
+        try expect(service.isLoading(profile.id), "pending task list request should start loading")
+
+        client.subject.send(.error(code: "CLIENT_NOT_FOUND", message: "Backend offline"))
+        drainMainQueue()
+
+        try expect(!service.isLoading(profile.id), "router error should clear task loading state")
+        try expect(service.errorsByProfileId[profile.id] == "Backend offline", "router error should surface the backend failure")
+    }
+
     private static func testRecordingStoreBackfillsAsrByClientMessageId() throws {
         let defaults = try temporaryDefaults()
         let directory = try temporaryDirectory()
@@ -176,6 +226,40 @@ struct EarphoneLocalModelsTests {
 
         try expect(store.recordings(for: "agent-1").first?.id == item.id, "recording should still be listed")
         try expect(store.recordings(for: "agent-1").first?.asrText == "转写完成", "ASR result should backfill matching recording")
+    }
+
+    private static func testHeadsetDefaultFakeData() throws {
+        let settings = HeadsetLocalSettings.defaultValue
+        let expectedPresetIds = ["blues", "classical", "jazz", "hiphop", "pop"]
+        let expectedShortcutIds = Set(
+            HeadsetSideSelection.allCases.flatMap { side in
+                HeadsetGestureSelection.allCases.map { gesture in
+                    "\(side.rawValue)-\(gesture.rawValue)"
+                }
+            }
+        )
+
+        try expect(settings.devices.count == 1, "default fake data should include one headset")
+        try expect(settings.devices[0].name == "A9 Ultra", "default headset should be A9 Ultra")
+        try expect(settings.devices[0].isPaired, "default headset should be paired")
+        try expect(settings.devices[0].leftBattery == 100, "default left battery should be 100")
+        try expect(settings.devices[0].rightBattery == 100, "default right battery should be 100")
+        try expect(settings.eqPresets.map(\.id) == expectedPresetIds, "default EQ presets should include requested genres")
+        try expect(settings.eqPresets.allSatisfy { $0.bands.count == 5 }, "each EQ preset should include five frequency bands")
+        try expect(Set(settings.shortcuts.map(\.id)) == expectedShortcutIds, "shortcuts should cover both ears and all gestures")
+    }
+
+    private static func testHeadsetSettingsAddsDemoDevice() throws {
+        var settings = HeadsetLocalSettings.defaultValue
+
+        settings.addDemoDevice()
+
+        try expect(settings.devices.count == 2, "adding a demo headset should append one device")
+        try expect(settings.selectedDeviceId == settings.devices[1].id, "new demo headset should become selected")
+        try expect(settings.devices[1].name == "A9 Ultra 2", "new demo headset should use the next A9 Ultra name")
+        try expect(!settings.devices[1].isPaired, "new demo headset should start unpaired")
+        try expect(settings.devices[1].leftBattery == 100, "new demo left battery should be 100")
+        try expect(settings.devices[1].rightBattery == 100, "new demo right battery should be 100")
     }
 
     private static func testHeadsetSettingsStorePersistsEQAndShortcuts() throws {
@@ -226,6 +310,29 @@ struct EarphoneLocalModelsTests {
         )
     }
 
+    private static func profile(id: String, name: String) -> AgentProfile {
+        AgentProfile(
+            id: id,
+            platform: .hermes,
+            displayName: name,
+            gatewayUrl: "wss://example.com/ws",
+            backendId: id,
+            backendLabel: name,
+            token: "",
+            isPaired: true,
+            asrMode: "router",
+            asrProfileId: "",
+            createdAt: Date(timeIntervalSince1970: 100),
+            updatedAt: Date(timeIntervalSince1970: 100),
+            isPinned: false,
+            sortIndex: 0
+        )
+    }
+
+    private static func drainMainQueue() {
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+    }
+
     private static func temporaryDefaults() throws -> UserDefaults {
         let suiteName = "EarphoneLocalModelsTests-\(UUID().uuidString)"
         guard let defaults = UserDefaults(suiteName: suiteName) else {
@@ -254,5 +361,50 @@ private struct TestFailure: Error, CustomStringConvertible {
 
     init(_ description: String) {
         self.description = description
+    }
+}
+
+private final class FakeAgentTaskRequestClient: AgentTaskRequestClient {
+    let subject = PassthroughSubject<WsMessageEvent, Never>()
+    var messageChannel: AnyPublisher<WsMessageEvent, Never> {
+        subject.eraseToAnyPublisher()
+    }
+
+    private(set) var taskListRequests: [(requestId: String, backendId: String, includeDisabled: Bool)] = []
+
+    func requestTaskList(requestId: String, backendId: String, includeDisabled: Bool) -> Bool {
+        taskListRequests.append((requestId: requestId, backendId: backendId, includeDisabled: includeDisabled))
+        return true
+    }
+
+    func createAgentTask(
+        requestId: String,
+        backendId: String,
+        title: String,
+        prompt: String,
+        schedule: String?,
+        enabled: Bool
+    ) -> Bool {
+        true
+    }
+
+    func updateAgentTask(
+        requestId: String,
+        backendId: String,
+        taskId: String,
+        title: String,
+        prompt: String,
+        schedule: String,
+        enabled: Bool
+    ) -> Bool {
+        true
+    }
+
+    func deleteAgentTask(requestId: String, backendId: String, taskId: String) -> Bool {
+        true
+    }
+
+    func requestApprovalHistory(requestId: String, backendId: String, limit: Int) -> Bool {
+        true
     }
 }
