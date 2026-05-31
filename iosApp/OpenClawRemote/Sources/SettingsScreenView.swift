@@ -876,11 +876,27 @@ struct SettingsScreenView: View {
             }
             DispatchQueue.main.async {
                 asrProfiles = profiles
-                if asrProfileId.isEmpty {
-                    asrProfileId = defaultProfileId ?? profiles.first?.id ?? ""
+                if shouldReplaceChatAsrProfile(asrProfileId, profiles: profiles) {
+                    asrProfileId = preferredChatAsrProfileId(profiles: profiles, defaultProfileId: defaultProfileId)
                 }
             }
         }.resume()
+    }
+
+    private func shouldReplaceChatAsrProfile(_ profileId: String, profiles: [AsrProviderProfile]) -> Bool {
+        let trimmed = profileId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return true }
+        guard let profile = profiles.first(where: { $0.id == trimmed }) else { return true }
+        return profile.provider == "volcengine-file"
+    }
+
+    private func preferredChatAsrProfileId(profiles: [AsrProviderProfile], defaultProfileId: String?) -> String {
+        profiles.first(where: { $0.provider == "volcengine-streaming" })?.id
+            ?? profiles.first(where: { $0.provider == "volcengine" })?.id
+            ?? profiles.first(where: { $0.id.localizedCaseInsensitiveContains("stream") })?.id
+            ?? defaultProfileId
+            ?? profiles.first?.id
+            ?? ""
     }
 
     private func asrProvidersUrl(from gatewayUrl: String) -> URL? {

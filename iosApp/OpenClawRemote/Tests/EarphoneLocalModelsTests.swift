@@ -21,6 +21,8 @@ struct EarphoneLocalModelsTests {
         try testLegacyRecordingDecodesAsAudioOnly()
         try testRecordingStoreConfiguresProcessingTypePromptAndArtifacts()
         try testRecordingEventPayloadParsesProtocolFrame()
+        try testRecordingEventPayloadPreservesDisplayMetadata()
+        try testMeetingRecordingPromptRequiresExecutableStructuredEvents()
         try testRecordingChatContentFormatsPromptAndTranscript()
         try testRecordingSettingsDefaultToFirstConfiguredAgent()
         try testRecordingSettingsFallbackWhenPrimaryAgentIsDeleted()
@@ -413,6 +415,37 @@ struct EarphoneLocalModelsTests {
         try expect(payload?.event.kind == .scheduledTask, "recording event kind should parse scheduled_task")
         try expect(payload?.event.status == .completed, "recording event status should parse completed")
         try expect(payload?.event.title == "新增定时任务", "recording event title should parse")
+    }
+
+    private static func testRecordingEventPayloadPreservesDisplayMetadata() throws {
+        let payload = RecordingEventPayload(json: [
+            "recording_id": "recording-1",
+            "client_message_id": "client-audio-1",
+            "event_id": "event-1",
+            "kind": "subtask",
+            "title": "调研 Loose Index / 轻量化索引技术方案",
+            "content": "搜集轻量化索引方案、开源项目、技术论文，输出调研报告",
+            "status": "pending",
+            "data": [
+                "owner": "agent",
+                "next_action": "开始调研并补充文档",
+                "needs_user_input": false,
+                "assumptions": ["先按手机端本地搜索场景调研"],
+            ],
+        ])
+
+        try expect(payload?.event.metadata["owner"] == "agent", "recording event should preserve owner metadata for grouping")
+        try expect(payload?.event.metadata["next_action"] == "开始调研并补充文档", "recording event should preserve next action metadata")
+        try expect(payload?.event.metadata["needs_user_input"] == "false", "recording event should stringify boolean metadata")
+        try expect(payload?.event.metadata["assumptions"] == "先按手机端本地搜索场景调研", "recording event should stringify list metadata")
+    }
+
+    private static func testMeetingRecordingPromptRequiresExecutableStructuredEvents() throws {
+        try expect(RecordingSettings.meetingPrompt.contains("# 会议纪要"), "meeting prompt should require the meeting note heading")
+        try expect(RecordingSettings.meetingPrompt.contains("## 会议核心结论"), "meeting prompt should require core conclusion heading")
+        try expect(RecordingSettings.meetingPrompt.contains("优先基于合理假设直接开始"), "meeting prompt should tell the agent to proceed without unnecessary questions")
+        try expect(RecordingSettings.recordingEventProtocolPrompt.contains("一个合法 JSON 数组"), "event protocol should require one JSON array")
+        try expect(RecordingSettings.recordingEventProtocolPrompt.contains("禁止输出多个相邻 JSON 对象"), "event protocol should forbid the malformed multi-object format")
     }
 
     private static func testRecordingChatContentFormatsPromptAndTranscript() throws {

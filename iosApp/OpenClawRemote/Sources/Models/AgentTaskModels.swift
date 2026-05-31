@@ -212,7 +212,8 @@ struct RecordingEventPayload: Equatable {
             title: title.isEmpty ? kind.label : title,
             content: content,
             status: status,
-            createdAt: timestamp
+            createdAt: timestamp,
+            metadata: Self.metadata(from: json["data"] as? [String: Any])
         )
         if let data = json["data"] as? [String: Any] {
             jobId = data["job_id"] as? String
@@ -223,6 +224,40 @@ struct RecordingEventPayload: Equatable {
                 artifact = RecordingArtifactPayload(json: artifactJson)
             }
         }
+    }
+
+    private static func metadata(from data: [String: Any]?) -> [String: String] {
+        guard let data else { return [:] }
+        var metadata: [String: String] = [:]
+        for (key, value) in data where key != "artifact" {
+            if let stringValue = stringMetadataValue(value) {
+                metadata[key] = stringValue
+            }
+        }
+        return metadata
+    }
+
+    private static func stringMetadataValue(_ value: Any) -> String? {
+        if let string = value as? String {
+            let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        if let bool = value as? Bool {
+            return bool ? "true" : "false"
+        }
+        if let number = value as? NSNumber {
+            return number.stringValue
+        }
+        if let values = value as? [Any] {
+            let joined = values.compactMap(stringMetadataValue).joined(separator: "、")
+            return joined.isEmpty ? nil : joined
+        }
+        if let object = value as? [String: Any],
+           let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]),
+           let string = String(data: data, encoding: .utf8) {
+            return string
+        }
+        return nil
     }
 
     private static func doubleValue(_ value: Any?) -> Double? {

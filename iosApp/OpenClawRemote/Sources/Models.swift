@@ -624,12 +624,20 @@ struct RecordingSettings: Equatable {
     static let defaultPrompt = "以下是录音，根据录音，分析是否有要解决的问题或者要收集的信息，如果有，列出任务执行的计划并按照计划执行；如果有定时任务，置顶定时任务"
 
     static let meetingPrompt = """
-    以下是会议录音。请根据录音输出会议纪要，包含主题、背景、关键讨论、结论、决策与风险。
+    以下是会议录音。请根据录音整理并执行，正文固定使用以下结构：
+    # 会议纪要
+    ## 会议核心结论
+    ## Agent 可承接的待办
+    ## 需要人完成的待办
+    ## 已开始执行/产出
+
+    会议纪要需要包含主题、背景、关键讨论、结论、决策与风险。
     请拆分会议待办为两类：
-    1. Agent 可以完成的事项，例如数据分析、资料收集、调研报告、文档整理；缺少必要信息时，先列出需要用户确认的数据或问题，完成后保存文件并输出 artifact 事件。
-    2. 需要人完成的事项，形成 checklist，尽量提取负责人和截止时间，并输出 reminder 或 subtask 事件，方便进度跟踪。
+    1. Agent 可以完成的事项，例如数据分析、资料收集、调研报告、文档整理。每个事项必须拆成独立子任务，并优先基于合理假设直接开始执行；缺少业务场景、数据规模、查询场景等信息时，先写明假设并继续推进，不要默认询问用户先做哪一项。
+    2. 需要人完成的事项，形成 checklist，尽量提取负责人和截止时间；只有缺少信息导致无法产生任何有效结果时，才向用户提问。
+    如果识别到 Loose Index、LLM-Friendly 索引、Lucene 对比等多个 Agent 可做事项，必须拆成多个独立子任务并逐个跟进。
     如果创建了定时任务，请输出 scheduled_task 事件。
-    最终请保存一份 Markdown 会议纪要文件，并输出 artifact 事件。
+    最终请保存一份 Markdown 会议纪要文件，并输出 artifact 事件；后续调研或报告也应分别保存 Markdown 文件并输出 artifact 事件。
     """
 
     static let ideaPrompt = """
@@ -640,11 +648,16 @@ struct RecordingSettings: Equatable {
 
     static let recordingEventProtocolPrompt = """
     请在处理录音时，把关键执行过程用结构化事件块输出，系统会自动归档到这条录音。
-    事件块格式必须是合法 JSON，可以是单个对象或对象数组：
+    事件块必须只输出一次，并且内容必须是一个合法 JSON 数组。禁止输出多个相邻 JSON 对象，禁止使用 {"boson-recording-event": {...}} 包裹格式：
     ```boson-recording-event
-    {"kind":"subtask","title":"子任务标题","content":"执行结果","status":"completed"}
+    [
+      {"kind":"subtask","title":"调研 Loose Index / 轻量化索引技术方案","content":"搜集轻量化索引方案、开源项目、技术论文，输出调研报告","status":"pending","data":{"owner":"agent","next_action":"开始调研并补充文档","needs_user_input":false,"assumptions":["缺少业务场景时，先按手机端本地搜索场景调研"]}},
+      {"kind":"artifact","title":"会议纪要","content":"meeting.md","status":"completed","data":{"artifact":{"filename":"meeting.md","mime_type":"text/markdown","encoding":"utf8","content":"# 会议纪要\\n\\n文件内容","backend_path":"可选路径"}}}
+    ]
     ```
     支持 kind: agent_reply, subtask, scheduled_task, reminder, artifact, error。
+    Agent 可承接的事项每一项都必须单独输出 subtask，data.owner="agent"；需要人完成或确认的事项输出 data.owner="user"，只有真正阻塞时才设置 data.needs_user_input=true。
+    请优先基于合理假设直接开始执行，把假设写入 data.assumptions；不要默认询问用户先做哪一项。
     保存文档时必须输出 artifact 事件，data.artifact 格式为 {"filename":"name.md","mime_type":"text/markdown","encoding":"utf8","content":"文件内容","backend_path":"可选路径"}。
     请不要在面向用户的正文里解释这个事件协议。
     """

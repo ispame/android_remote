@@ -323,11 +323,27 @@ private struct RecordingSettingsView: View {
             }
             DispatchQueue.main.async {
                 asrProfiles = profiles
-                if draft.asrProfileId.isEmpty {
-                    draft.asrProfileId = defaultProfileId ?? profiles.first?.id ?? ""
+                if shouldReplaceRecordingAsrProfile(draft.asrProfileId, profiles: profiles) {
+                    draft.asrProfileId = preferredRecordingAsrProfileId(profiles: profiles, defaultProfileId: defaultProfileId)
+                    autoSave()
                 }
             }
         }.resume()
+    }
+
+    private func shouldReplaceRecordingAsrProfile(_ profileId: String, profiles: [AsrProviderProfile]) -> Bool {
+        let trimmed = profileId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return true }
+        guard let profile = profiles.first(where: { $0.id == trimmed }) else { return true }
+        return profile.provider == "volcengine-streaming" || profile.provider == "volcengine"
+    }
+
+    private func preferredRecordingAsrProfileId(profiles: [AsrProviderProfile], defaultProfileId: String?) -> String {
+        profiles.first(where: { $0.provider == "volcengine-file" })?.id
+            ?? profiles.first(where: { $0.id.localizedCaseInsensitiveContains("file") })?.id
+            ?? defaultProfileId
+            ?? profiles.first?.id
+            ?? ""
     }
 
     private func asrProvidersUrl(from gatewayUrl: String) -> URL? {

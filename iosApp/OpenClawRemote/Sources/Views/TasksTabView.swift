@@ -386,6 +386,27 @@ private struct RecordingDetailView: View {
         currentRecording.events.sorted { $0.createdAt < $1.createdAt }
     }
 
+    private var generalTimelineEvents: [RecordingEventItem] {
+        timelineEvents.filter { event in
+            switch event.kind {
+            case .subtask, .scheduledTask, .reminder, .artifact:
+                return false
+            case .created, .asr, .delivered, .agentReply, .status, .error, .other:
+                return true
+            }
+        }
+    }
+
+    private var agentSubtaskEvents: [RecordingEventItem] {
+        timelineEvents.filter { $0.kind == .subtask && $0.recordingOwner != "user" && !$0.recordingNeedsUserInput }
+    }
+
+    private var humanSubtaskEvents: [RecordingEventItem] {
+        timelineEvents.filter { event in
+            event.kind == .subtask && (event.recordingOwner == "user" || event.recordingNeedsUserInput)
+        }
+    }
+
     private var scheduledEvents: [RecordingEventItem] {
         timelineEvents.filter { $0.kind == .scheduledTask }
     }
@@ -443,13 +464,59 @@ private struct RecordingDetailView: View {
                     .frame(minHeight: 220)
             }
             Section("执行进度") {
-                if timelineEvents.isEmpty {
+                if generalTimelineEvents.isEmpty {
                     Text("Agent 执行进度会在这里展示")
                         .foregroundColor(.secondary)
                 } else {
-                    ForEach(timelineEvents) { event in
+                    ForEach(generalTimelineEvents) { event in
                         RecordingEventRow(event: event, colors: colors)
                     }
+                }
+            }
+            Section("Agent 可承接的待办") {
+                if agentSubtaskEvents.isEmpty {
+                    Text("Agent 可执行的录音子任务会在这里拆分展示")
+                        .foregroundColor(.secondary)
+                } else {
+                    ForEach(agentSubtaskEvents) { event in
+                        RecordingEventRow(event: event, colors: colors)
+                    }
+                }
+            }
+            Section {
+                if let reminderError {
+                    Text(reminderError)
+                        .font(.system(size: 13))
+                        .foregroundColor(colors.recordingRed)
+                }
+                if humanSubtaskEvents.isEmpty && reminders.isEmpty {
+                    Text("需要用户或其他人完成的待办会在这里展示")
+                        .foregroundColor(.secondary)
+                } else {
+                    ForEach(humanSubtaskEvents) { event in
+                        RecordingEventRow(event: event, colors: colors)
+                    }
+                    ForEach(reminders) { reminder in
+                        RecordingReminderRow(reminder: reminder, colors: colors) {
+                            store.setReminderCompleted(
+                                recordingId: currentRecording.id,
+                                reminderId: reminder.id,
+                                isCompleted: !reminder.isCompleted
+                            )
+                        }
+                    }
+                }
+            } header: {
+                HStack {
+                    Text("需要人完成的待办")
+                    Spacer()
+                    Button {
+                        isAddingReminder = true
+                    } label: {
+                        Image(systemName: "plus.circle")
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("新增提醒")
                 }
             }
             Section("导出的定时任务") {
@@ -495,39 +562,6 @@ private struct RecordingDetailView: View {
                         }
                         .padding(.vertical, 3)
                     }
-                }
-            }
-            Section {
-                if let reminderError {
-                    Text(reminderError)
-                        .font(.system(size: 13))
-                        .foregroundColor(colors.recordingRed)
-                }
-                if reminders.isEmpty {
-                    Text("后续待办提醒会在这里展示")
-                        .foregroundColor(.secondary)
-                } else {
-                    ForEach(reminders) { reminder in
-                        RecordingReminderRow(reminder: reminder, colors: colors) {
-                            store.setReminderCompleted(
-                                recordingId: currentRecording.id,
-                                reminderId: reminder.id,
-                                isCompleted: !reminder.isCompleted
-                            )
-                        }
-                    }
-                }
-            } header: {
-                HStack {
-                    Text("后续待办提醒")
-                    Spacer()
-                    Button {
-                        isAddingReminder = true
-                    } label: {
-                        Image(systemName: "plus.circle")
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("新增提醒")
                 }
             }
         }
@@ -701,12 +735,50 @@ private struct RecordingEventRow: View {
                         .foregroundColor(.secondary)
                         .textSelection(.enabled)
                 }
+                if let nextAction = event.recordingNextAction {
+                    Text("下一步：\(nextAction)")
+                        .font(.system(size: 12))
+                        .foregroundColor(colors.primary)
+                        .textSelection(.enabled)
+                }
+                if let assumptions = event.recordingAssumptions {
+                    Text("假设：\(assumptions)")
+                        .font(.system(size: 12))
+                        .foregroundColor(.secondary)
+                        .textSelection(.enabled)
+                }
                 Text(event.createdAt.earphoneListTimeText)
                     .font(.system(size: 11))
                     .foregroundColor(.secondary)
             }
         }
         .padding(.vertical, 3)
+    }
+}
+
+private extension RecordingEventItem {
+    var recordingOwner: String {
+        metadata["owner"]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+    }
+
+    var recordingNeedsUserInput: Bool {
+        let rawValue = metadata["needs_user_input"]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return rawValue == "true" || rawValue == "1" || rawValue == "yes"
+    }
+
+    var recordingNextAction: String? {
+        displayMetadataValue(for: "next_action")
+    }
+
+    var recordingAssumptions: String? {
+        displayMetadataValue(for: "assumptions")
+    }
+
+    private func displayMetadataValue(for key: String) -> String? {
+        guard let value = metadata[key]?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
+            return nil
+        }
+        return value
     }
 }
 

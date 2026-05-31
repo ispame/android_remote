@@ -171,6 +171,17 @@ struct RecordingEventItem: Identifiable, Codable, Equatable {
     var content: String
     var status: RecordingEventStatus
     var createdAt: Date
+    var metadata: [String: String]
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case kind
+        case title
+        case content
+        case status
+        case createdAt
+        case metadata
+    }
 
     init(
         id: String = UUID().uuidString,
@@ -178,7 +189,8 @@ struct RecordingEventItem: Identifiable, Codable, Equatable {
         title: String,
         content: String,
         status: RecordingEventStatus = .completed,
-        createdAt: Date = Date()
+        createdAt: Date = Date(),
+        metadata: [String: String] = [:]
     ) {
         self.id = id
         self.kind = kind
@@ -186,6 +198,18 @@ struct RecordingEventItem: Identifiable, Codable, Equatable {
         self.content = content
         self.status = status
         self.createdAt = createdAt
+        self.metadata = metadata
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        kind = try container.decode(RecordingEventKind.self, forKey: .kind)
+        title = try container.decode(String.self, forKey: .title)
+        content = try container.decode(String.self, forKey: .content)
+        status = try container.decode(RecordingEventStatus.self, forKey: .status)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        metadata = try container.decodeIfPresent([String: String].self, forKey: .metadata) ?? [:]
     }
 }
 
