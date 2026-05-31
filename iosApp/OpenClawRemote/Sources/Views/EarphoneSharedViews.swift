@@ -82,8 +82,13 @@ extension Date {
 }
 
 extension View {
+    @ViewBuilder
     func hideTabBarWhileVisible() -> some View {
-        background(TabBarVisibilityController(isHidden: true))
+        if #available(iOS 16.0, *) {
+            toolbar(.hidden, for: .tabBar)
+        } else {
+            background(TabBarVisibilityController(isHidden: true))
+        }
     }
 }
 
@@ -101,6 +106,8 @@ private struct TabBarVisibilityController: UIViewControllerRepresentable {
 
     final class Controller: UIViewController {
         var isHidden: Bool
+        private weak var adjustedController: UIViewController?
+        private var originalAdditionalSafeAreaBottom: CGFloat?
 
         init(isHidden: Bool) {
             self.isHidden = isHidden
@@ -117,16 +124,70 @@ private struct TabBarVisibilityController: UIViewControllerRepresentable {
             applyVisibility()
         }
 
+        override func viewSafeAreaInsetsDidChange() {
+            super.viewSafeAreaInsetsDidChange()
+            applyVisibility()
+        }
+
         override func viewWillDisappear(_ animated: Bool) {
             super.viewWillDisappear(animated)
-            tabBarController?.tabBar.isHidden = false
+            restoreVisibility()
         }
 
         func applyVisibility() {
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
-                self.tabBarController?.tabBar.isHidden = self.isHidden
+                guard let tabBarController = self.tabBarController else { return }
+                guard self.isHidden else {
+                    self.restoreVisibility()
+                    return
+                }
+
+                let targetController = self.targetController(in: tabBarController)
+                if self.adjustedController !== targetController {
+                    self.restoreAdjustedSafeArea()
+                    self.adjustedController = targetController
+                    self.originalAdditionalSafeAreaBottom = targetController.additionalSafeAreaInsets.bottom
+                }
+
+                var insets = targetController.additionalSafeAreaInsets
+                let originalBottom = self.originalAdditionalSafeAreaBottom ?? 0
+                insets.bottom = originalBottom - self.collapsedTabBarSafeAreaInset(in: tabBarController)
+                targetController.additionalSafeAreaInsets = insets
+                tabBarController.tabBar.isHidden = true
+                targetController.view.setNeedsLayout()
+                targetController.view.layoutIfNeeded()
             }
+        }
+
+        private func restoreVisibility() {
+            restoreAdjustedSafeArea()
+            tabBarController?.tabBar.isHidden = false
+        }
+
+        private func restoreAdjustedSafeArea() {
+            guard let adjustedController, let originalAdditionalSafeAreaBottom else { return }
+            var insets = adjustedController.additionalSafeAreaInsets
+            insets.bottom = originalAdditionalSafeAreaBottom
+            adjustedController.additionalSafeAreaInsets = insets
+            adjustedController.view.setNeedsLayout()
+            self.adjustedController = nil
+            self.originalAdditionalSafeAreaBottom = nil
+        }
+
+        private func targetController(in tabBarController: UITabBarController) -> UIViewController {
+            if let navigationController = tabBarController.selectedViewController as? UINavigationController {
+                return navigationController.topViewController ?? navigationController
+            }
+            return tabBarController.selectedViewController ?? tabBarController
+        }
+
+        private func collapsedTabBarSafeAreaInset(in tabBarController: UITabBarController) -> CGFloat {
+            let tabBarHeight = tabBarController.tabBar.bounds.height
+            let bottomSafeAreaInset = tabBarController.view.window?.safeAreaInsets.bottom
+                ?? view.window?.safeAreaInsets.bottom
+                ?? 0
+            return max(0, tabBarHeight - bottomSafeAreaInset)
         }
     }
 }

@@ -6,6 +6,7 @@ struct HistoryMessagePayloadRegressionTests {
         try testChatMessagePrefersPayloadTimestampOverFallback()
         try testChatMessageFallsBackWhenPayloadTimestampIsMissing()
         try testTimestampParsesNumericHermesCreatedAt()
+        try testChatMessageParsesCollapsedTraceItems()
         print("HistoryMessagePayloadRegressionTests passed")
     }
 
@@ -40,6 +41,37 @@ struct HistoryMessagePayloadRegressionTests {
         let timestamp = HistoryMessagePayload.timestamp(from: ["createdAt": 1_779_273_780_000])
 
         try expect(timestamp == "2026-05-20T10:43:00.000Z", "numeric Hermes createdAt should normalize to ISO8601")
+    }
+
+    private static func testChatMessageParsesCollapsedTraceItems() throws {
+        let message = HistoryMessagePayload.chatMessage(
+            content: "系统盘使用率 90%。",
+            role: "assistant",
+            item: [
+                "timestamp": "2026-05-20T10:43:00.000Z",
+                "trace": [
+                    [
+                        "trace_id": "trace-1",
+                        "kind": "tool_call",
+                        "title": "Tool call: shell",
+                        "content": "{\"cmd\":\"df -h\"}",
+                        "timestamp": "2026-05-20T10:42:59.000Z",
+                    ],
+                    [
+                        "trace_id": "trace-2",
+                        "kind": "tool_result",
+                        "title": "Tool result",
+                        "content": "/dev/disk3s1 90%",
+                    ],
+                ],
+            ]
+        )
+
+        try expect(message.trace.count == 2, "history trace should be parsed into the chat message")
+        try expect(message.trace[0].kind == .toolCall, "tool_call trace kind should decode")
+        try expect(message.trace[0].title == "Tool call: shell", "trace title should decode")
+        try expect(message.trace[1].kind == .toolResult, "tool_result trace kind should decode")
+        try expect(message.trace[1].content.contains("90%"), "trace content should decode")
     }
 
     private static func expect(_ condition: @autoclosure () -> Bool, _ message: String) throws {

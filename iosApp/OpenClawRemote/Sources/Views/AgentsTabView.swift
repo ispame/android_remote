@@ -170,10 +170,6 @@ private struct AgentRowView: View {
             }
 
             Spacer(minLength: 8)
-
-            Image(systemName: "chevron.right")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundColor(colors.textSecondary.opacity(0.6))
         }
         .padding(.vertical, 6)
     }

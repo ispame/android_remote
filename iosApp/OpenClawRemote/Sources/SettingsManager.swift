@@ -11,6 +11,8 @@ final class SettingsManager: ObservableObject {
     private let recordingDeliverToAgentKey = "recording_deliver_to_agent"
     private let recordingPromptKey = "recording_prompt"
     private let recordingAsrProfileIdKey = "recording_asr_profile_id"
+    private let recordingDefaultTypeKey = "recording_default_type"
+    private let recordingCustomPromptKey = "recording_custom_prompt"
 
     @Published private(set) var profiles: [AgentProfile]
     @Published private(set) var selectedProfileId: String
@@ -123,6 +125,10 @@ final class SettingsManager: ObservableObject {
         normalized.primaryAgentProfileId = resolvedPrimaryRecordingProfileId(settings.primaryAgentProfileId)
         if normalized.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             normalized.prompt = RecordingSettings.defaultPrompt
+        }
+        if normalized.defaultRecordingType == .custom,
+           normalized.customPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            normalized.defaultRecordingType = .audioOnly
         }
         recordingSettings = normalized
         persistRecordingSettings()
@@ -406,6 +412,8 @@ final class SettingsManager: ObservableObject {
         defaults.set(recordingSettings.deliverToAgent, forKey: recordingDeliverToAgentKey)
         defaults.set(recordingSettings.prompt, forKey: recordingPromptKey)
         defaults.set(recordingSettings.asrProfileId, forKey: recordingAsrProfileIdKey)
+        defaults.set(recordingSettings.defaultRecordingType.rawValue, forKey: recordingDefaultTypeKey)
+        defaults.set(recordingSettings.customPrompt, forKey: recordingCustomPromptKey)
     }
 
     private func reconcileRecordingPrimaryAgent() {
@@ -515,11 +523,19 @@ final class SettingsManager: ObservableObject {
         let recordingAsrProfileId = defaults.string(forKey: "recording_asr_profile_id")
             ?? defaults.string(forKey: "asr_profile_id")
             ?? ""
+        let defaultRecordingType = defaults.string(forKey: "recording_default_type")
+            .flatMap(RecordingType.init(rawValue:)) ?? .audioOnly
+        let savedCustomPrompt = defaults.string(forKey: "recording_custom_prompt") ?? ""
+        let customPrompt = savedCustomPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? (savedPrompt == RecordingSettings.defaultPrompt ? "" : savedPrompt)
+            : savedCustomPrompt
         return RecordingSettings(
             primaryAgentProfileId: primaryAgentProfileId,
             deliverToAgent: deliverToAgent,
             prompt: prompt,
-            asrProfileId: recordingAsrProfileId
+            asrProfileId: recordingAsrProfileId,
+            defaultRecordingType: defaultRecordingType == .custom && customPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .audioOnly : defaultRecordingType,
+            customPrompt: customPrompt
         )
     }
 

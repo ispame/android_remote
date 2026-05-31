@@ -21,7 +21,7 @@ struct AgentNavigationLayoutTests {
         let source = try readSource("iosApp/OpenClawRemote/Sources/Views/EarphoneSharedViews.swift")
 
         try expect(
-            source.contains(".toolbar(.hidden, for: .tabBar)"),
+            source.contains("toolbar(.hidden, for: .tabBar)"),
             "iOS 16+ pushed screens should use SwiftUI tab bar hiding so the tab bar safe area is removed"
         )
         try expect(

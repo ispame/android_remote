@@ -16,10 +16,17 @@ struct EarphoneLocalModelsTests {
         try testAgentTaskServiceClearsLoadingOnRouterError()
         try testRecordingStoreCreatesAndDeletesMetadata()
         try testRecordingStoreBackfillsAsrByClientMessageId()
+        try testRecordingStoreTracksLongAsrJobProgressAndFailure()
+        try testRecordingStoreTracksPromptEventsAndReminders()
+        try testLegacyRecordingDecodesAsAudioOnly()
+        try testRecordingStoreConfiguresProcessingTypePromptAndArtifacts()
+        try testRecordingEventPayloadParsesProtocolFrame()
+        try testRecordingChatContentFormatsPromptAndTranscript()
         try testRecordingSettingsDefaultToFirstConfiguredAgent()
         try testRecordingSettingsFallbackWhenPrimaryAgentIsDeleted()
         try testRecordingAsrPayloadIncludesRecordingContext()
         try testChatAsrPayloadOmitsRecordingContext()
+        try testLongRecordingUploadRequestUsesHttpJobMetadata()
         try testHeadsetDefaultFakeData()
         try testHeadsetSettingsAddsDemoDevice()
         try testHeadsetSettingsStorePersistsEQAndShortcuts()
@@ -138,9 +145,10 @@ struct EarphoneLocalModelsTests {
         let store = RecordingStore(defaults: defaults, documentsDirectory: directory)
         let audio = Data([0x01, 0x02, 0x03, 0x04])
 
-        let item = try store.createRecording(agentId: "agent-1", audioData: audio, asrText: "你好")
+        let item = try store.createRecording(agentId: "agent-1", audioData: audio, asrText: "你好", prompt: "请总结录音")
 
         try expect(store.recordings(for: "agent-1").map(\.id) == [item.id], "created recording should be listed for its agent")
+        try expect(store.recordings(for: "agent-1").first?.prompt == "请总结录音", "recording should persist the prompt used for Agent delivery")
         try expect(FileManager.default.fileExists(atPath: item.fileURL.path), "recording audio file should exist")
 
         try store.deleteRecording(id: item.id)
@@ -228,8 +236,191 @@ struct EarphoneLocalModelsTests {
 
         store.updateAsrText(clientMessageId: "client-audio-1", text: "转写完成")
 
-        try expect(store.recordings(for: "agent-1").first?.id == item.id, "recording should still be listed")
-        try expect(store.recordings(for: "agent-1").first?.asrText == "转写完成", "ASR result should backfill matching recording")
+        let recording = store.recordings(for: "agent-1").first
+        let hasAsrEvent = recording?.events.contains { event in
+            event.kind == .asr && event.content == "转写完成"
+        } == true
+        try expect(recording?.id == item.id, "recording should still be listed")
+        try expect(recording?.asrText == "转写完成", "ASR result should backfill matching recording")
+        try expect(hasAsrEvent, "ASR backfill should add a recording timeline event")
+    }
+
+    private static func testRecordingStoreTracksLongAsrJobProgressAndFailure() throws {
+        let defaults = try temporaryDefaults()
+        let directory = try temporaryDirectory()
+        let store = RecordingStore(defaults: defaults, documentsDirectory: directory)
+
+        let item = try store.createRecording(
+            agentId: "agent-1",
+            audioData: Data([0x01]),
+            source: .phone
+        )
+        store.configureRecordingForProcessing(
+            recordingId: item.id,
+            type: .meeting,
+            prompt: RecordingSettings.meetingPrompt,
+            clientMessageId: "client-long-1"
+        )
+        store.updateAsrJob(recordingId: item.id, jobId: "job-long-1", uploadProgress: 0.25, asrProgress: 0)
+
+        let progressPayload = try unwrap(RecordingEventPayload(json: [
+            "recording_id": item.id,
+            "client_message_id": "client-long-1",
+            "event_id": "progress-1",
+            "kind": "asr",
+            "title": "ASR 转写中",
+            "content": "1/4",
+            "status": "running",
+            "data": [
+                "job_id": "job-long-1",
+                "percent": 50,
+                "completed_segments": 2,
+                "total_segments": 4,
+            ],
+        ]), "long ASR progress payload should parse")
+        store.appendEvent(progressPayload)
+        store.updateAsrFailure(clientMessageId: "client-long-1", error: "ASR_EMPTY_TRANSCRIPT")
+
+        let recording = try unwrap(store.recordings(for: "agent-1").first, "recording should be present")
+        try expect(recording.asrJobId == "job-long-1", "recording should retain the long ASR job id")
+        try expect(recording.uploadProgress == 0.25, "recording should retain upload progress")
+        try expect(recording.asrProgress == 0.5, "recording should update ASR progress from recording_event data")
+        try expect(recording.asrError == "ASR_EMPTY_TRANSCRIPT", "recording should retain ASR failure code")
+        try expect(recording.processingStatus == .failed, "ASR failure should mark recording failed")
+        try expect(recording.events.contains { $0.kind == .error && $0.content == "ASR_EMPTY_TRANSCRIPT" }, "ASR failure should add an error event")
+    }
+
+    private static func testRecordingStoreTracksPromptEventsAndReminders() throws {
+        let defaults = try temporaryDefaults()
+        let directory = try temporaryDirectory()
+        let store = RecordingStore(defaults: defaults, documentsDirectory: directory)
+        let item = try store.createRecording(
+            agentId: "agent-1",
+            audioData: Data([0x01]),
+            prompt: "分析录音并拆任务",
+            source: .headset,
+            clientMessageId: "client-audio-2"
+        )
+
+        store.appendEvent(RecordingEventItem(
+            kind: .subtask,
+            title: "保存文档",
+            content: "已保存 docs/meeting.md",
+            status: .completed
+        ), clientMessageId: "client-audio-2")
+        let dueAt = Date(timeIntervalSince1970: 1_800_000_000)
+        let reminder = store.addReminder(
+            recordingId: item.id,
+            title: "跟进会议纪要",
+            notes: "确认负责人",
+            dueAt: dueAt
+        )
+
+        let reloaded = RecordingStore(defaults: defaults, documentsDirectory: directory)
+        let recording = try unwrap(reloaded.recordings(for: "agent-1").first, "recording should reload")
+        let hasSavedDocEvent = recording.events.contains { $0.title == "保存文档" }
+        try expect(recording.prompt == "分析录音并拆任务", "prompt should survive persistence")
+        try expect(hasSavedDocEvent, "timeline event should survive persistence")
+        try expect(recording.reminders.map(\.id) == [reminder.id], "reminder should be attached to the recording")
+        try expect(recording.reminders.first?.dueAt == dueAt, "reminder due date should survive persistence")
+    }
+
+    private static func testLegacyRecordingDecodesAsAudioOnly() throws {
+        let json = """
+        {
+          "id": "legacy-recording",
+          "agentId": "agent-1",
+          "createdAt": 725846400,
+          "duration": 12,
+          "asrText": "旧转写",
+          "prompt": "旧 Prompt",
+          "fileURL": "file:///tmp/legacy.wav",
+          "source": "phone",
+          "clientMessageId": "cm-old"
+        }
+        """.data(using: .utf8)!
+
+        let recording = try JSONDecoder().decode(RecordingItem.self, from: json)
+
+        try expect(recording.recordingType == .audioOnly, "legacy recordings should decode as audio-only")
+        try expect(recording.processingStatus == .completed, "legacy recordings with ASR text should decode as completed")
+        try expect(recording.selectedPrompt == "旧 Prompt", "legacy prompt should seed selected prompt")
+        try expect(recording.artifacts.isEmpty, "legacy recordings should default to no artifacts")
+    }
+
+    private static func testRecordingStoreConfiguresProcessingTypePromptAndArtifacts() throws {
+        let defaults = try temporaryDefaults()
+        let directory = try temporaryDirectory()
+        let store = RecordingStore(defaults: defaults, documentsDirectory: directory)
+        let item = try store.createRecording(agentId: "agent-1", audioData: Data([0x01]), source: .phone)
+
+        store.configureRecordingForProcessing(
+            recordingId: item.id,
+            type: .meeting,
+            prompt: RecordingSettings.meetingPrompt,
+            clientMessageId: "client-meeting-1"
+        )
+
+        let payload = try unwrap(RecordingEventPayload(json: [
+            "recording_id": item.id,
+            "client_message_id": "client-meeting-1",
+            "event_id": "artifact-event-1",
+            "kind": "artifact",
+            "title": "会议纪要文件",
+            "content": "meeting.md",
+            "status": "completed",
+            "timestamp": "2026-05-31T10:00:00.000Z",
+            "data": [
+                "artifact": [
+                    "filename": "meeting.md",
+                    "mime_type": "text/markdown",
+                    "encoding": "utf8",
+                    "content": "# 会议纪要\n\n结论。",
+                    "backend_path": "docs/meeting.md",
+                ]
+            ],
+        ]), "artifact payload should parse")
+
+        store.appendEvent(payload)
+
+        let recording = try unwrap(store.recordings(for: "agent-1").first, "recording should be present")
+        try expect(recording.recordingType == .meeting, "recording type should update before processing")
+        try expect(recording.processingStatus == .processing, "recording should enter processing state after configuration")
+        try expect(recording.selectedPrompt == RecordingSettings.meetingPrompt, "selected prompt should be persisted on the recording")
+        try expect(recording.clientMessageId == "client-meeting-1", "client message id should bind ASR results and events")
+        try expect(recording.artifacts.count == 1, "artifact event should create one local artifact")
+        try expect(recording.artifacts[0].filename == "meeting.md", "artifact filename should be preserved")
+        try expect(recording.artifacts[0].mimeType == "text/markdown", "artifact mime type should be preserved")
+        try expect(FileManager.default.fileExists(atPath: recording.artifacts[0].fileURL.path), "artifact content should be written locally")
+        let artifactText = try String(contentsOf: recording.artifacts[0].fileURL, encoding: .utf8)
+        try expect(artifactText == "# 会议纪要\n\n结论。", "artifact file content should match event payload")
+    }
+
+    private static func testRecordingEventPayloadParsesProtocolFrame() throws {
+        let payload = RecordingEventPayload(json: [
+            "recording_id": "recording-1",
+            "client_message_id": "client-audio-1",
+            "event_id": "event-1",
+            "kind": "scheduled_task",
+            "title": "新增定时任务",
+            "content": "每天 9 点提醒跟进",
+            "status": "completed",
+            "timestamp": "2026-05-31T10:00:00.000Z",
+        ])
+
+        try expect(payload?.recordingId == "recording-1", "recording event should parse recording id")
+        try expect(payload?.clientMessageId == "client-audio-1", "recording event should parse client message id")
+        try expect(payload?.event.kind == .scheduledTask, "recording event kind should parse scheduled_task")
+        try expect(payload?.event.status == .completed, "recording event status should parse completed")
+        try expect(payload?.event.title == "新增定时任务", "recording event title should parse")
+    }
+
+    private static func testRecordingChatContentFormatsPromptAndTranscript() throws {
+        let content = RecordingChatContent.format(prompt: "请分析录音", transcript: "今天下午开会")
+        let parsed = try unwrap(RecordingChatContent.parse(content), "recording chat content should parse")
+
+        try expect(parsed.prompt == "请分析录音", "recording chat content should retain prompt")
+        try expect(parsed.transcript == "今天下午开会", "recording chat content should retain transcript")
     }
 
     private static func testRecordingSettingsDefaultToFirstConfiguredAgent() throws {
@@ -243,8 +434,8 @@ struct EarphoneLocalModelsTests {
 
         try expect(settings.recordingSettings.primaryAgentProfileId == "pinned", "default recording primary agent should follow sorted configured agents")
         try expect(settings.primaryRecordingProfile?.id == "pinned", "primary recording profile should resolve to the default primary agent")
-        try expect(settings.recordingSettings.deliverToAgent, "recordings should be delivered to Agent by default")
-        try expect(settings.recordingSettings.prompt == RecordingSettings.defaultPrompt, "recording prompt should use the default value")
+        try expect(settings.recordingSettings.defaultRecordingType == .audioOnly, "recordings should default to audio-only")
+        try expect(settings.recordingSettings.customPrompt.isEmpty, "custom recording prompt should default to empty")
     }
 
     private static func testRecordingSettingsFallbackWhenPrimaryAgentIsDeleted() throws {
@@ -259,13 +450,16 @@ struct EarphoneLocalModelsTests {
             primaryAgentProfileId: "primary",
             deliverToAgent: true,
             prompt: "自定义录音提示",
-            asrProfileId: "doubao"
+            asrProfileId: "doubao",
+            defaultRecordingType: .meeting,
+            customPrompt: "自定义模板"
         ))
 
         settings.deleteProfile("primary")
 
         try expect(settings.recordingSettings.primaryAgentProfileId == "fallback", "deleted primary recording agent should fall back to the next configured agent")
-        try expect(settings.recordingSettings.prompt == "自定义录音提示", "fallback should preserve the customized prompt")
+        try expect(settings.recordingSettings.defaultRecordingType == .meeting, "fallback should preserve the default recording type")
+        try expect(settings.recordingSettings.customPrompt == "自定义模板", "fallback should preserve the custom recording template")
         try expect(settings.recordingSettings.asrProfileId == "doubao", "fallback should preserve the selected recording ASR model")
     }
 
@@ -277,13 +471,21 @@ struct EarphoneLocalModelsTests {
             asrProfileId: "doubao"
         )
 
-        let payload = AudioAsrPayload.recording(settings: settings, source: .phone).jsonObject
+        let payload = AudioAsrPayload.recording(
+            settings: settings,
+            source: .phone,
+            recordingId: "recording-1",
+            recordingType: .meeting,
+            prompt: "请分析这段录音"
+        ).jsonObject
 
         try expect(payload["mode"] as? String == "router", "recording ASR should use router mode")
         try expect(payload["profile_id"] as? String == "doubao", "recording ASR should use the selected recording model")
+        try expect(payload["recording_id"] as? String == "recording-1", "recording ASR should carry local recording id")
+        try expect(payload["recording_type"] as? String == "meeting", "recording ASR should carry recording type")
         try expect(payload["intent"] as? String == "recording", "recording ASR should mark recording intent")
         try expect(payload["source"] as? String == "phone", "recording ASR should include source")
-        try expect(payload["deliver_to_agent"] as? Bool == false, "recording ASR should carry delivery preference")
+        try expect(payload["deliver_to_agent"] as? Bool == true, "processed recording types should be delivered to Agent")
         try expect(payload["agent_prompt"] as? String == "请分析这段录音", "recording ASR should carry custom prompt")
     }
 
@@ -296,6 +498,33 @@ struct EarphoneLocalModelsTests {
         try expect(payload["source"] == nil, "chat ASR should not include recording source")
         try expect(payload["deliver_to_agent"] == nil, "chat ASR should not include recording delivery preference")
         try expect(payload["agent_prompt"] == nil, "chat ASR should not include recording prompt")
+    }
+
+    private static func testLongRecordingUploadRequestUsesHttpJobMetadata() throws {
+        let settings = RecordingSettings(primaryAgentProfileId: "agent-1", asrProfileId: "doubao")
+        let request = LongRecordingAsrJobRequest(
+            recordingId: "recording-1",
+            backendId: "backend-1",
+            clientMessageId: "client-long-1",
+            recordingType: .idea,
+            source: .phone,
+            prompt: RecordingSettings.ideaPrompt,
+            settings: settings,
+            fileSize: 123,
+            sha256: "abc123"
+        )
+        let json = request.jsonObject
+
+        try expect(json["recording_id"] as? String == "recording-1", "job request should include recording id")
+        try expect(json["backend_id"] as? String == "backend-1", "job request should include backend id")
+        try expect(json["client_message_id"] as? String == "client-long-1", "job request should include client message id")
+        try expect(json["recording_type"] as? String == "idea", "job request should include recording type")
+        try expect(json["agent_prompt"] as? String == RecordingSettings.ideaPrompt, "job request should include prompt")
+        try expect(json["file_size"] as? Int == 123, "job request should include file size")
+        try expect(json["sha256"] as? String == "abc123", "job request should include sha256")
+        let asr = try unwrap(json["asr"] as? [String: Any], "job request should include ASR payload")
+        try expect(asr["mode"] as? String == "router", "long recording ASR should use router mode")
+        try expect(asr["profile_id"] as? String == "doubao", "long recording ASR should use selected ASR profile")
     }
 
     private static func testHeadsetDefaultFakeData() throws {
@@ -423,6 +652,13 @@ struct EarphoneLocalModelsTests {
         if !condition() {
             throw TestFailure(message)
         }
+    }
+
+    private static func unwrap<T>(_ value: T?, _ message: String) throws -> T {
+        guard let value else {
+            throw TestFailure(message)
+        }
+        return value
     }
 }
 

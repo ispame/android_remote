@@ -303,23 +303,42 @@ final class HeadsetConversationController: NSObject, ObservableObject {
         sessionState = .processing(side)
         let wav = WAVEncoder.encodePCM16Mono16k(pcm)
         let recordingSettings = settingsManager.recordingSettings
+        let recordingType = recordingSettings.defaultRecordingType
+        let selectedPrompt = recordingSettings.prompt(for: recordingType)
+        guard let recording = try? recordingStore?.createRecording(
+            agentId: profile.id,
+            audioData: wav,
+            asrText: "",
+            prompt: selectedPrompt,
+            recordingType: .audioOnly,
+            processingStatus: .savedOnly,
+            selectedPrompt: selectedPrompt,
+            source: .headset
+        ) else {
+            sessionState = .idle
+            speak("\(side.displayName)录音保存失败", side: side, forceShort: true)
+            return
+        }
+        guard recordingType.sendsToAgent, !selectedPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            sessionState = .idle
+            speak("\(side.displayName)录音已保存", side: side, forceShort: true)
+            return
+        }
         if let clientMessageId = wsManager.sendRecordingAudioForAsr(
             wav,
             profileId: profile.id,
             settings: recordingSettings,
-            source: .headset
+            source: .headset,
+            recordingId: recording.id,
+            recordingType: recordingType,
+            prompt: selectedPrompt
         ) {
-            _ = try? recordingStore?.createRecording(
-                agentId: profile.id,
-                audioData: wav,
-                asrText: "",
-                source: .headset,
+            recordingStore?.configureRecordingForProcessing(
+                recordingId: recording.id,
+                type: recordingType,
+                prompt: selectedPrompt,
                 clientMessageId: clientMessageId
             )
-            guard recordingSettings.deliverToAgent else {
-                sessionState = .idle
-                return
-            }
             pendingReplyProfileToSide[profile.id] = side
         } else {
             sessionState = .idle

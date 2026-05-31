@@ -201,6 +201,8 @@ struct OpenClawRemoteApp: App {
         case .asrResult(let payload):
             guard payload.success, let text = payload.text else { break }
             recordingStore.updateAsrText(clientMessageId: payload.clientMessageId, text: text)
+        case .recordingEvent(let payload):
+            recordingStore.appendEvent(payload)
         }
     }
 

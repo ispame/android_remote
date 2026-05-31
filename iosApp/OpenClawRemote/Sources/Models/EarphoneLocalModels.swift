@@ -98,15 +98,169 @@ enum RecordingInputSource: String, Codable, CaseIterable {
     }
 }
 
+enum RecordingEventKind: String, Codable {
+    case created
+    case asr
+    case delivered
+    case agentReply = "agent_reply"
+    case subtask
+    case scheduledTask = "scheduled_task"
+    case reminder
+    case artifact
+    case status
+    case error
+    case other
+
+    init(protocolValue: String) {
+        self = RecordingEventKind(rawValue: protocolValue) ?? .other
+    }
+
+    var label: String {
+        switch self {
+        case .created: return "录音"
+        case .asr: return "ASR"
+        case .delivered: return "投递"
+        case .agentReply: return "回复"
+        case .subtask: return "子任务"
+        case .scheduledTask: return "定时任务"
+        case .reminder: return "提醒"
+        case .artifact: return "文件"
+        case .status: return "状态"
+        case .error: return "错误"
+        case .other: return "过程"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .created: return "waveform"
+        case .asr: return "text.bubble"
+        case .delivered: return "paperplane"
+        case .agentReply: return "bubble.left.and.bubble.right"
+        case .subtask: return "checklist"
+        case .scheduledTask: return "calendar.badge.clock"
+        case .reminder: return "bell"
+        case .artifact: return "doc.richtext"
+        case .status: return "info.circle"
+        case .error: return "exclamationmark.triangle"
+        case .other: return "circle.dashed"
+        }
+    }
+}
+
+enum RecordingEventStatus: String, Codable {
+    case pending
+    case running
+    case completed
+    case failed
+    case cancelled
+
+    init(protocolValue: String?) {
+        guard let protocolValue else {
+            self = .completed
+            return
+        }
+        self = RecordingEventStatus(rawValue: protocolValue) ?? .completed
+    }
+}
+
+struct RecordingEventItem: Identifiable, Codable, Equatable {
+    var id: String
+    var kind: RecordingEventKind
+    var title: String
+    var content: String
+    var status: RecordingEventStatus
+    var createdAt: Date
+
+    init(
+        id: String = UUID().uuidString,
+        kind: RecordingEventKind,
+        title: String,
+        content: String,
+        status: RecordingEventStatus = .completed,
+        createdAt: Date = Date()
+    ) {
+        self.id = id
+        self.kind = kind
+        self.title = title
+        self.content = content
+        self.status = status
+        self.createdAt = createdAt
+    }
+}
+
+struct RecordingArtifactItem: Identifiable, Codable, Equatable {
+    var id: String
+    var filename: String
+    var mimeType: String
+    var fileURL: URL
+    var backendPath: String?
+    var sourceEventId: String?
+    var createdAt: Date
+
+    init(
+        id: String = UUID().uuidString,
+        filename: String,
+        mimeType: String,
+        fileURL: URL,
+        backendPath: String? = nil,
+        sourceEventId: String? = nil,
+        createdAt: Date = Date()
+    ) {
+        self.id = id
+        self.filename = filename
+        self.mimeType = mimeType
+        self.fileURL = fileURL
+        self.backendPath = backendPath
+        self.sourceEventId = sourceEventId
+        self.createdAt = createdAt
+    }
+}
+
+struct RecordingReminderItem: Identifiable, Codable, Equatable {
+    var id: String
+    var title: String
+    var notes: String
+    var dueAt: Date
+    var isCompleted: Bool
+    var notificationId: String
+    var createdAt: Date
+
+    init(
+        id: String = UUID().uuidString,
+        title: String,
+        notes: String = "",
+        dueAt: Date,
+        isCompleted: Bool = false,
+        notificationId: String? = nil,
+        createdAt: Date = Date()
+    ) {
+        self.id = id
+        self.title = title
+        self.notes = notes
+        self.dueAt = dueAt
+        self.isCompleted = isCompleted
+        self.notificationId = notificationId ?? "recording-reminder-\(id)"
+        self.createdAt = createdAt
+    }
+}
+
 struct RecordingItem: Identifiable, Codable, Equatable {
     var id: String
     var agentId: String
     var createdAt: Date
     var duration: TimeInterval
     var asrText: String
+    var prompt: String
+    var recordingType: RecordingType
+    var processingStatus: RecordingProcessingStatus
+    var selectedPrompt: String
     var fileURL: URL
     var source: RecordingInputSource
     var clientMessageId: String?
+    var events: [RecordingEventItem]
+    var reminders: [RecordingReminderItem]
+    var artifacts: [RecordingArtifactItem]
 
     init(
         id: String,
@@ -114,18 +268,32 @@ struct RecordingItem: Identifiable, Codable, Equatable {
         createdAt: Date,
         duration: TimeInterval,
         asrText: String,
+        prompt: String = "",
+        recordingType: RecordingType = .audioOnly,
+        processingStatus: RecordingProcessingStatus = .savedOnly,
+        selectedPrompt: String? = nil,
         fileURL: URL,
         source: RecordingInputSource,
-        clientMessageId: String? = nil
+        clientMessageId: String? = nil,
+        events: [RecordingEventItem] = [],
+        reminders: [RecordingReminderItem] = [],
+        artifacts: [RecordingArtifactItem] = []
     ) {
         self.id = id
         self.agentId = agentId
         self.createdAt = createdAt
         self.duration = duration
         self.asrText = asrText
+        self.prompt = prompt
+        self.recordingType = recordingType
+        self.processingStatus = processingStatus
+        self.selectedPrompt = selectedPrompt ?? prompt
         self.fileURL = fileURL
         self.source = source
         self.clientMessageId = clientMessageId
+        self.events = events
+        self.reminders = reminders
+        self.artifacts = artifacts
     }
 
     enum CodingKeys: String, CodingKey {
@@ -134,9 +302,16 @@ struct RecordingItem: Identifiable, Codable, Equatable {
         case createdAt
         case duration
         case asrText
+        case prompt
+        case recordingType
+        case processingStatus
+        case selectedPrompt
         case fileURL
         case source
         case clientMessageId
+        case events
+        case reminders
+        case artifacts
     }
 
     init(from decoder: Decoder) throws {
@@ -146,9 +321,22 @@ struct RecordingItem: Identifiable, Codable, Equatable {
         createdAt = try container.decode(Date.self, forKey: .createdAt)
         duration = try container.decode(TimeInterval.self, forKey: .duration)
         asrText = try container.decode(String.self, forKey: .asrText)
+        prompt = try container.decodeIfPresent(String.self, forKey: .prompt) ?? ""
+        recordingType = try container.decodeIfPresent(RecordingType.self, forKey: .recordingType) ?? .audioOnly
+        if let savedStatus = try container.decodeIfPresent(RecordingProcessingStatus.self, forKey: .processingStatus) {
+            processingStatus = savedStatus
+        } else if !asrText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            processingStatus = .completed
+        } else {
+            processingStatus = .savedOnly
+        }
+        selectedPrompt = try container.decodeIfPresent(String.self, forKey: .selectedPrompt) ?? prompt
         fileURL = try container.decode(URL.self, forKey: .fileURL)
         source = try container.decode(RecordingInputSource.self, forKey: .source)
         clientMessageId = try container.decodeIfPresent(String.self, forKey: .clientMessageId)
+        events = try container.decodeIfPresent([RecordingEventItem].self, forKey: .events) ?? []
+        reminders = try container.decodeIfPresent([RecordingReminderItem].self, forKey: .reminders) ?? []
+        artifacts = try container.decodeIfPresent([RecordingArtifactItem].self, forKey: .artifacts) ?? []
     }
 }
 

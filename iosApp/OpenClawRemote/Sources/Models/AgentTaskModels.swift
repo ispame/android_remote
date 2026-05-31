@@ -183,3 +183,55 @@ struct ASRResultEventPayload: Equatable {
         self.error = json["error"] as? String
     }
 }
+
+struct RecordingEventPayload: Equatable {
+    var recordingId: String?
+    var clientMessageId: String?
+    var event: RecordingEventItem
+    var artifact: RecordingArtifactPayload?
+
+    init?(json: [String: Any]) {
+        let title = (json["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let content = (json["content"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !title.isEmpty || !content.isEmpty else { return nil }
+
+        recordingId = json["recording_id"] as? String
+        clientMessageId = json["client_message_id"] as? String
+        let eventId = (json["event_id"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let kind = RecordingEventKind(protocolValue: json["kind"] as? String ?? "")
+        let status = RecordingEventStatus(protocolValue: json["status"] as? String)
+        let timestamp = (json["timestamp"] as? String)
+            .flatMap { HistoryMessagePayload.date(from: $0) } ?? Date()
+        event = RecordingEventItem(
+            id: eventId?.isEmpty == false ? eventId! : UUID().uuidString,
+            kind: kind,
+            title: title.isEmpty ? kind.label : title,
+            content: content,
+            status: status,
+            createdAt: timestamp
+        )
+        if let data = json["data"] as? [String: Any],
+           let artifactJson = data["artifact"] as? [String: Any] {
+            artifact = RecordingArtifactPayload(json: artifactJson)
+        }
+    }
+}
+
+struct RecordingArtifactPayload: Equatable {
+    var filename: String
+    var mimeType: String
+    var encoding: String
+    var content: String
+    var backendPath: String?
+
+    init?(json: [String: Any]) {
+        let filename = (json["filename"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let content = json["content"] as? String ?? ""
+        guard !filename.isEmpty else { return nil }
+        self.filename = filename
+        self.mimeType = (json["mime_type"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "text/plain"
+        self.encoding = (json["encoding"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "utf8"
+        self.content = content
+        self.backendPath = (json["backend_path"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}

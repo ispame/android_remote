@@ -56,7 +56,7 @@ struct RootTabView: View {
                 )
             }
             .tabItem {
-                Label("任务", systemImage: "checklist")
+                Label("录音", systemImage: "waveform")
             }
             .tag(AppTab.tasks)
 

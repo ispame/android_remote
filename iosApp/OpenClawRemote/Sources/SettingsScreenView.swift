@@ -1348,11 +1348,9 @@ struct AuthScreenView: View {
             }
         }
         .onAppear {
+            authMode = .login
             if !config.lastPhoneNumber.isEmpty {
                 phoneNumber = config.lastPhoneNumber
-                authMode = .login
-            } else {
-                authMode = .register
             }
             if gatewayUrl.isEmpty {
                 gatewayUrl = config.gatewayUrl.isEmpty ? "wss://boson-tech.top/ws" : config.gatewayUrl
@@ -1740,9 +1738,8 @@ struct AuthScreenView: View {
     private func registerPassword() async {
         guard !phoneNumber.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               !smsCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              password.count >= 8,
-              password == confirmPassword else {
-            statusMessage = "请检查手机号、验证码和两次密码"
+              password.count >= 8 else {
+            statusMessage = "请检查手机号、验证码和密码（至少8位）"
             return
         }
         isLoading = true
@@ -1766,9 +1763,8 @@ struct AuthScreenView: View {
     private func resetPassword() async {
         guard !phoneNumber.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               !smsCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              password.count >= 8,
-              password == confirmPassword else {
-            statusMessage = "请检查手机号、验证码和两次密码"
+              password.count >= 8 else {
+            statusMessage = "请检查手机号、验证码和密码（至少8位）"
             return
         }
         isLoading = true

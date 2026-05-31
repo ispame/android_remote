@@ -65,7 +65,7 @@ struct SimpleSettingsTabView: View {
 
             Section(
                 header: Text("账号"),
-                footer: Text("切换账号和退出登录会清除当前登录态，但保留本机 Agent、任务、录音和耳机配置。")
+                footer: Text("切换账号和退出登录会清除当前登录态，但保留本机 Agent、录音和耳机配置。")
             ) {
                 Button("切换账号") {
                     onSwitchAccount()
@@ -160,7 +160,7 @@ private struct RecordingSettingsView: View {
 
     var body: some View {
         Form {
-            Section("投递") {
+            Section("主 Agent") {
                 if configuredProfiles.isEmpty {
                     Text("请先配置 Agent")
                         .foregroundColor(.secondary)
@@ -170,15 +170,46 @@ private struct RecordingSettingsView: View {
                             Text(profile.resolvedDisplayName).tag(profile.id)
                         }
                     }
-                    Toggle("发送给 Agent", isOn: $draft.deliverToAgent)
                 }
             }
 
-            Section("录音 Prompt") {
-                TextEditor(text: $draft.prompt)
+            Section("默认录音类型") {
+                Picker("耳机录音默认类型", selection: $draft.defaultRecordingType) {
+                    ForEach(RecordingType.allCases) { type in
+                        Text(type.label).tag(type)
+                    }
+                }
+                if draft.defaultRecordingType == .custom,
+                   draft.customPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Text("请先填写自定义 Prompt，或选择其他默认类型")
+                        .font(.system(size: 12))
+                        .foregroundColor(colors.recordingRed)
+                }
+            }
+
+            Section("自定义录音 Prompt") {
+                TextEditor(text: $draft.customPrompt)
                     .frame(minHeight: 140)
-                Button("恢复默认 Prompt") {
-                    draft.prompt = RecordingSettings.defaultPrompt
+                Button("删除自定义 Prompt") {
+                    draft.customPrompt = ""
+                    if draft.defaultRecordingType == .custom {
+                        draft.defaultRecordingType = .audioOnly
+                    }
+                }
+            }
+
+            Section("内置 Prompt") {
+                DisclosureGroup("会议录音") {
+                    Text(RecordingSettings.meetingPrompt)
+                        .font(.system(size: 12))
+                        .foregroundColor(.secondary)
+                        .textSelection(.enabled)
+                }
+                DisclosureGroup("灵感记录") {
+                    Text(RecordingSettings.ideaPrompt)
+                        .font(.system(size: 12))
+                        .foregroundColor(.secondary)
+                        .textSelection(.enabled)
                 }
             }
 
@@ -214,7 +245,7 @@ private struct RecordingSettingsView: View {
                 Button("保存") {
                     save()
                 }
-                .disabled(configuredProfiles.isEmpty)
+                .disabled(configuredProfiles.isEmpty || (draft.defaultRecordingType == .custom && draft.customPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
             }
         }
         .onAppear {

@@ -55,6 +55,27 @@ struct MessageBubbleView: View {
                         onInspectCode: onInspectApprovalCode
                     )
                     .frame(maxWidth: messageBubbleMaxWidth(usesWideLayout: true), alignment: .leading)
+                } else if let recordingContent = RecordingChatContent.parse(message.content) {
+                    RecordingChatBubbleContent(
+                        content: recordingContent,
+                        textColor: message.isUser ? colors.userBubbleFg : colors.assistantFg,
+                        colors: colors
+                    )
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(
+                        RoundedCornerShape(
+                            topLeft: message.isUser ? 16 : 4,
+                            topRight: message.isUser ? 4 : 16,
+                            bottomLeft: 16,
+                            bottomRight: 16
+                        )
+                        .fill(message.isUser ? colors.userBubble : colors.assistantBg)
+                    )
+                    .frame(
+                        maxWidth: maxBubbleWidth,
+                        alignment: message.isUser ? .trailing : .leading
+                    )
                 } else {
                     CollapsibleMessageContent(
                         text: message.content,
@@ -79,6 +100,11 @@ struct MessageBubbleView: View {
                             maxWidth: maxBubbleWidth,
                             alignment: message.isUser ? .trailing : .leading
                         )
+                }
+
+                if !message.trace.isEmpty {
+                    MessageTraceDisclosureView(trace: message.trace, colors: colors)
+                        .frame(maxWidth: maxBubbleWidth, alignment: .leading)
                 }
 
                 Text(message.timestamp)
@@ -107,6 +133,160 @@ struct MessageBubbleView: View {
                 Label("选择", systemImage: "checkmark.circle")
             }
         }
+    }
+}
+
+private struct MessageTraceDisclosureView: View {
+    let trace: [MessageTraceItem]
+    let colors: MochiColors
+
+    @State private var isExpanded = false
+
+    private var summary: String {
+        let counts = Dictionary(grouping: trace, by: \.kind).mapValues(\.count)
+        let parts = [MessageTraceKind.reasoning, .toolCall, .toolResult, .system, .other].compactMap { kind -> String? in
+            guard let count = counts[kind], count > 0 else { return nil }
+            return "\(kind.label) \(count)"
+        }
+        return parts.joined(separator: " / ")
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.16)) {
+                    isExpanded.toggle()
+                }
+            } label: {
+                HStack(spacing: 7) {
+                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 11, weight: .semibold))
+                        .frame(width: 12)
+                    Image(systemName: "point.3.connected.trianglepath.dotted")
+                        .font(.system(size: 12, weight: .semibold))
+                    Text(summary.isEmpty ? "执行过程 \(trace.count)" : summary)
+                        .font(.system(size: 12, weight: .semibold))
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                }
+                .foregroundColor(colors.textSecondary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background(colors.inputBg.opacity(0.72))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+            }
+            .buttonStyle(.plain)
+
+            if isExpanded {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(trace) { item in
+                        MessageTraceRow(item: item, colors: colors)
+                    }
+                }
+                .padding(10)
+                .background(colors.inputBg.opacity(0.52))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(colors.divider.opacity(0.8), lineWidth: 1)
+                )
+            }
+        }
+    }
+}
+
+private struct RecordingChatBubbleContent: View {
+    let content: RecordingChatContent
+    let textColor: Color
+    let colors: MochiColors
+
+    @State private var showsPrompt = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 7) {
+                Image(systemName: "waveform")
+                    .font(.system(size: 13, weight: .semibold))
+                Text("录音")
+                    .font(.system(size: 13, weight: .semibold))
+                Spacer(minLength: 0)
+                Button {
+                    withAnimation(.easeInOut(duration: 0.16)) {
+                        showsPrompt.toggle()
+                    }
+                } label: {
+                    Image(systemName: showsPrompt ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 12, weight: .semibold))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(showsPrompt ? "收起录音 Prompt" : "展开录音 Prompt")
+            }
+            .foregroundColor(textColor)
+
+            if showsPrompt {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("录音 Prompt")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(textColor.opacity(0.72))
+                    Text(content.prompt.isEmpty ? "未设置" : content.prompt)
+                        .font(.system(size: 12))
+                        .foregroundColor(textColor.opacity(0.82))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(8)
+                .background(colors.inputBg.opacity(0.18))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+            }
+
+            Text(content.transcript.isEmpty ? "等待 ASR 文本" : content.transcript)
+                .font(.system(size: 14))
+                .foregroundColor(textColor)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+        }
+    }
+}
+
+private struct MessageTraceRow: View {
+    let item: MessageTraceItem
+    let colors: MochiColors
+
+    @State private var isExpanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 7) {
+                Image(systemName: item.kind.systemImage)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(colors.primary)
+                    .frame(width: 14)
+                Text(item.title)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(colors.textPrimary)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                if item.content.count > 120 || item.content.contains("\n") {
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.16)) {
+                            isExpanded.toggle()
+                        }
+                    } label: {
+                        Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(colors.textSecondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+
+            Text(isExpanded ? item.content : item.preview)
+                .font(.system(size: 11, weight: .regular, design: .monospaced))
+                .foregroundColor(colors.textSecondary)
+                .lineLimit(isExpanded ? nil : 3)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.vertical, 2)
     }
 }
 

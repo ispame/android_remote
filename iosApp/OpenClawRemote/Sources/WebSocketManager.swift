@@ -16,6 +16,12 @@ private struct ProfileRuntimeState {
     var lastAutoHistoryRequestAt: Date?
 }
 
+private struct PendingAudioContext {
+    let profileId: String
+    let recordingId: String?
+    let recordingPrompt: String?
+}
+
 func shouldDropAsrFailureMessage(_ error: String?) -> Bool {
     true
 }
@@ -55,7 +61,7 @@ final class WebSocketManager: ObservableObject {
     private var knownProfiles: [String: AgentProfile] = [:]
     private var profileIdsByBackendId: [String: String] = [:]
     private var pendingHistoryProfileId: String?
-    private var pendingAudioProfileIdsByClientMessageId: [String: String] = [:]
+    private var pendingAudioContextsByClientMessageId: [String: PendingAudioContext] = [:]
 
     private var accountId: String?
     private var registeredBackendId: String?
@@ -228,7 +234,7 @@ final class WebSocketManager: ObservableObject {
         unreadCounts.removeValue(forKey: profileId)
         agentListActivities.removeValue(forKey: profileId)
         profileIdsByBackendId = profileIdsByBackendId.filter { $0.value != profileId }
-        pendingAudioProfileIdsByClientMessageId = pendingAudioProfileIdsByClientMessageId.filter { $0.value != profileId }
+        pendingAudioContextsByClientMessageId = pendingAudioContextsByClientMessageId.filter { $0.value.profileId != profileId }
         if pendingHistoryProfileId == profileId {
             pendingHistoryProfileId = nil
         }
@@ -497,7 +503,11 @@ final class WebSocketManager: ObservableObject {
         ]
         addLocalMessageWithStatus("正在识别...", senderId: "user", status: .sending, seq: nil, clientMessageId: clientMessageId)
         if let activeProfileId {
-            pendingAudioProfileIdsByClientMessageId[clientMessageId] = activeProfileId
+            pendingAudioContextsByClientMessageId[clientMessageId] = PendingAudioContext(
+                profileId: activeProfileId,
+                recordingId: nil,
+                recordingPrompt: nil
+            )
         }
         sendJson(frame)
     }
@@ -521,17 +531,35 @@ final class WebSocketManager: ObservableObject {
         _ data: Data,
         profileId: String,
         settings: RecordingSettings,
-        source: RecordingInputSource
+        source: RecordingInputSource,
+        recordingId: String,
+        recordingType: RecordingType,
+        prompt: String
     ) -> String? {
-        sendAudioForAsr(
+        let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        return sendAudioForAsr(
             data,
             profileId: profileId,
-            asrPayload: AudioAsrPayload.recording(settings: settings, source: source).jsonObject
+            asrPayload: AudioAsrPayload.recording(
+                settings: settings,
+                source: source,
+                recordingId: recordingId,
+                recordingType: recordingType,
+                prompt: trimmedPrompt
+            ).jsonObject,
+            recordingId: recordingId,
+            recordingPrompt: trimmedPrompt.isEmpty ? nil : trimmedPrompt
         )
     }
 
     @discardableResult
-    private func sendAudioForAsr(_ data: Data, profileId: String, asrPayload: [String: Any]) -> String? {
+    private func sendAudioForAsr(
+        _ data: Data,
+        profileId: String,
+        asrPayload: [String: Any],
+        recordingId: String? = nil,
+        recordingPrompt: String? = nil
+    ) -> String? {
         let state = profileId == activeProfileId
             ? currentRuntimeStateSnapshot()
             : (profileStates[profileId] ?? ProfileRuntimeState())
@@ -565,7 +593,11 @@ final class WebSocketManager: ObservableObject {
             clientMessageId: clientMessageId
         )
         appendMessage(msg, profileId: profileId)
-        pendingAudioProfileIdsByClientMessageId[clientMessageId] = profileId
+        pendingAudioContextsByClientMessageId[clientMessageId] = PendingAudioContext(
+            profileId: profileId,
+            recordingId: recordingId,
+            recordingPrompt: recordingPrompt
+        )
         sendJson(frame)
         return clientMessageId
     }
@@ -811,6 +843,11 @@ final class WebSocketManager: ObservableObject {
             case "asr_result":
                 self.handleAsrResult(json)
 
+            case "recording_event":
+                if let payload = RecordingEventPayload(json: json) {
+                    self.messageSubject.send(.recordingEvent(payload))
+                }
+
             case "history_response":
                 let backendId = json["backend_id"] as? String
                 let responseProfileId = backendId.flatMap { self.profileId(forBackendId: $0) }
@@ -1037,7 +1074,8 @@ final class WebSocketManager: ObservableObject {
         if let payload = ASRResultEventPayload(json: json) {
             messageSubject.send(.asrResult(payload))
         }
-        let profileId = pendingAudioProfileIdsByClientMessageId.removeValue(forKey: clientMessageId) ?? activeProfileId
+        let audioContext = pendingAudioContextsByClientMessageId.removeValue(forKey: clientMessageId)
+        let profileId = audioContext?.profileId ?? activeProfileId
         guard let profileId else { return }
         var state = profileId == activeProfileId ? currentRuntimeStateSnapshot() : (profileStates[profileId] ?? ProfileRuntimeState())
         guard let idx = state.messages.firstIndex(where: { $0.clientMessageId == clientMessageId }) else { return }
@@ -1051,12 +1089,17 @@ final class WebSocketManager: ObservableObject {
         }
         let old = state.messages[idx]
         var updatedMessages = state.messages
+        let transcript = text ?? ""
+        let displayContent = audioContext?.recordingPrompt.map {
+            RecordingChatContent.format(prompt: $0, transcript: transcript)
+        } ?? transcript
         updatedMessages[idx] = ChatMessage(
             id: old.id,
-            content: text ?? "",
+            content: displayContent,
             timestamp: old.timestamp,
             rawTimestamp: old.rawTimestamp,
             senderId: old.senderId,
+            trace: old.trace,
             status: .delivered,
             seq: old.seq,
             clientMessageId: old.clientMessageId
@@ -1272,6 +1315,7 @@ enum WsMessageEvent {
     case taskDeleteResponse(TaskMutationResponsePayload)
     case approvalHistoryResponse(ApprovalHistoryResponsePayload)
     case asrResult(ASRResultEventPayload)
+    case recordingEvent(RecordingEventPayload)
     case sessionPreempted(replacementTerminalLabel: String?)
     case error(code: String, message: String)
 }

@@ -40,21 +40,114 @@ struct ChatMessage: Identifiable {
     let timestamp: String
     let rawTimestamp: String?
     let senderId: String
+    let trace: [MessageTraceItem]
     let status: MessageStatus?
     let seq: Int?
     let clientMessageId: String?
 
     var isUser: Bool { senderId == "user" }
 
-    init(id: UUID = UUID(), content: String, timestamp: String, rawTimestamp: String? = nil, senderId: String, status: MessageStatus? = nil, seq: Int? = nil, clientMessageId: String? = nil) {
+    init(
+        id: UUID = UUID(),
+        content: String,
+        timestamp: String,
+        rawTimestamp: String? = nil,
+        senderId: String,
+        trace: [MessageTraceItem] = [],
+        status: MessageStatus? = nil,
+        seq: Int? = nil,
+        clientMessageId: String? = nil
+    ) {
         self.id = id
         self.content = content
         self.timestamp = timestamp
         self.rawTimestamp = rawTimestamp
         self.senderId = senderId
+        self.trace = trace
         self.status = status
         self.seq = seq
         self.clientMessageId = clientMessageId
+    }
+}
+
+enum MessageTraceKind: String {
+    case reasoning
+    case toolCall = "tool_call"
+    case toolResult = "tool_result"
+    case system
+    case other
+
+    init(rawHistoryValue: String) {
+        self = MessageTraceKind(rawValue: rawHistoryValue) ?? .other
+    }
+
+    var label: String {
+        switch self {
+        case .reasoning: return "推理"
+        case .toolCall: return "工具调用"
+        case .toolResult: return "工具结果"
+        case .system: return "系统"
+        case .other: return "过程"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .reasoning: return "brain.head.profile"
+        case .toolCall: return "hammer"
+        case .toolResult: return "terminal"
+        case .system: return "gearshape"
+        case .other: return "ellipsis.curlybraces"
+        }
+    }
+}
+
+struct MessageTraceItem: Identifiable {
+    let id: String
+    let kind: MessageTraceKind
+    let title: String
+    let content: String
+    let timestamp: String?
+
+    var preview: String {
+        let compact = content
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if compact.count <= 120 { return compact }
+        return String(compact.prefix(120)) + "..."
+    }
+}
+
+struct RecordingChatContent: Equatable {
+    static let marker = "[[boson_recording]]"
+    static let promptLabel = "录音 Prompt："
+    static let transcriptLabel = "录音文本："
+
+    var prompt: String
+    var transcript: String
+
+    static func format(prompt: String, transcript: String) -> String {
+        [
+            marker,
+            promptLabel,
+            prompt.trimmingCharacters(in: .whitespacesAndNewlines),
+            "",
+            transcriptLabel,
+            transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        ].joined(separator: "\n")
+    }
+
+    static func parse(_ content: String) -> RecordingChatContent? {
+        guard content.hasPrefix(marker) else { return nil }
+        let body = String(content.dropFirst(marker.count))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let transcriptRange = body.range(of: transcriptLabel) else { return nil }
+        let promptPart = body[..<transcriptRange.lowerBound]
+            .replacingOccurrences(of: promptLabel, with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let transcriptPart = body[transcriptRange.upperBound...]
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return RecordingChatContent(prompt: promptPart, transcript: transcriptPart)
     }
 }
 
@@ -68,6 +161,14 @@ struct HistoryMessagePayload {
     let content: String
     let role: String
     let timestamp: String
+    let trace: [MessageTraceItem]
+
+    init(content: String, role: String, timestamp: String, trace: [MessageTraceItem] = []) {
+        self.content = content
+        self.role = role
+        self.timestamp = timestamp
+        self.trace = trace
+    }
 
     static func chatMessage(
         content: String,
@@ -76,7 +177,42 @@ struct HistoryMessagePayload {
         fallbackTimestamp: String = ""
     ) -> ChatMessage {
         let rawTimestamp = timestamp(from: item) ?? fallbackTimestamp.trimmingCharacters(in: .whitespacesAndNewlines)
-        return HistoryMessagePayload(content: content, role: role, timestamp: rawTimestamp).chatMessage
+        return HistoryMessagePayload(
+            content: content,
+            role: role,
+            timestamp: rawTimestamp,
+            trace: traceItems(from: item["trace"])
+        ).chatMessage
+    }
+
+    static func traceItems(from value: Any?) -> [MessageTraceItem] {
+        guard let rawItems = value as? [[String: Any]] else { return [] }
+        return rawItems.enumerated().compactMap { index, item in
+            let content = stringValue(item["content"])
+            guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+            let kind = MessageTraceKind(rawHistoryValue: stringValue(item["kind"]))
+            let title = stringValue(item["title"]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let traceId = stringValue(item["trace_id"]).trimmingCharacters(in: .whitespacesAndNewlines)
+            return MessageTraceItem(
+                id: traceId.isEmpty ? "trace-\(index)" : traceId,
+                kind: kind,
+                title: title.isEmpty ? kind.label : title,
+                content: content,
+                timestamp: timestamp(from: item)
+            )
+        }
+    }
+
+    private static func stringValue(_ value: Any?) -> String {
+        if let value = value as? String { return value }
+        if let value = value as? NSNumber { return value.stringValue }
+        guard let value else { return "" }
+        if JSONSerialization.isValidJSONObject(value),
+           let data = try? JSONSerialization.data(withJSONObject: value, options: [.prettyPrinted]),
+           let text = String(data: data, encoding: .utf8) {
+            return text
+        }
+        return String(describing: value)
     }
 
     static func timestamp(from item: [String: Any]) -> String? {
@@ -138,7 +274,13 @@ struct HistoryMessagePayload {
     var chatMessage: ChatMessage {
         let normalized = role.lowercased()
         let senderId = normalized == "user" || normalized == "human" ? "user" : "assistant"
-        return ChatMessage(content: content, timestamp: Self.displayTimestamp(timestamp), rawTimestamp: timestamp, senderId: senderId)
+        return ChatMessage(
+            content: content,
+            timestamp: Self.displayTimestamp(timestamp),
+            rawTimestamp: timestamp,
+            senderId: senderId,
+            trace: trace
+        )
     }
 
     static func date(from raw: String) -> Date? {
@@ -429,24 +571,118 @@ struct GatewayConfig {
     }
 }
 
+enum RecordingType: String, Codable, CaseIterable, Identifiable {
+    case audioOnly = "audio_only"
+    case meeting
+    case idea
+    case custom
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .audioOnly: return "仅录音"
+        case .meeting: return "会议录音"
+        case .idea: return "灵感记录"
+        case .custom: return "自定义录音"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .audioOnly: return "waveform"
+        case .meeting: return "person.3.sequence"
+        case .idea: return "lightbulb"
+        case .custom: return "slider.horizontal.3"
+        }
+    }
+
+    var sendsToAgent: Bool {
+        self != .audioOnly
+    }
+}
+
+enum RecordingProcessingStatus: String, Codable, Equatable {
+    case savedOnly = "saved_only"
+    case queued
+    case processing
+    case completed
+    case failed
+
+    var label: String {
+        switch self {
+        case .savedOnly: return "仅保存"
+        case .queued: return "等待处理"
+        case .processing: return "处理中"
+        case .completed: return "已完成"
+        case .failed: return "处理失败"
+        }
+    }
+}
+
 struct RecordingSettings: Equatable {
     static let defaultPrompt = "以下是录音，根据录音，分析是否有要解决的问题或者要收集的信息，如果有，列出任务执行的计划并按照计划执行；如果有定时任务，置顶定时任务"
+
+    static let meetingPrompt = """
+    以下是会议录音。请根据录音输出会议纪要，包含主题、背景、关键讨论、结论、决策与风险。
+    请拆分会议待办为两类：
+    1. Agent 可以完成的事项，例如数据分析、资料收集、调研报告、文档整理；缺少必要信息时，先列出需要用户确认的数据或问题，完成后保存文件并输出 artifact 事件。
+    2. 需要人完成的事项，形成 checklist，尽量提取负责人和截止时间，并输出 reminder 或 subtask 事件，方便进度跟踪。
+    如果创建了定时任务，请输出 scheduled_task 事件。
+    最终请保存一份 Markdown 会议纪要文件，并输出 artifact 事件。
+    """
+
+    static let ideaPrompt = """
+    以下是灵感记录。请提炼灵感核心，给出可执行建议，并在需要时主动补充必要信息或调研结果。
+    请把整理后的灵感保存为 Markdown 文件，内容包含灵感概述、建议、补充信息、下一步行动，并输出 artifact 事件。
+    如果识别到后续需要用户跟进的事项，请输出 reminder 或 subtask 事件。
+    """
+
+    static let recordingEventProtocolPrompt = """
+    请在处理录音时，把关键执行过程用结构化事件块输出，系统会自动归档到这条录音。
+    事件块格式必须是合法 JSON，可以是单个对象或对象数组：
+    ```boson-recording-event
+    {"kind":"subtask","title":"子任务标题","content":"执行结果","status":"completed"}
+    ```
+    支持 kind: agent_reply, subtask, scheduled_task, reminder, artifact, error。
+    保存文档时必须输出 artifact 事件，data.artifact 格式为 {"filename":"name.md","mime_type":"text/markdown","encoding":"utf8","content":"文件内容","backend_path":"可选路径"}。
+    请不要在面向用户的正文里解释这个事件协议。
+    """
 
     var primaryAgentProfileId: String
     var deliverToAgent: Bool
     var prompt: String
     var asrProfileId: String
+    var defaultRecordingType: RecordingType
+    var customPrompt: String
 
     init(
         primaryAgentProfileId: String = "",
         deliverToAgent: Bool = true,
         prompt: String = Self.defaultPrompt,
-        asrProfileId: String = ""
+        asrProfileId: String = "",
+        defaultRecordingType: RecordingType = .audioOnly,
+        customPrompt: String = ""
     ) {
         self.primaryAgentProfileId = primaryAgentProfileId
         self.deliverToAgent = deliverToAgent
         self.prompt = prompt
         self.asrProfileId = asrProfileId
+        self.defaultRecordingType = defaultRecordingType
+        self.customPrompt = customPrompt
+    }
+
+    func prompt(for type: RecordingType) -> String {
+        switch type {
+        case .audioOnly:
+            return ""
+        case .meeting:
+            return Self.meetingPrompt
+        case .idea:
+            return Self.ideaPrompt
+        case .custom:
+            return customPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
     }
 }
 
@@ -463,14 +699,32 @@ struct AudioAsrPayload {
         return AudioAsrPayload(jsonObject: payload)
     }
 
-    static func recording(settings: RecordingSettings, source: RecordingInputSource) -> AudioAsrPayload {
+    static func recording(
+        settings: RecordingSettings,
+        source: RecordingInputSource,
+        recordingId: String? = nil,
+        recordingType: RecordingType,
+        prompt: String
+    ) -> AudioAsrPayload {
         var payload = chat(mode: "router", profileId: settings.asrProfileId).jsonObject
-        let trimmedPrompt = settings.prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         payload["intent"] = "recording"
         payload["source"] = source.rawValue
-        payload["deliver_to_agent"] = settings.deliverToAgent
-        payload["agent_prompt"] = trimmedPrompt.isEmpty ? RecordingSettings.defaultPrompt : settings.prompt
+        payload["recording_type"] = recordingType.rawValue
+        payload["deliver_to_agent"] = recordingType.sendsToAgent
+        if recordingType.sendsToAgent, !trimmedPrompt.isEmpty {
+            payload["agent_prompt"] = trimmedPrompt
+        }
+        if let recordingId, !recordingId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            payload["recording_id"] = recordingId
+        }
         return AudioAsrPayload(jsonObject: payload)
+    }
+
+    static func recording(settings: RecordingSettings, source: RecordingInputSource, recordingId: String? = nil) -> AudioAsrPayload {
+        let type: RecordingType = settings.deliverToAgent ? .custom : .audioOnly
+        let prompt = settings.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? RecordingSettings.defaultPrompt : settings.prompt
+        return recording(settings: settings, source: source, recordingId: recordingId, recordingType: type, prompt: prompt)
     }
 }
 
