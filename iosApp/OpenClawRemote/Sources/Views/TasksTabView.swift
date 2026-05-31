@@ -50,9 +50,16 @@ struct TasksTabView: View {
             RecordingTypeSelectionView(
                 recording: context.recording,
                 settings: settingsManager.recordingSettings,
-                colors: colors
-            ) { type in
-                processRecording(context.recording, as: type)
+                colors: colors,
+                profiles: settingsManager.profiles.filter { !$0.backendId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            ) { type, profileId in
+                processRecording(context.recording, as: type, profileId: profileId)
+            }
+        }
+        .onChange(of: headsetController.pendingHeadsetRecording) { recording in
+            if let recording = recording {
+                typeSelectionContext = RecordingTypeSelectionContext(recording: recording)
+                headsetController.clearPendingHeadsetRecording()
             }
         }
     }
@@ -118,21 +125,29 @@ struct TasksTabView: View {
 
         if isPhoneRecording {
             audioRecorder.stopRecording { data in
-                guard let recording = try? recordingStore.createRecording(
+                let settings = settingsManager.recordingSettings
+                let defaultType = settings.defaultRecordingType
+                let defaultPrompt = settings.prompt(for: defaultType)
+
+                guard let recording = try? self.recordingStore.createRecording(
                     agentId: recordingProfile.id,
                     audioData: data,
                     asrText: "",
-                    prompt: "",
-                    recordingType: .audioOnly,
-                    processingStatus: .savedOnly,
-                    selectedPrompt: "",
+                    prompt: defaultPrompt,
+                    recordingType: defaultType,
+                    processingStatus: settings.defaultDeliverToAgent && defaultType != .audioOnly ? .processing : .savedOnly,
+                    selectedPrompt: defaultPrompt,
                     source: .phone
                 ) else {
-                    statusMessage = "手机录音保存失败"
+                    self.statusMessage = "手机录音保存失败"
                     return
                 }
-                statusMessage = "手机录音已保存"
-                typeSelectionContext = RecordingTypeSelectionContext(recording: recording)
+                self.statusMessage = "手机录音已保存"
+                if settings.defaultDeliverToAgent && defaultType != .audioOnly {
+                    self.processRecording(recording, as: defaultType)
+                } else {
+                    self.typeSelectionContext = RecordingTypeSelectionContext(recording: recording)
+                }
             }
             isPhoneRecording = false
         } else {
@@ -142,15 +157,21 @@ struct TasksTabView: View {
         }
     }
 
-    private func processRecording(_ recording: RecordingItem, as type: RecordingType) {
+    private func processRecording(_ recording: RecordingItem, as type: RecordingType, profileId: String? = nil) {
         if type == .audioOnly {
             recordingStore.configureRecordingForProcessing(recordingId: recording.id, type: .audioOnly, prompt: "", clientMessageId: nil)
             statusMessage = "录音已保存为仅录音"
             return
         }
-        guard let recordingProfile = settingsManager.primaryRecordingProfile else {
-            statusMessage = "请先配置主 Agent"
-            return
+        let targetProfileId: String
+        if let pid = profileId, !pid.isEmpty {
+            targetProfileId = pid
+        } else {
+            guard let recordingProfile = settingsManager.primaryRecordingProfile else {
+                statusMessage = "请先配置主 Agent"
+                return
+            }
+            targetProfileId = recordingProfile.id
         }
         let settings = settingsManager.recordingSettings
         let prompt = settings.prompt(for: type)
@@ -158,18 +179,26 @@ struct TasksTabView: View {
             statusMessage = "请先在录音设置中填写自定义 Prompt"
             return
         }
-        guard let data = try? Data(contentsOf: recording.fileURL) else {
-            statusMessage = "录音文件读取失败"
-            return
-        }
-        let clientMessageId = wsManager.sendRecordingAudioForAsr(
-            data,
-            profileId: recordingProfile.id,
+        var currentJobId = ""
+        let clientMessageId = wsManager.sendLongRecordingAudioForAsr(
+            fileURL: recording.fileURL,
+            profileId: targetProfileId,
             settings: settings,
             source: recording.source,
             recordingId: recording.id,
             recordingType: type,
-            prompt: prompt
+            prompt: prompt,
+            onUploadProgress: { _, progress in
+                guard !currentJobId.isEmpty else { return }
+                recordingStore.updateAsrJob(recordingId: recording.id, jobId: currentJobId, uploadProgress: progress, asrProgress: 0)
+            },
+            onJobCreated: { _, jobId in
+                currentJobId = jobId
+                recordingStore.updateAsrJob(recordingId: recording.id, jobId: jobId, uploadProgress: 0, asrProgress: 0)
+            },
+            onFailure: { clientMessageId, error in
+                recordingStore.updateAsrFailure(clientMessageId: clientMessageId, error: error)
+            }
         )
         recordingStore.configureRecordingForProcessing(
             recordingId: recording.id,
@@ -177,7 +206,7 @@ struct TasksTabView: View {
             prompt: prompt,
             clientMessageId: clientMessageId
         )
-        statusMessage = clientMessageId == nil ? "录音已保存；主 Agent 未连接，未发送 ASR" : "录音已发送，等待 ASR 和 Agent 处理"
+        statusMessage = clientMessageId == nil ? "录音已保存；Agent 未连接，未发送 ASR" : "录音已发送，等待 ASR 和 Agent 处理"
     }
 }
 
@@ -190,18 +219,36 @@ private struct RecordingTypeSelectionView: View {
     let recording: RecordingItem
     let settings: RecordingSettings
     let colors: MochiColors
-    let onSelect: (RecordingType) -> Void
+    let profiles: [AgentProfile]
+    let onSelect: (RecordingType, String) -> Void
 
     @Environment(\.dismiss) private var dismiss
+    @State private var selectedType: RecordingType
+    @State private var selectedProfileId: String
+
+    init(
+        recording: RecordingItem,
+        settings: RecordingSettings,
+        colors: MochiColors,
+        profiles: [AgentProfile],
+        onSelect: @escaping (RecordingType, String) -> Void
+    ) {
+        self.recording = recording
+        self.settings = settings
+        self.colors = colors
+        self.profiles = profiles
+        self.onSelect = onSelect
+        _selectedType = State(initialValue: settings.defaultRecordingType == .custom && settings.customPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .audioOnly : settings.defaultRecordingType)
+        _selectedProfileId = State(initialValue: settings.primaryAgentProfileId)
+    }
 
     var body: some View {
         NavigationView {
             List {
                 Section("录音类型") {
-                    ForEach(RecordingType.allCases) { type in
+                    ForEach(availableTypes) { type in
                         Button {
-                            onSelect(type)
-                            dismiss()
+                            selectedType = type
                         } label: {
                             HStack(spacing: 12) {
                                 Image(systemName: type.systemImage)
@@ -217,7 +264,7 @@ private struct RecordingTypeSelectionView: View {
                                         .foregroundColor(.secondary)
                                 }
                                 Spacer()
-                                if type == recording.recordingType || (recording.recordingType == .audioOnly && type == .audioOnly) {
+                                if type == selectedType {
                                     Image(systemName: "checkmark")
                                         .foregroundColor(colors.primary)
                                 }
@@ -226,8 +273,44 @@ private struct RecordingTypeSelectionView: View {
                         .disabled(type == .custom && settings.customPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
                 }
+
+                if selectedType != .audioOnly {
+                    Section("发送到") {
+                        ForEach(profiles) { profile in
+                            Button {
+                                selectedProfileId = profile.id
+                            } label: {
+                                HStack {
+                                    Text(profile.resolvedDisplayName)
+                                        .foregroundColor(.primary)
+                                    Spacer()
+                                    if profile.id == selectedProfileId {
+                                        Image(systemName: "checkmark")
+                                            .foregroundColor(colors.primary)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Section {
+                    Button {
+                        onSelect(selectedType, selectedProfileId)
+                        dismiss()
+                    } label: {
+                        HStack {
+                            Spacer()
+                            Text(selectedType == .audioOnly ? "保存" : "发送给 \(selectedProfileName)")
+                                .font(.system(size: 15, weight: .semibold))
+                            Spacer()
+                        }
+                    }
+                    .foregroundColor(.white)
+                    .listRowBackground(colors.primary)
+                }
             }
-            .navigationTitle("选择录音类型")
+            .navigationTitle("处理录音")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -236,6 +319,19 @@ private struct RecordingTypeSelectionView: View {
             }
         }
         .navigationViewStyle(.stack)
+    }
+
+    private var availableTypes: [RecordingType] {
+        RecordingType.allCases.filter { type in
+            if type == .custom {
+                return !settings.customPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            }
+            return true
+        }
+    }
+
+    private var selectedProfileName: String {
+        profiles.first(where: { $0.id == selectedProfileId })?.resolvedDisplayName ?? "Agent"
     }
 
     private func description(for type: RecordingType) -> String {
@@ -305,6 +401,14 @@ private struct RecordingDetailView: View {
                 RecordingMetadataRow(title: "来源", value: currentRecording.source.label)
                 RecordingMetadataRow(title: "类型", value: currentRecording.recordingType.label)
                 RecordingMetadataRow(title: "状态", value: currentRecording.processingStatus.label)
+                if let jobId = currentRecording.asrJobId, !jobId.isEmpty {
+                    RecordingMetadataRow(title: "ASR Job", value: jobId, valueFont: .system(size: 12, design: .monospaced))
+                    ProgressView("上传 \(Int(currentRecording.uploadProgress * 100))%", value: currentRecording.uploadProgress)
+                    ProgressView("转写 \(Int(currentRecording.asrProgress * 100))%", value: currentRecording.asrProgress)
+                }
+                if let error = currentRecording.asrError, !error.isEmpty {
+                    RecordingMetadataRow(title: "错误", value: error)
+                }
                 RecordingMetadataRow(
                     title: "文件",
                     value: currentRecording.fileURL.lastPathComponent,
@@ -446,9 +550,10 @@ private struct RecordingDetailView: View {
             RecordingTypeSelectionView(
                 recording: context.recording,
                 settings: settingsManager.recordingSettings,
-                colors: colors
-            ) { type in
-                processRecording(context.recording, as: type)
+                colors: colors,
+                profiles: settingsManager.profiles.filter { !$0.backendId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            ) { type, profileId in
+                processRecording(context.recording, as: type, profileId: profileId)
             }
         }
         .sheet(item: $sharePayload) { payload in
@@ -503,26 +608,44 @@ private struct RecordingDetailView: View {
         }
     }
 
-    private func processRecording(_ recording: RecordingItem, as type: RecordingType) {
+    private func processRecording(_ recording: RecordingItem, as type: RecordingType, profileId: String? = nil) {
         if type == .audioOnly {
             store.configureRecordingForProcessing(recordingId: recording.id, type: .audioOnly, prompt: "", clientMessageId: nil)
             return
         }
-        guard let profile = settingsManager.primaryRecordingProfile else { return }
-        let settings = settingsManager.recordingSettings
-        let prompt = settings.prompt(for: type)
-        guard !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              let data = try? Data(contentsOf: recording.fileURL) else {
+        let targetProfileId: String
+        if let pid = profileId, !pid.isEmpty {
+            targetProfileId = pid
+        } else if let primary = settingsManager.primaryRecordingProfile {
+            targetProfileId = primary.id
+        } else {
             return
         }
-        let clientMessageId = wsManager.sendRecordingAudioForAsr(
-            data,
-            profileId: profile.id,
+        let settings = settingsManager.recordingSettings
+        let prompt = settings.prompt(for: type)
+        guard !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return
+        }
+        var currentJobId = ""
+        let clientMessageId = wsManager.sendLongRecordingAudioForAsr(
+            fileURL: recording.fileURL,
+            profileId: targetProfileId,
             settings: settings,
             source: recording.source,
             recordingId: recording.id,
             recordingType: type,
-            prompt: prompt
+            prompt: prompt,
+            onUploadProgress: { _, progress in
+                guard !currentJobId.isEmpty else { return }
+                store.updateAsrJob(recordingId: recording.id, jobId: currentJobId, uploadProgress: progress, asrProgress: 0)
+            },
+            onJobCreated: { _, jobId in
+                currentJobId = jobId
+                store.updateAsrJob(recordingId: recording.id, jobId: jobId, uploadProgress: 0, asrProgress: 0)
+            },
+            onFailure: { clientMessageId, error in
+                store.updateAsrFailure(clientMessageId: clientMessageId, error: error)
+            }
         )
         store.configureRecordingForProcessing(
             recordingId: recording.id,

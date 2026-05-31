@@ -380,10 +380,10 @@ struct SettingsScreenView: View {
     let onToggleTheme: () -> Void
     let onRequestPair: (String) -> Void
     let onUnpair: () -> Void
-    let onBack: () -> Void
     let onNavigateToQRScanner: () -> Void
     let onSelectProfile: (String) -> Void
 
+    @Environment(\.dismiss) private var dismiss
     @State private var deviceLabel: String = ""
     @State private var phoneNumber: String = ""
     @State private var smsCode: String = ""
@@ -404,17 +404,21 @@ struct SettingsScreenView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            SettingsTopBarView(
-                isDark: isDark,
-                colors: colors,
-                onToggleTheme: onToggleTheme,
-                onBack: onBack
-            )
-
             Divider().background(colors.divider)
 
             ScrollView {
                 VStack(spacing: 16) {
+                    HStack {
+                        Button(action: onToggleTheme) {
+                            Image(systemName: isDark ? "sun.max.fill" : "moon.fill")
+                                .font(.system(size: 20))
+                                .foregroundColor(isDark ? colors.accent : colors.primary)
+                                .frame(width: 32, height: 32)
+                        }
+                        Spacer()
+                    }
+                    .padding(.horizontal, 12)
+
                     Button(action: onNavigateToQRScanner) {
                         HStack {
                             Image(systemName: "qrcode.viewfinder")

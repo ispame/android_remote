@@ -33,6 +33,11 @@ final class HeadsetConversationController: NSObject, ObservableObject {
     @Published private(set) var lastHeadsetCommandLabel: String?
     @Published private(set) var inputDiagnostics = HeadsetInputDiagnostics()
     @Published private(set) var headsetKeyConfigurationLabel: String?
+    @Published private(set) var pendingHeadsetRecording: RecordingItem?
+
+    func clearPendingHeadsetRecording() {
+        pendingHeadsetRecording = nil
+    }
 
     let bleManager: A9UltraBLEManager
 
@@ -305,13 +310,29 @@ final class HeadsetConversationController: NSObject, ObservableObject {
         let recordingSettings = settingsManager.recordingSettings
         let recordingType = recordingSettings.defaultRecordingType
         let selectedPrompt = recordingSettings.prompt(for: recordingType)
+        let shouldDeliver = recordingSettings.defaultDeliverToAgent
+        let targetProfileId = recordingSettings.primaryAgentProfileId
+        let allProfiles = settingsManager.profiles
+
+        let targetProfile: AgentProfile?
+        if !targetProfileId.isEmpty {
+            targetProfile = allProfiles.first(where: { $0.id == targetProfileId })
+        } else {
+            targetProfile = nil
+        }
+        guard let profile = targetProfile ?? self.profile(for: side) else {
+            sessionState = .idle
+            speak("\(side.displayName)未配置 Agent", side: side, forceShort: true)
+            return
+        }
+
         guard let recording = try? recordingStore?.createRecording(
             agentId: profile.id,
             audioData: wav,
             asrText: "",
             prompt: selectedPrompt,
             recordingType: .audioOnly,
-            processingStatus: .savedOnly,
+            processingStatus: shouldDeliver && recordingType != .audioOnly ? .processing : .savedOnly,
             selectedPrompt: selectedPrompt,
             source: .headset
         ) else {
@@ -319,19 +340,48 @@ final class HeadsetConversationController: NSObject, ObservableObject {
             speak("\(side.displayName)录音保存失败", side: side, forceShort: true)
             return
         }
-        guard recordingType.sendsToAgent, !selectedPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+
+        if recordingType == .audioOnly {
             sessionState = .idle
             speak("\(side.displayName)录音已保存", side: side, forceShort: true)
             return
         }
-        if let clientMessageId = wsManager.sendRecordingAudioForAsr(
-            wav,
+
+        if shouldDeliver {
+            submitRecordingToAgent(recording: recording, profile: profile, recordingType: recordingType, selectedPrompt: selectedPrompt, recordingSettings: recordingSettings, side: side)
+        } else {
+            pendingHeadsetRecording = recording
+            sessionState = .idle
+            speak("录音已保存，请在手机上选择处理方式", side: side, forceShort: true)
+        }
+    }
+
+    private func submitRecordingToAgent(recording: RecordingItem, profile: AgentProfile, recordingType: RecordingType, selectedPrompt: String, recordingSettings: RecordingSettings, side: HeadsetSide) {
+        guard recordingType.sendsToAgent, !selectedPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            sessionState = .idle
+            speak("录音已保存", side: side, forceShort: true)
+            return
+        }
+        var currentJobId = ""
+        if let clientMessageId = wsManager.sendLongRecordingAudioForAsr(
+            fileURL: recording.fileURL,
             profileId: profile.id,
             settings: recordingSettings,
             source: .headset,
             recordingId: recording.id,
             recordingType: recordingType,
-            prompt: selectedPrompt
+            prompt: selectedPrompt,
+            onUploadProgress: { [weak recordingStore] _, progress in
+                guard !currentJobId.isEmpty else { return }
+                recordingStore?.updateAsrJob(recordingId: recording.id, jobId: currentJobId, uploadProgress: progress, asrProgress: 0)
+            },
+            onJobCreated: { [weak recordingStore] _, jobId in
+                currentJobId = jobId
+                recordingStore?.updateAsrJob(recordingId: recording.id, jobId: jobId, uploadProgress: 0, asrProgress: 0)
+            },
+            onFailure: { [weak recordingStore] clientMessageId, error in
+                recordingStore?.updateAsrFailure(clientMessageId: clientMessageId, error: error)
+            }
         ) {
             recordingStore?.configureRecordingForProcessing(
                 recordingId: recording.id,
@@ -428,7 +478,7 @@ final class HeadsetConversationController: NSObject, ObservableObject {
             forName: AVAudioSession.routeChangeNotification,
             object: nil,
             queue: .main
-        ) { [weak self] _ in
+        ) { _ in
             // 只记录路由变化，不自动激活音频会话，避免影响语音输入法
         })
     }

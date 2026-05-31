@@ -189,6 +189,10 @@ struct RecordingEventPayload: Equatable {
     var clientMessageId: String?
     var event: RecordingEventItem
     var artifact: RecordingArtifactPayload?
+    var jobId: String?
+    var percent: Double?
+    var completedSegments: Int?
+    var totalSegments: Int?
 
     init?(json: [String: Any]) {
         let title = (json["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -210,10 +214,30 @@ struct RecordingEventPayload: Equatable {
             status: status,
             createdAt: timestamp
         )
-        if let data = json["data"] as? [String: Any],
-           let artifactJson = data["artifact"] as? [String: Any] {
-            artifact = RecordingArtifactPayload(json: artifactJson)
+        if let data = json["data"] as? [String: Any] {
+            jobId = data["job_id"] as? String
+            percent = Self.doubleValue(data["percent"])
+            completedSegments = Self.intValue(data["completed_segments"])
+            totalSegments = Self.intValue(data["total_segments"])
+            if let artifactJson = data["artifact"] as? [String: Any] {
+                artifact = RecordingArtifactPayload(json: artifactJson)
+            }
         }
+    }
+
+    private static func doubleValue(_ value: Any?) -> Double? {
+        if let value = value as? Double { return value }
+        if let value = value as? Int { return Double(value) }
+        if let value = value as? NSNumber { return value.doubleValue }
+        if let value = value as? String { return Double(value) }
+        return nil
+    }
+
+    private static func intValue(_ value: Any?) -> Int? {
+        if let value = value as? Int { return value }
+        if let value = value as? NSNumber { return value.intValue }
+        if let value = value as? String { return Int(value) }
+        return nil
     }
 }
 

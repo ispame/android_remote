@@ -151,6 +151,8 @@ final class RecordingStore: ObservableObject {
     func updateAsrText(clientMessageId: String, text: String) {
         guard let index = items.firstIndex(where: { $0.clientMessageId == clientMessageId }) else { return }
         items[index].asrText = text
+        items[index].asrProgress = 1
+        items[index].asrError = nil
         if items[index].processingStatus == .queued || items[index].processingStatus == .savedOnly {
             items[index].processingStatus = .processing
         }
@@ -160,6 +162,34 @@ final class RecordingStore: ObservableObject {
                 title: "ASR 转写完成",
                 content: text,
                 status: .completed
+            ),
+            index: index
+        )
+        persist()
+    }
+
+    func updateAsrJob(recordingId: String, jobId: String, uploadProgress: Double, asrProgress: Double) {
+        guard let index = items.firstIndex(where: { $0.id == recordingId }) else { return }
+        items[index].asrJobId = jobId
+        items[index].uploadProgress = clampedProgress(uploadProgress)
+        items[index].asrProgress = clampedProgress(asrProgress)
+        items[index].asrError = nil
+        if items[index].processingStatus == .savedOnly {
+            items[index].processingStatus = .queued
+        }
+        persist()
+    }
+
+    func updateAsrFailure(clientMessageId: String, error: String) {
+        guard let index = items.firstIndex(where: { $0.clientMessageId == clientMessageId }) else { return }
+        items[index].asrError = error
+        items[index].processingStatus = .failed
+        appendEvent(
+            RecordingEventItem(
+                kind: .error,
+                title: "ASR 转写失败",
+                content: error,
+                status: .failed
             ),
             index: index
         )
@@ -194,6 +224,16 @@ final class RecordingStore: ObservableObject {
             index = nil
         }
         guard let index else { return }
+        if let jobId = payload.jobId {
+            items[index].asrJobId = jobId
+        }
+        if let percent = payload.percent {
+            items[index].asrProgress = clampedProgress(percent / 100)
+        } else if let completed = payload.completedSegments,
+                  let total = payload.totalSegments,
+                  total > 0 {
+            items[index].asrProgress = clampedProgress(Double(completed) / Double(total))
+        }
         appendEvent(payload.event, index: index)
         updateProcessingStatus(for: payload.event, index: index)
         if let artifact = payload.artifact {
@@ -266,6 +306,10 @@ final class RecordingStore: ObservableObject {
         }
         items[index].events.append(event)
         items[index].events.sort { $0.createdAt < $1.createdAt }
+    }
+
+    private func clampedProgress(_ value: Double) -> Double {
+        min(max(value, 0), 1)
     }
 
     private func updateProcessingStatus(for event: RecordingEventItem, index: Int) {

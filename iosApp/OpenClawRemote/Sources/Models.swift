@@ -655,6 +655,7 @@ struct RecordingSettings: Equatable {
     var asrProfileId: String
     var defaultRecordingType: RecordingType
     var customPrompt: String
+    var defaultDeliverToAgent: Bool
 
     init(
         primaryAgentProfileId: String = "",
@@ -662,7 +663,8 @@ struct RecordingSettings: Equatable {
         prompt: String = Self.defaultPrompt,
         asrProfileId: String = "",
         defaultRecordingType: RecordingType = .audioOnly,
-        customPrompt: String = ""
+        customPrompt: String = "",
+        defaultDeliverToAgent: Bool = true
     ) {
         self.primaryAgentProfileId = primaryAgentProfileId
         self.deliverToAgent = deliverToAgent
@@ -670,6 +672,7 @@ struct RecordingSettings: Equatable {
         self.asrProfileId = asrProfileId
         self.defaultRecordingType = defaultRecordingType
         self.customPrompt = customPrompt
+        self.defaultDeliverToAgent = defaultDeliverToAgent
     }
 
     func prompt(for type: RecordingType) -> String {
@@ -725,6 +728,90 @@ struct AudioAsrPayload {
         let type: RecordingType = settings.deliverToAgent ? .custom : .audioOnly
         let prompt = settings.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? RecordingSettings.defaultPrompt : settings.prompt
         return recording(settings: settings, source: source, recordingId: recordingId, recordingType: type, prompt: prompt)
+    }
+}
+
+struct LongRecordingAsrJobRequest {
+    var recordingId: String
+    var backendId: String
+    var clientMessageId: String
+    var recordingType: RecordingType
+    var source: RecordingInputSource
+    var prompt: String
+    var settings: RecordingSettings
+    var fileSize: Int
+    var sha256: String
+
+    var jsonObject: [String: Any] {
+        var json: [String: Any] = [
+            "recording_id": recordingId,
+            "backend_id": backendId,
+            "client_message_id": clientMessageId,
+            "recording_type": recordingType.rawValue,
+            "source": source.rawValue,
+            "file_size": fileSize,
+            "sha256": sha256,
+            "audio": [
+                "format": "wav",
+                "codec": "pcm_s16le",
+                "sample_rate": 16000,
+                "channels": 1
+            ],
+            "asr": AudioAsrPayload.recording(
+                settings: settings,
+                source: source,
+                recordingId: recordingId,
+                recordingType: recordingType,
+                prompt: prompt
+            ).jsonObject
+        ]
+        let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        if recordingType.sendsToAgent, !trimmedPrompt.isEmpty {
+            json["agent_prompt"] = trimmedPrompt
+        }
+        return json
+    }
+}
+
+struct LongRecordingAsrJobStatusPayload: Equatable {
+    var jobId: String
+    var recordingId: String?
+    var clientMessageId: String?
+    var status: String
+    var uploadProgress: Double
+    var asrProgress: Double
+    var error: String?
+
+    init?(json: [String: Any]) {
+        guard let jobId = json["job_id"] as? String else { return nil }
+        self.jobId = jobId
+        recordingId = json["recording_id"] as? String
+        clientMessageId = json["client_message_id"] as? String
+        status = json["status"] as? String ?? ""
+        if let uploadPercent = Self.doubleValue(json["upload_percent"]) {
+            uploadProgress = min(max(uploadPercent / 100, 0), 1)
+        } else if let uploadedBytes = Self.doubleValue(json["uploaded_bytes"]),
+                  let fileSize = Self.doubleValue(json["file_size"]),
+                  fileSize > 0 {
+            uploadProgress = min(max(uploadedBytes / fileSize, 0), 1)
+        } else {
+            uploadProgress = 0
+        }
+        if let progress = json["asr_progress"] as? [String: Any],
+           let percent = Self.doubleValue(progress["percent"]) {
+            asrProgress = min(max(percent / 100, 0), 1)
+        } else {
+            asrProgress = 0
+        }
+        error = json["error"] as? String
+    }
+
+    private static func doubleValue(_ value: Any?) -> Double? {
+        if let value = value as? Double { return value }
+        if let value = value as? Int { return Double(value) }
+        if let value = value as? NSNumber { return value.doubleValue }
+        if let value = value as? String { return Double(value) }
+        return nil
     }
 }
 

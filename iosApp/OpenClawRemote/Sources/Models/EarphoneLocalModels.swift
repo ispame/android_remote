@@ -258,6 +258,10 @@ struct RecordingItem: Identifiable, Codable, Equatable {
     var fileURL: URL
     var source: RecordingInputSource
     var clientMessageId: String?
+    var asrJobId: String?
+    var uploadProgress: Double
+    var asrProgress: Double
+    var asrError: String?
     var events: [RecordingEventItem]
     var reminders: [RecordingReminderItem]
     var artifacts: [RecordingArtifactItem]
@@ -275,6 +279,10 @@ struct RecordingItem: Identifiable, Codable, Equatable {
         fileURL: URL,
         source: RecordingInputSource,
         clientMessageId: String? = nil,
+        asrJobId: String? = nil,
+        uploadProgress: Double = 0,
+        asrProgress: Double = 0,
+        asrError: String? = nil,
         events: [RecordingEventItem] = [],
         reminders: [RecordingReminderItem] = [],
         artifacts: [RecordingArtifactItem] = []
@@ -291,6 +299,10 @@ struct RecordingItem: Identifiable, Codable, Equatable {
         self.fileURL = fileURL
         self.source = source
         self.clientMessageId = clientMessageId
+        self.asrJobId = asrJobId
+        self.uploadProgress = uploadProgress
+        self.asrProgress = asrProgress
+        self.asrError = asrError
         self.events = events
         self.reminders = reminders
         self.artifacts = artifacts
@@ -309,6 +321,10 @@ struct RecordingItem: Identifiable, Codable, Equatable {
         case fileURL
         case source
         case clientMessageId
+        case asrJobId
+        case uploadProgress
+        case asrProgress
+        case asrError
         case events
         case reminders
         case artifacts
@@ -334,6 +350,10 @@ struct RecordingItem: Identifiable, Codable, Equatable {
         fileURL = try container.decode(URL.self, forKey: .fileURL)
         source = try container.decode(RecordingInputSource.self, forKey: .source)
         clientMessageId = try container.decodeIfPresent(String.self, forKey: .clientMessageId)
+        asrJobId = try container.decodeIfPresent(String.self, forKey: .asrJobId)
+        uploadProgress = try container.decodeIfPresent(Double.self, forKey: .uploadProgress) ?? 0
+        asrProgress = try container.decodeIfPresent(Double.self, forKey: .asrProgress) ?? 0
+        asrError = try container.decodeIfPresent(String.self, forKey: .asrError)
         events = try container.decodeIfPresent([RecordingEventItem].self, forKey: .events) ?? []
         reminders = try container.decodeIfPresent([RecordingReminderItem].self, forKey: .reminders) ?? []
         artifacts = try container.decodeIfPresent([RecordingArtifactItem].self, forKey: .artifacts) ?? []

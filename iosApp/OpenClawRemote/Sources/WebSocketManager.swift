@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import CryptoKit
 
 private struct ProfileRuntimeState {
     var registeredBackendId: String?
@@ -20,6 +21,18 @@ private struct PendingAudioContext {
     let profileId: String
     let recordingId: String?
     let recordingPrompt: String?
+}
+
+private enum LongRecordingUploadError: Error {
+    case invalidResponse(String)
+    case server(String)
+
+    var message: String {
+        switch self {
+        case .invalidResponse(let message), .server(let message):
+            return message
+        }
+    }
 }
 
 func shouldDropAsrFailureMessage(_ error: String?) -> Bool {
@@ -553,6 +566,92 @@ final class WebSocketManager: ObservableObject {
     }
 
     @discardableResult
+    func sendLongRecordingAudioForAsr(
+        fileURL: URL,
+        profileId: String,
+        settings: RecordingSettings,
+        source: RecordingInputSource,
+        recordingId: String,
+        recordingType: RecordingType,
+        prompt: String,
+        onUploadProgress: ((String, Double) -> Void)? = nil,
+        onJobCreated: ((String, String) -> Void)? = nil,
+        onFailure: ((String, String) -> Void)? = nil
+    ) -> String? {
+        let state = profileId == activeProfileId
+            ? currentRuntimeStateSnapshot()
+            : (profileStates[profileId] ?? ProfileRuntimeState())
+        guard state.pairingState == .paired, let backendId = state.registeredBackendId else { return nil }
+        guard let baseURL = recordingApiBaseURL() else { return nil }
+
+        let clientMessageId = UUID().uuidString
+        let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        let msg = ChatMessage(
+            content: "录音上传中...",
+            timestamp: timestamp(),
+            senderId: "user",
+            status: .sending,
+            seq: nil,
+            clientMessageId: clientMessageId
+        )
+        appendMessage(msg, profileId: profileId)
+        pendingAudioContextsByClientMessageId[clientMessageId] = PendingAudioContext(
+            profileId: profileId,
+            recordingId: recordingId,
+            recordingPrompt: trimmedPrompt.isEmpty ? nil : trimmedPrompt
+        )
+
+        Task { [weak self] in
+            await self?.uploadLongRecordingForAsr(
+                fileURL: fileURL,
+                baseURL: baseURL,
+                profileId: profileId,
+                backendId: backendId,
+                clientMessageId: clientMessageId,
+                recordingId: recordingId,
+                recordingType: recordingType,
+                source: source,
+                prompt: trimmedPrompt,
+                settings: settings,
+                onUploadProgress: onUploadProgress,
+                onJobCreated: onJobCreated,
+                onFailure: onFailure
+            )
+        }
+        return clientMessageId
+    }
+
+    func fetchLongRecordingAsrJob(
+        jobId: String,
+        completion: @escaping (LongRecordingAsrJobStatusPayload?) -> Void
+    ) {
+        guard let baseURL = recordingApiBaseURL() else {
+            completion(nil)
+            return
+        }
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let json = try await sendLongRecordingJsonRequest(
+                    url: apiURL(baseURL, "api", "recordings", "asr-jobs", jobId),
+                    method: "GET",
+                    body: [:]
+                )
+                guard let payload = LongRecordingAsrJobStatusPayload(json: json) else {
+                    throw LongRecordingUploadError.invalidResponse("ASR Job 响应格式错误")
+                }
+                DispatchQueue.main.async {
+                    completion(payload)
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    completion(nil)
+                }
+            }
+        }
+    }
+
+    @discardableResult
     private func sendAudioForAsr(
         _ data: Data,
         profileId: String,
@@ -600,6 +699,182 @@ final class WebSocketManager: ObservableObject {
         )
         sendJson(frame)
         return clientMessageId
+    }
+
+    private func uploadLongRecordingForAsr(
+        fileURL: URL,
+        baseURL: URL,
+        profileId: String,
+        backendId: String,
+        clientMessageId: String,
+        recordingId: String,
+        recordingType: RecordingType,
+        source: RecordingInputSource,
+        prompt: String,
+        settings: RecordingSettings,
+        onUploadProgress: ((String, Double) -> Void)?,
+        onJobCreated: ((String, String) -> Void)?,
+        onFailure: ((String, String) -> Void)?
+    ) async {
+        do {
+            let fileSize = try fileSize(at: fileURL)
+            let sha256 = try sha256Hex(fileURL: fileURL)
+            let createRequest = LongRecordingAsrJobRequest(
+                recordingId: recordingId,
+                backendId: backendId,
+                clientMessageId: clientMessageId,
+                recordingType: recordingType,
+                source: source,
+                prompt: prompt,
+                settings: settings,
+                fileSize: fileSize,
+                sha256: sha256
+            )
+            let createResponse = try await sendLongRecordingJsonRequest(
+                url: apiURL(baseURL, "api", "recordings", "asr-jobs"),
+                method: "POST",
+                body: createRequest.jsonObject
+            )
+            guard let jobId = createResponse["job_id"] as? String else {
+                throw LongRecordingUploadError.invalidResponse("缺少 ASR Job ID")
+            }
+            let chunkSize = createResponse["chunk_size"] as? Int ?? 4 * 1024 * 1024
+            DispatchQueue.main.async {
+                onJobCreated?(recordingId, jobId)
+            }
+
+            try await uploadLongRecordingChunks(
+                fileURL: fileURL,
+                baseURL: baseURL,
+                jobId: jobId,
+                chunkSize: chunkSize,
+                fileSize: fileSize,
+                clientMessageId: clientMessageId,
+                onUploadProgress: onUploadProgress
+            )
+            _ = try await sendLongRecordingJsonRequest(
+                url: apiURL(baseURL, "api", "recordings", "asr-jobs", jobId, "complete"),
+                method: "POST",
+                body: [:]
+            )
+        } catch {
+            let message = (error as? LongRecordingUploadError)?.message ?? error.localizedDescription
+            DispatchQueue.main.async {
+                onFailure?(clientMessageId, message)
+            }
+        }
+    }
+
+    private func uploadLongRecordingChunks(
+        fileURL: URL,
+        baseURL: URL,
+        jobId: String,
+        chunkSize: Int,
+        fileSize: Int,
+        clientMessageId: String,
+        onUploadProgress: ((String, Double) -> Void)?
+    ) async throws {
+        let handle = try FileHandle(forReadingFrom: fileURL)
+        defer { try? handle.close() }
+        var index = 0
+        var uploaded = 0
+        while true {
+            let chunk = try handle.read(upToCount: chunkSize) ?? Data()
+            if chunk.isEmpty { break }
+            var request = URLRequest(url: apiURL(baseURL, "api", "recordings", "asr-jobs", jobId, "chunks", "\(index)"))
+            request.httpMethod = "PUT"
+            request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+            request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+            let (_, response) = try await session.upload(for: request, from: chunk)
+            try validateLongRecordingResponse(response)
+            uploaded += chunk.count
+            index += 1
+            let progress = fileSize > 0 ? Double(uploaded) / Double(fileSize) : 1
+            DispatchQueue.main.async {
+                onUploadProgress?(clientMessageId, min(max(progress, 0), 1))
+            }
+        }
+    }
+
+    private func sendLongRecordingJsonRequest(
+        url: URL,
+        method: String,
+        body: [String: Any]
+    ) async throws -> [String: Any] {
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        if method != "GET" {
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        }
+        let (data, response) = try await session.data(for: request)
+        try validateLongRecordingResponse(response, body: data)
+        if data.isEmpty { return [:] }
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw LongRecordingUploadError.invalidResponse("响应不是 JSON")
+        }
+        return json
+    }
+
+    private func validateLongRecordingResponse(_ response: URLResponse, body: Data = Data()) throws {
+        guard let http = response as? HTTPURLResponse else {
+            throw LongRecordingUploadError.invalidResponse("无效 HTTP 响应")
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            let message: String
+            if let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+               let error = json["error"] as? String {
+                message = error
+            } else {
+                message = "HTTP \(http.statusCode)"
+            }
+            throw LongRecordingUploadError.server(message)
+        }
+    }
+
+    private func recordingApiBaseURL() -> URL? {
+        guard var components = currentUrlString.flatMap(URLComponents.init(string:)) else { return nil }
+        if components.scheme == "wss" {
+            components.scheme = "https"
+        } else {
+            components.scheme = "http"
+        }
+        if components.path == "/ws" || components.path.hasSuffix("/ws") {
+            components.path = String(components.path.dropLast(3))
+        }
+        if components.path == "/" {
+            components.path = ""
+        }
+        components.query = nil
+        components.fragment = nil
+        return components.url
+    }
+
+    private func apiURL(_ baseURL: URL, _ pathComponents: String...) -> URL {
+        pathComponents.reduce(baseURL) { url, component in
+            url.appendingPathComponent(component)
+        }
+    }
+
+    private func fileSize(at url: URL) throws -> Int {
+        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        guard let size = attributes[.size] as? NSNumber else {
+            throw LongRecordingUploadError.invalidResponse("无法读取录音文件大小")
+        }
+        return size.intValue
+    }
+
+    private func sha256Hex(fileURL: URL) throws -> String {
+        let handle = try FileHandle(forReadingFrom: fileURL)
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        while true {
+            let chunk = try handle.read(upToCount: 4 * 1024 * 1024) ?? Data()
+            if chunk.isEmpty { break }
+            hasher.update(data: chunk)
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
     func unpair() {
@@ -889,8 +1164,8 @@ final class WebSocketManager: ObservableObject {
             case "error":
                 let code = json["code"] as? String ?? "unknown"
                 let msg = json["message"] as? String ?? "未知错误"
-                let authRecoveryAction = authRecoveryAction(forWebSocketErrorCode: code)
-                if authRecoveryAction != .none {
+                let recoveryAction = authRecoveryAction(forWebSocketErrorCode: code)
+                if recoveryAction != .none {
                     let task = self.webSocketTask
                     self.intentionalDisconnect = true
                     self.cancelReconnect()

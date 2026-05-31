@@ -414,6 +414,7 @@ final class SettingsManager: ObservableObject {
         defaults.set(recordingSettings.asrProfileId, forKey: recordingAsrProfileIdKey)
         defaults.set(recordingSettings.defaultRecordingType.rawValue, forKey: recordingDefaultTypeKey)
         defaults.set(recordingSettings.customPrompt, forKey: recordingCustomPromptKey)
+        defaults.set(recordingSettings.defaultDeliverToAgent, forKey: "recording_default_deliver_to_agent")
     }
 
     private func reconcileRecordingPrimaryAgent() {
@@ -535,7 +536,8 @@ final class SettingsManager: ObservableObject {
             prompt: prompt,
             asrProfileId: recordingAsrProfileId,
             defaultRecordingType: defaultRecordingType == .custom && customPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .audioOnly : defaultRecordingType,
-            customPrompt: customPrompt
+            customPrompt: customPrompt,
+            defaultDeliverToAgent: defaults.object(forKey: "recording_default_deliver_to_agent") as? Bool ?? true
         )
     }
 

@@ -10,8 +10,6 @@ struct SimpleSettingsTabView: View {
     let onSelectProfile: (String) -> Void
     let onSwitchAccount: () -> Void
     let onLogout: () -> Void
-    @State private var showAdvancedSettings = false
-    @State private var showRecordingSettings = false
 
     var body: some View {
         List {
@@ -42,25 +40,40 @@ struct SimpleSettingsTabView: View {
                 }
                 .foregroundColor(.primary)
 
-                Button {
-                    showAdvancedSettings = true
+                NavigationLink {
+                    SettingsScreenView(
+                        wsManager: wsManager,
+                        settingsManager: settingsManager,
+                        isDark: isDark,
+                        colors: colors,
+                        onToggleTheme: onToggleTheme,
+                        onRequestPair: onRequestPair,
+                        onUnpair: {
+                            wsManager.unpair()
+                        },
+                        onNavigateToQRScanner: {},
+                        onSelectProfile: onSelectProfile
+                    )
+                    .navigationTitle("高级设置")
                 } label: {
                     HStack {
                         Label("高级设置", systemImage: "slider.horizontal.3")
                         Spacer()
                     }
                 }
-                .foregroundColor(.primary)
 
-                Button {
-                    showRecordingSettings = true
+                NavigationLink {
+                    RecordingSettingsView(
+                        settingsManager: settingsManager,
+                        colors: colors
+                    )
+                    .navigationTitle("录音设置")
                 } label: {
                     HStack {
                         Label("录音设置", systemImage: "waveform")
                         Spacer()
                     }
                 }
-                .foregroundColor(.primary)
             }
 
             Section(
@@ -89,35 +102,6 @@ struct SimpleSettingsTabView: View {
         .listStyle(.insetGrouped)
         .navigationTitle("设置")
         .navigationBarTitleDisplayMode(.inline)
-        .sheet(isPresented: $showAdvancedSettings) {
-            SettingsScreenView(
-                wsManager: wsManager,
-                settingsManager: settingsManager,
-                isDark: isDark,
-                colors: colors,
-                onToggleTheme: onToggleTheme,
-                onRequestPair: onRequestPair,
-                onUnpair: {
-                    wsManager.unpair()
-                },
-                onBack: {
-                    showAdvancedSettings = false
-                },
-                onNavigateToQRScanner: {},
-                onSelectProfile: onSelectProfile
-            )
-        }
-        .sheet(isPresented: $showRecordingSettings) {
-            CompatibleNavigationStack {
-                RecordingSettingsView(
-                    settingsManager: settingsManager,
-                    colors: colors,
-                    onClose: {
-                        showRecordingSettings = false
-                    }
-                )
-            }
-        }
     }
 
     private var accountTitle: String {
@@ -148,14 +132,36 @@ struct SimpleSettingsTabView: View {
 private struct RecordingSettingsView: View {
     @ObservedObject var settingsManager: SettingsManager
     let colors: MochiColors
-    let onClose: () -> Void
 
+    @Environment(\.dismiss) private var dismiss
     @State private var draft = RecordingSettings()
     @State private var asrProfiles: [AsrProviderProfile] = []
     @State private var statusMessage: String?
 
     private var configuredProfiles: [AgentProfile] {
         settingsManager.profiles.filter { !$0.backendId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    }
+
+    private var availableRecordingTypes: [RecordingType] {
+        RecordingType.allCases.filter { type in
+            if type == .custom {
+                return !draft.customPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            }
+            return true
+        }
+    }
+
+    private var promptPreviewText: String {
+        switch draft.defaultRecordingType {
+        case .audioOnly:
+            return "此类型不会发送给任何 Agent，仅保存录音文件"
+        case .meeting:
+            return RecordingSettings.meetingPrompt
+        case .idea:
+            return RecordingSettings.ideaPrompt
+        case .custom:
+            return draft.customPrompt
+        }
     }
 
     var body: some View {
@@ -173,43 +179,56 @@ private struct RecordingSettingsView: View {
                 }
             }
 
-            Section("默认录音类型") {
-                Picker("耳机录音默认类型", selection: $draft.defaultRecordingType) {
-                    ForEach(RecordingType.allCases) { type in
+            Section {
+                Toggle("本机录音默认执行", isOn: $draft.defaultDeliverToAgent)
+            } footer: {
+                Text("本机录音后，直接以默认录音类型发送给主 Agent 处理")
+            }
+
+            Section {
+                Picker("默认录音类型", selection: $draft.defaultRecordingType) {
+                    ForEach(availableRecordingTypes) { type in
                         Text(type.label).tag(type)
                     }
                 }
-                if draft.defaultRecordingType == .custom,
-                   draft.customPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Text("请先填写自定义 Prompt，或选择其他默认类型")
-                        .font(.system(size: 12))
-                        .foregroundColor(colors.recordingRed)
-                }
-            }
+                .pickerStyle(.menu)
 
-            Section("自定义录音 Prompt") {
-                TextEditor(text: $draft.customPrompt)
-                    .frame(minHeight: 140)
-                Button("删除自定义 Prompt") {
-                    draft.customPrompt = ""
-                    if draft.defaultRecordingType == .custom {
-                        draft.defaultRecordingType = .audioOnly
+                if draft.defaultRecordingType == .custom {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("自定义 Prompt")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundColor(.secondary)
+                        TextEditor(text: $draft.customPrompt)
+                            .font(.system(size: 13))
+                            .frame(minHeight: 100)
+                            .recordingScrollContentBackgroundHidden()
+                            .background(colors.surface.opacity(0.5))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .strokeBorder(colors.divider, lineWidth: 1)
+                            )
+                        Text("自定义 Prompt 描述处理录音的方式和后续任务")
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
+                    }
+                } else {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(draft.defaultRecordingType == .audioOnly ? "说明" : "Prompt")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundColor(.secondary)
+                        Text(promptPreviewText)
+                            .font(.system(size: 13))
+                            .foregroundColor(draft.defaultRecordingType == .audioOnly ? colors.recordingRed : .primary)
+                            .textSelection(.enabled)
                     }
                 }
-            }
-
-            Section("内置 Prompt") {
-                DisclosureGroup("会议录音") {
-                    Text(RecordingSettings.meetingPrompt)
-                        .font(.system(size: 12))
-                        .foregroundColor(.secondary)
-                        .textSelection(.enabled)
-                }
-                DisclosureGroup("灵感记录") {
-                    Text(RecordingSettings.ideaPrompt)
-                        .font(.system(size: 12))
-                        .foregroundColor(.secondary)
-                        .textSelection(.enabled)
+            } header: {
+                Text("默认录音类型")
+            } footer: {
+                if draft.defaultRecordingType == .audioOnly {
+                    Text("耳机录音后，仅保存录音文件")
+                } else {
+                    Text("耳机录音后，自动发送给主 Agent 执行")
                 }
             }
 
@@ -238,9 +257,6 @@ private struct RecordingSettingsView: View {
         .navigationTitle("录音设置")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .navigationBarLeading) {
-                Button("取消", action: onClose)
-            }
             ToolbarItem(placement: .navigationBarTrailing) {
                 Button("保存") {
                     save()
@@ -259,6 +275,11 @@ private struct RecordingSettingsView: View {
                 draft.primaryAgentProfileId = configuredProfiles.first?.id ?? ""
             }
         }
+        .onChange(of: draft.primaryAgentProfileId) { _ in autoSave() }
+        .onChange(of: draft.defaultRecordingType) { _ in autoSave() }
+        .onChange(of: draft.customPrompt) { _ in autoSave() }
+        .onChange(of: draft.asrProfileId) { _ in autoSave() }
+        .onChange(of: draft.defaultDeliverToAgent) { _ in autoSave() }
     }
 
     private func syncDraft() {
@@ -273,8 +294,12 @@ private struct RecordingSettingsView: View {
         settingsManager.updateRecordingSettings(draft)
         statusMessage = "录音设置已保存"
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
-            onClose()
+            dismiss()
         }
+    }
+
+    private func autoSave() {
+        settingsManager.updateRecordingSettings(draft)
     }
 
     private func loadAsrProfiles() {
@@ -319,5 +344,16 @@ private struct RecordingSettingsView: View {
             value.removeLast()
         }
         return URL(string: "\(value)/api/asr/providers")
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func recordingScrollContentBackgroundHidden() -> some View {
+        if #available(iOS 16.0, *) {
+            scrollContentBackground(.hidden)
+        } else {
+            self
+        }
     }
 }

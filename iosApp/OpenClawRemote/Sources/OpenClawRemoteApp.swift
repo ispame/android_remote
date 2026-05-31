@@ -166,7 +166,7 @@ struct OpenClawRemoteApp: App {
     private func handleWebSocketEvent(_ event: WsMessageEvent) {
         switch event {
         case .registered(_):
-            break
+            restoreLongRecordingJobs()
         case .paired(let profileId, let backendId, let backendLabel):
             settingsManager.updatePairedBackend(backendId, backendLabel, profileId: profileId)
         case .unpaired(let profileId):
@@ -199,10 +199,38 @@ struct OpenClawRemoteApp: App {
              .approvalHistoryResponse:
             break
         case .asrResult(let payload):
-            guard payload.success, let text = payload.text else { break }
-            recordingStore.updateAsrText(clientMessageId: payload.clientMessageId, text: text)
+            if payload.success, let text = payload.text {
+                recordingStore.updateAsrText(clientMessageId: payload.clientMessageId, text: text)
+            } else if let error = payload.error {
+                recordingStore.updateAsrFailure(clientMessageId: payload.clientMessageId, error: error)
+            }
         case .recordingEvent(let payload):
             recordingStore.appendEvent(payload)
+        }
+    }
+
+    private func restoreLongRecordingJobs() {
+        let candidates = recordingStore.items.filter { item in
+            (item.processingStatus == .queued || item.processingStatus == .processing)
+                && item.asrJobId?.isEmpty == false
+        }
+        for recording in candidates {
+            guard let jobId = recording.asrJobId else { continue }
+            wsManager.fetchLongRecordingAsrJob(jobId: jobId) { payload in
+                guard let payload else { return }
+                let recordingId = payload.recordingId ?? recording.id
+                recordingStore.updateAsrJob(
+                    recordingId: recordingId,
+                    jobId: payload.jobId,
+                    uploadProgress: payload.uploadProgress,
+                    asrProgress: payload.asrProgress
+                )
+                if payload.status == "failed",
+                   let error = payload.error,
+                   let clientMessageId = payload.clientMessageId ?? recording.clientMessageId {
+                    recordingStore.updateAsrFailure(clientMessageId: clientMessageId, error: error)
+                }
+            }
         }
     }
 
