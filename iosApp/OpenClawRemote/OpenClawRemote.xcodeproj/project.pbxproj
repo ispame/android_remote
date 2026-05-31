@@ -41,6 +41,9 @@
 		E4796E04C1AAB516C163666E /* ApprovalRequest.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F6270856A7499A676B5214F /* ApprovalRequest.swift */; };
 		FD2861FBF39823A0C987C2D6 /* OpusDecoderBridge.m in Sources */ = {isa = PBXBuildFile; fileRef = 34BEE752760A7FD40F723C88 /* OpusDecoderBridge.m */; };
 		FDB35B81981AE2F58321A1CA /* TasksTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 656C2B05F22E8D7C263308C1 /* TasksTabView.swift */; };
+		AA1B2C3D4E5F6A7B8C9D0E1F /* HeadsetSettingsMenuView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB2C3D4E5F6A7B8C9D0E1F2 /* HeadsetSettingsMenuView.swift */; };
+		CC3D4E5F6A7B8C9D0E1F2A3B /* OTAUpgradeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD4E5F6A7B8C9D0E1F2A3B4C /* OTAUpgradeView.swift */; };
+		EE5F6A7B8C9D0E1F2A3B4C5D /* FindHeadsetView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF6A7B8C9D0E1F2A3B4C5D6E /* FindHeadsetView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -83,6 +86,9 @@
 		EE3AD6551BE12ADBCD28809B /* HeadsetPromptTonePlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeadsetPromptTonePlayer.swift; sourceTree = "<group>"; };
 		F7A4D618EC6F318502FD22F9 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		FBEAEB450F34C85C45512B3F /* HeadsetConversationController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeadsetConversationController.swift; sourceTree = "<group>"; };
+		BB2C3D4E5F6A7B8C9D0E1F2 /* HeadsetSettingsMenuView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeadsetSettingsMenuView.swift; sourceTree = "<group>"; };
+		DD4E5F6A7B8C9D0E1F2A3B4C /* OTAUpgradeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OTAUpgradeView.swift; sourceTree = "<group>"; };
+		FF6A7B8C9D0E1F2A3B4C5D6E /* FindHeadsetView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FindHeadsetView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -123,6 +129,9 @@
 				946F3E489BE259CFEA074CD7 /* RootTabView.swift */,
 				494F3D124DB916CDB7F922CA /* SimpleSettingsTabView.swift */,
 				656C2B05F22E8D7C263308C1 /* TasksTabView.swift */,
+				BB2C3D4E5F6A7B8C9D0E1F2 /* HeadsetSettingsMenuView.swift */,
+				DD4E5F6A7B8C9D0E1F2A3B4C /* OTAUpgradeView.swift */,
+				FF6A7B8C9D0E1F2A3B4C5D6E /* FindHeadsetView.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -339,6 +348,9 @@
 				7C346FFD960C00641EA59882 /* HeadsetConversationController.swift in Sources */,
 				786EA1B3EB480BF0320C0DAF /* HeadsetPromptTonePlayer.swift in Sources */,
 				9CFC6A2FDEFF722BDAC7BFF6 /* HeadsetTabView.swift in Sources */,
+				AA1B2C3D4E5F6A7B8C9D0E1F /* HeadsetSettingsMenuView.swift in Sources */,
+				CC3D4E5F6A7B8C9D0E1F2A3B /* OTAUpgradeView.swift in Sources */,
+				EE5F6A7B8C9D0E1F2A3B4C5D /* FindHeadsetView.swift in Sources */,
 				1B5B33DFF38C672BE1947434 /* InputAreaView.swift in Sources */,
 				97BCF21F9FEFBE50BB814EDC /* MainScreenView.swift in Sources */,
 				895CCA6DF685313BBF44A9A8 /* MessageBubbleView.swift in Sources */,

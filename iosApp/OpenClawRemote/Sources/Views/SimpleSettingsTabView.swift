@@ -3,6 +3,7 @@ import SwiftUI
 struct SimpleSettingsTabView: View {
     @ObservedObject var wsManager: WebSocketManager
     @ObservedObject var settingsManager: SettingsManager
+    @ObservedObject var headsetSettingsStore: HeadsetSettingsStore
     let isDark: Bool
     let colors: MochiColors
     let onToggleTheme: () -> Void
@@ -71,6 +72,19 @@ struct SimpleSettingsTabView: View {
                 } label: {
                     HStack {
                         Label("录音设置", systemImage: "waveform")
+                        Spacer()
+                    }
+                }
+
+                NavigationLink {
+                    HeadsetSettingsMenuView(
+                        headsetSettingsStore: headsetSettingsStore,
+                        colors: colors
+                    )
+                    .navigationTitle("耳机设置")
+                } label: {
+                    HStack {
+                        Label("耳机设置", systemImage: "headphones")
                         Spacer()
                     }
                 }

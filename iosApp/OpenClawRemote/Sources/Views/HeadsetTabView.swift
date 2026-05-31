@@ -51,49 +51,6 @@ struct HeadsetTabView: View {
                 FeatureRow(icon: "globe.asia.australia.fill", title: "同声传译", subtitle: "实时翻译对话内容")
                 FeatureRow(icon: "sparkles", title: "AI聊天", subtitle: "通过耳机直接与 Agent 对话")
             }
-
-            Section("设置") {
-                NavigationLink {
-                    HeadsetAudioSettingsView(
-                        headsetSettingsStore: headsetSettingsStore,
-                        colors: colors
-                    )
-                    .hideTabBarWhileVisible()
-                } label: {
-                    SettingsEntryRow(
-                        icon: "slider.horizontal.3",
-                        title: "EQ 音频",
-                        detail: selectedPreset.name,
-                        colors: colors
-                    )
-                }
-
-                NavigationLink {
-                    HeadsetShortcutSettingsView(headsetSettingsStore: headsetSettingsStore)
-                        .hideTabBarWhileVisible()
-                } label: {
-                    SettingsEntryRow(
-                        icon: "hand.tap.fill",
-                        title: "耳机快捷键",
-                        detail: shortcutSummary,
-                        colors: colors
-                    )
-                }
-
-                SettingsEntryRow(
-                    icon: "arrow.triangle.2.circlepath",
-                    title: "OTA 升级",
-                    detail: firmwareVersionLine,
-                    colors: colors
-                )
-
-                SettingsEntryRow(
-                    icon: "location.magnifyingglass",
-                    title: "查找耳机",
-                    detail: "暂未实现",
-                    colors: colors
-                )
-            }
         }
         .listStyle(.insetGrouped)
         .navigationTitle("耳机")
@@ -108,18 +65,6 @@ struct HeadsetTabView: View {
                 .accessibilityLabel("添加新耳机")
             }
         }
-    }
-
-    private var shortcutSummary: String {
-        let activeCount = settings.shortcuts.filter { $0.action != "无操作" }.count
-        return "\(activeCount) 个已设置"
-    }
-
-    private var firmwareVersionLine: String {
-        if settings.currentFirmwareVersion == settings.latestFirmwareVersion {
-            return "已是最新"
-        }
-        return "\(settings.currentFirmwareVersion) → \(settings.latestFirmwareVersion)"
     }
 
     private func addFakeDevice() {
@@ -159,7 +104,7 @@ private struct SettingsEntryRow: View {
     }
 }
 
-private struct HeadsetAudioSettingsView: View {
+struct HeadsetAudioSettingsView: View {
     @ObservedObject var headsetSettingsStore: HeadsetSettingsStore
     let colors: MochiColors
 
@@ -253,7 +198,7 @@ private struct HeadsetAudioSettingsView: View {
     }
 }
 
-private struct HeadsetShortcutSettingsView: View {
+struct HeadsetShortcutSettingsView: View {
     @ObservedObject var headsetSettingsStore: HeadsetSettingsStore
 
     private var shortcuts: [HeadsetShortcut] {

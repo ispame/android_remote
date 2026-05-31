@@ -76,6 +76,7 @@ struct RootTabView: View {
                 SimpleSettingsTabView(
                     wsManager: wsManager,
                     settingsManager: settingsManager,
+                    headsetSettingsStore: headsetSettingsStore,
                     isDark: isDark,
                     colors: colors,
                     onToggleTheme: onToggleTheme,
