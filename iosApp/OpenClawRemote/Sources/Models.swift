@@ -345,6 +345,9 @@ struct AgentProfile: Identifiable, Codable, Equatable {
     var isPaired: Bool
     var asrMode: String
     var asrProfileId: String
+    var ttsEngine: String
+    var minimaxApiKey: String
+    var minimaxVoiceId: String
     var createdAt: Date
     var updatedAt: Date
     var isPinned: Bool
@@ -361,6 +364,9 @@ struct AgentProfile: Identifiable, Codable, Equatable {
         isPaired: Bool = false,
         asrMode: String = "router",
         asrProfileId: String = "",
+        ttsEngine: String = "system",
+        minimaxApiKey: String = "",
+        minimaxVoiceId: String = "male-qn-qingse",
         createdAt: Date = Date(),
         updatedAt: Date = Date(),
         isPinned: Bool = false,
@@ -376,6 +382,9 @@ struct AgentProfile: Identifiable, Codable, Equatable {
         self.isPaired = isPaired
         self.asrMode = asrMode
         self.asrProfileId = asrProfileId
+        self.ttsEngine = ttsEngine
+        self.minimaxApiKey = minimaxApiKey
+        self.minimaxVoiceId = minimaxVoiceId
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.isPinned = isPinned
@@ -393,6 +402,9 @@ struct AgentProfile: Identifiable, Codable, Equatable {
         case isPaired
         case asrMode
         case asrProfileId
+        case ttsEngine
+        case minimaxApiKey
+        case minimaxVoiceId
         case createdAt
         case updatedAt
         case isPinned
@@ -411,6 +423,9 @@ struct AgentProfile: Identifiable, Codable, Equatable {
         isPaired = try container.decodeIfPresent(Bool.self, forKey: .isPaired) ?? false
         asrMode = try container.decodeIfPresent(String.self, forKey: .asrMode) ?? "router"
         asrProfileId = try container.decodeIfPresent(String.self, forKey: .asrProfileId) ?? ""
+        ttsEngine = try container.decodeIfPresent(String.self, forKey: .ttsEngine) ?? "system"
+        minimaxApiKey = try container.decodeIfPresent(String.self, forKey: .minimaxApiKey) ?? ""
+        minimaxVoiceId = try container.decodeIfPresent(String.self, forKey: .minimaxVoiceId) ?? "male-qn-qingse"
         createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
         updatedAt = try container.decodeIfPresent(Date.self, forKey: .updatedAt) ?? createdAt
         isPinned = try container.decodeIfPresent(Bool.self, forKey: .isPinned) ?? false
@@ -535,6 +550,9 @@ struct GatewayConfig {
     var pairedBackendLabel: String?
     var asrMode: String
     var asrProfileId: String
+    var ttsEngine: String
+    var minimaxApiKey: String
+    var minimaxVoiceId: String
     var lastLoginMode: String
     var lastPhoneNumber: String
 
@@ -551,6 +569,9 @@ struct GatewayConfig {
         pairedBackendLabel: String? = nil,
         asrMode: String = "router",
         asrProfileId: String = "",
+        ttsEngine: String = "system",
+        minimaxApiKey: String = "",
+        minimaxVoiceId: String = "male-qn-qingse",
         lastLoginMode: String = "",
         lastPhoneNumber: String = ""
     ) {
@@ -566,6 +587,9 @@ struct GatewayConfig {
         self.pairedBackendLabel = pairedBackendLabel
         self.asrMode = asrMode
         self.asrProfileId = asrProfileId
+        self.ttsEngine = ttsEngine
+        self.minimaxApiKey = minimaxApiKey
+        self.minimaxVoiceId = minimaxVoiceId
         self.lastLoginMode = lastLoginMode
         self.lastPhoneNumber = lastPhoneNumber
     }

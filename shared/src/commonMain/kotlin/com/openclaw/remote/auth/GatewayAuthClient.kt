@@ -5,6 +5,7 @@ import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.post
+import io.ktor.client.request.put
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
@@ -13,7 +14,9 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.contentType
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
@@ -38,6 +41,19 @@ data class AuthMeResult(
     val activeTerminalLabel: String?,
     val activeTerminalConnectedAt: String?,
     val pairedBackendsCount: Int,
+)
+
+data class AccountAgentProfileResult(
+    val agentProfileId: String,
+    val platform: String,
+    val displayName: String,
+    val gatewayUrl: String,
+    val backendId: String,
+    val backendLabel: String?,
+    val isPaired: Boolean,
+    val asrMode: String,
+    val sortOrder: Int,
+    val pinned: Boolean,
 )
 
 class GatewayAuthClient(
@@ -231,6 +247,70 @@ class GatewayAuthClient(
         )
     }
 
+    suspend fun listAccountAgents(
+        gatewayUrl: String,
+        accessToken: String,
+    ): List<AccountAgentProfileResult> {
+        val response = client.get("${requireAuthBaseUrl(gatewayUrl)}/api/v2/account/agents") {
+            header(HttpHeaders.Authorization, "Bearer ${accessToken.trim()}")
+        }
+        val body = requireJson(response)
+        val agents = body["agents"] as? JsonArray ?: return emptyList()
+        return agents.mapNotNull { element ->
+            val agent = element as? JsonObject ?: return@mapNotNull null
+            AccountAgentProfileResult(
+                agentProfileId = agent.string("agent_profile_id"),
+                platform = agent.string("platform").ifBlank { "openclaw" },
+                displayName = agent.string("display_name").ifBlank { "Agent" },
+                gatewayUrl = agent.string("gateway_url"),
+                backendId = agent.string("backend_id"),
+                backendLabel = agent.stringOrNull("backend_label"),
+                isPaired = agent.boolean("is_paired"),
+                asrMode = agent.string("asr_mode").ifBlank { "router" },
+                sortOrder = agent.int("sort_order"),
+                pinned = agent.boolean("pinned"),
+            )
+        }
+    }
+
+    suspend fun upsertAccountAgent(
+        gatewayUrl: String,
+        accessToken: String,
+        profile: AccountAgentProfileResult,
+    ): AccountAgentProfileResult {
+        val response = client.put("${requireAuthBaseUrl(gatewayUrl)}/api/v2/account/agents") {
+            header(HttpHeaders.Authorization, "Bearer ${accessToken.trim()}")
+            contentType(ContentType.Application.Json)
+            setBody(
+                buildJsonObject {
+                    put("agent_profile_id", profile.agentProfileId)
+                    put("platform", profile.platform)
+                    put("display_name", profile.displayName)
+                    put("gateway_url", profile.gatewayUrl)
+                    put("backend_id", profile.backendId)
+                    profile.backendLabel?.let { put("backend_label", it) }
+                    put("asr_mode", profile.asrMode)
+                    put("sort_order", profile.sortOrder)
+                    put("pinned", profile.pinned)
+                }.toString()
+            )
+        }
+        val body = requireJson(response)
+        val agent = body["agent"] as? JsonObject ?: throw IllegalStateException("Invalid account agent response")
+        return AccountAgentProfileResult(
+            agentProfileId = agent.string("agent_profile_id"),
+            platform = agent.string("platform").ifBlank { "openclaw" },
+            displayName = agent.string("display_name").ifBlank { "Agent" },
+            gatewayUrl = agent.string("gateway_url"),
+            backendId = agent.string("backend_id"),
+            backendLabel = agent.stringOrNull("backend_label"),
+            isPaired = agent.boolean("is_paired"),
+            asrMode = agent.string("asr_mode").ifBlank { "router" },
+            sortOrder = agent.int("sort_order"),
+            pinned = agent.boolean("pinned"),
+        )
+    }
+
     fun close() {
         client.close()
     }
@@ -294,3 +374,6 @@ private fun JsonObject.stringOrNull(name: String): String? =
 
 private fun JsonObject.int(name: String): Int =
     this[name]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 0
+
+private fun JsonObject.boolean(name: String): Boolean =
+    this[name]?.jsonPrimitive?.booleanOrNull ?: false

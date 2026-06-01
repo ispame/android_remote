@@ -161,4 +161,40 @@ class SettingsManagerAndroidProfilesTest {
         manager.updatePairedBackend("bk_hermes", "Hermes", hermes.id)
         assertEquals("bk_hermes", manager.configFlow.first().pairedBackendId)
     }
+
+    @Test
+    fun accountChangeClearsAccountScopedAgentProfiles() = runTest {
+        manager.updateConfig(
+            GatewayConfig(
+                gatewayUrl = "wss://boson-tech.top/ws",
+                accountId = "acct-old",
+                accessToken = "access-old",
+                refreshToken = "refresh-old",
+                deviceLabel = "Pixel",
+            )
+        )
+        manager.upsertScannedProfile("wss://boson-tech.top/ws", "bk_old", "token-old", AgentPlatform.OPENCLAW, "Old Agent")
+        val paired = manager.profilesFlow.first().selectedProfile
+        manager.updatePairedBackend("bk_old", "Old Agent", paired.id)
+
+        manager.updateConfig(
+            manager.configFlow.first().copy(
+                accountId = "acct-new",
+                accessToken = "access-new",
+                refreshToken = "refresh-new",
+                pairedBackendId = null,
+                pairedBackendLabel = null,
+            )
+        )
+
+        val state = manager.profilesFlow.first()
+        val config = manager.configFlow.first()
+
+        assertEquals("acct-new", config.accountId)
+        assertEquals("Pixel", config.deviceLabel)
+        assertEquals(1, state.profiles.size)
+        assertEquals("", state.selectedProfile.backendId)
+        assertFalse(state.selectedProfile.isPaired)
+        assertNull(config.pairedBackendId)
+    }
 }

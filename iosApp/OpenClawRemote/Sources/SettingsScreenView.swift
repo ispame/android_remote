@@ -784,7 +784,10 @@ struct SettingsScreenView: View {
             token: existing?.token ?? form.token.trimmingCharacters(in: .whitespacesAndNewlines),
             isPaired: !backendId.isEmpty && !backendChanged && (existing?.isPaired ?? form.isPaired),
             asrMode: asrMode,
-            asrProfileId: asrMode == "router" ? asrProfileId : ""
+            asrProfileId: asrMode == "router" ? asrProfileId : "",
+            ttsEngine: existing?.ttsEngine ?? "system",
+            minimaxApiKey: existing?.minimaxApiKey ?? "",
+            minimaxVoiceId: existing?.minimaxVoiceId ?? MiniMaxVoiceCatalog.defaultVoiceId
         )
 
         guard settingsManager.saveProfile(profile, select: select) else {
@@ -806,20 +809,26 @@ struct SettingsScreenView: View {
             }
             _ = saveForm(form, select: form.id == settingsManager.selectedProfileId)
         }
+        let current = settingsManager.config
         settingsManager.updateConfig(
             GatewayConfig(
                 gatewayUrl: settingsManager.selectedProfile.gatewayUrl,
-                accountId: settingsManager.config.accountId,
-                accessToken: settingsManager.config.accessToken,
-                refreshToken: settingsManager.config.refreshToken,
-                accessExpiresAt: settingsManager.config.accessExpiresAt,
-                refreshExpiresAt: settingsManager.config.refreshExpiresAt,
+                accountId: current.accountId,
+                accessToken: current.accessToken,
+                refreshToken: current.refreshToken,
+                accessExpiresAt: current.accessExpiresAt,
+                refreshExpiresAt: current.refreshExpiresAt,
                 deviceLabel: deviceLabel.trimmingCharacters(in: .whitespacesAndNewlines),
                 token: settingsManager.selectedProfile.token,
-                pairedBackendId: settingsManager.config.pairedBackendId,
-                pairedBackendLabel: settingsManager.config.pairedBackendLabel,
+                pairedBackendId: current.pairedBackendId,
+                pairedBackendLabel: current.pairedBackendLabel,
                 asrMode: asrMode,
-                asrProfileId: asrMode == "router" ? asrProfileId : ""
+                asrProfileId: asrMode == "router" ? asrProfileId : "",
+                ttsEngine: current.ttsEngine,
+                minimaxApiKey: current.minimaxApiKey,
+                minimaxVoiceId: current.minimaxVoiceId,
+                lastLoginMode: current.lastLoginMode,
+                lastPhoneNumber: current.lastPhoneNumber
             )
         )
         settingsManager.updateDeviceLabel(deviceLabel)
@@ -917,6 +926,7 @@ struct SettingsScreenView: View {
 
     @MainActor
     private func applyAuthSession(_ session: GatewayAuthSessionResponse) {
+        let current = settingsManager.config
         settingsManager.updateConfig(
             GatewayConfig(
                 gatewayUrl: settingsManager.selectedProfile.gatewayUrl,
@@ -930,7 +940,12 @@ struct SettingsScreenView: View {
                 pairedBackendId: settingsManager.config.pairedBackendId,
                 pairedBackendLabel: settingsManager.config.pairedBackendLabel,
                 asrMode: asrMode,
-                asrProfileId: asrMode == "router" ? asrProfileId : ""
+                asrProfileId: asrMode == "router" ? asrProfileId : "",
+                ttsEngine: current.ttsEngine,
+                minimaxApiKey: current.minimaxApiKey,
+                minimaxVoiceId: current.minimaxVoiceId,
+                lastLoginMode: current.lastLoginMode,
+                lastPhoneNumber: current.lastPhoneNumber
             )
         )
         currentPassword = ""
@@ -1017,10 +1032,11 @@ struct SettingsScreenView: View {
 
     @MainActor
     private func logoutSession() async {
+        let current = settingsManager.config
         isAuthLoading = true
         defer { isAuthLoading = false }
         do {
-            let refreshToken = settingsManager.config.refreshToken.trimmingCharacters(in: .whitespacesAndNewlines)
+            let refreshToken = current.refreshToken.trimmingCharacters(in: .whitespacesAndNewlines)
             if !refreshToken.isEmpty {
                 try await GatewayAuthClient.logout(
                     gatewayUrl: authGatewayUrl(),
@@ -1045,7 +1061,12 @@ struct SettingsScreenView: View {
                 pairedBackendId: settingsManager.config.pairedBackendId,
                 pairedBackendLabel: settingsManager.config.pairedBackendLabel,
                 asrMode: asrMode,
-                asrProfileId: asrMode == "router" ? asrProfileId : ""
+                asrProfileId: asrMode == "router" ? asrProfileId : "",
+                ttsEngine: current.ttsEngine,
+                minimaxApiKey: current.minimaxApiKey,
+                minimaxVoiceId: current.minimaxVoiceId,
+                lastLoginMode: current.lastLoginMode,
+                lastPhoneNumber: current.lastPhoneNumber
             )
         )
         statusMessage = "已退出登录"
@@ -1082,6 +1103,40 @@ struct GatewayAuthSessionResponse: Decodable {
         case accessExpiresAt = "access_expires_at"
         case refreshExpiresAt = "refresh_expires_at"
     }
+}
+
+struct GatewayAccountAgentProfile: Codable {
+    let agentProfileId: String
+    let platform: String
+    let displayName: String
+    let gatewayUrl: String
+    let backendId: String
+    let backendLabel: String?
+    let isPaired: Bool
+    let asrMode: String
+    let sortOrder: Int
+    let pinned: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case agentProfileId = "agent_profile_id"
+        case platform
+        case displayName = "display_name"
+        case gatewayUrl = "gateway_url"
+        case backendId = "backend_id"
+        case backendLabel = "backend_label"
+        case isPaired = "is_paired"
+        case asrMode = "asr_mode"
+        case sortOrder = "sort_order"
+        case pinned
+    }
+}
+
+private struct GatewayAccountAgentsResponse: Decodable {
+    let agents: [GatewayAccountAgentProfile]
+}
+
+private struct GatewayAccountAgentUpsertResponse: Decodable {
+    let agent: GatewayAccountAgentProfile
 }
 
 enum GatewayAuthClient {
@@ -1234,10 +1289,50 @@ enum GatewayAuthClient {
         }
     }
 
+    static func listAccountAgents(gatewayUrl: String, accessToken: String) async throws -> [GatewayAccountAgentProfile] {
+        let request = try authorizedGetRequest(
+            url: "/api/v2/account/agents",
+            gatewayUrl: gatewayUrl,
+            accessToken: accessToken
+        )
+        return try await send(request, as: GatewayAccountAgentsResponse.self).agents
+    }
+
+    static func upsertAccountAgent(
+        gatewayUrl: String,
+        accessToken: String,
+        profile: GatewayAccountAgentProfile
+    ) async throws -> GatewayAccountAgentProfile {
+        var body: [String: Any] = [
+            "agent_profile_id": profile.agentProfileId,
+            "platform": profile.platform,
+            "display_name": profile.displayName,
+            "gateway_url": profile.gatewayUrl,
+            "backend_id": profile.backendId,
+            "asr_mode": profile.asrMode,
+            "sort_order": profile.sortOrder,
+            "pinned": profile.pinned
+        ]
+        if let backendLabel = profile.backendLabel {
+            body["backend_label"] = backendLabel
+        }
+        let request = try jsonRequest(
+            url: "/api/v2/account/agents",
+            gatewayUrl: gatewayUrl,
+            body: body,
+            method: "PUT",
+            headers: [
+                "Authorization": "Bearer \(accessToken.trimmingCharacters(in: .whitespacesAndNewlines))"
+            ]
+        )
+        return try await send(request, as: GatewayAccountAgentUpsertResponse.self).agent
+    }
+
     private static func jsonRequest(
         url: String,
         gatewayUrl: String,
-        body: [String: String],
+        body: [String: Any],
+        method: String = "POST",
         headers: [String: String] = [:]
     ) throws -> URLRequest {
         guard let baseURL = authBaseURL(from: gatewayUrl),
@@ -1245,12 +1340,27 @@ enum GatewayAuthClient {
             throw GatewayAuthError(message: "Invalid gateway URL")
         }
         var request = URLRequest(url: requestURL)
-        request.httpMethod = "POST"
+        request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         headers.forEach { key, value in
             request.setValue(value, forHTTPHeaderField: key)
         }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        return request
+    }
+
+    private static func authorizedGetRequest(
+        url: String,
+        gatewayUrl: String,
+        accessToken: String
+    ) throws -> URLRequest {
+        guard let baseURL = authBaseURL(from: gatewayUrl),
+              let requestURL = URL(string: url, relativeTo: baseURL) else {
+            throw GatewayAuthError(message: "Invalid gateway URL")
+        }
+        var request = URLRequest(url: requestURL)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(accessToken.trimmingCharacters(in: .whitespacesAndNewlines))", forHTTPHeaderField: "Authorization")
         return request
     }
 
