@@ -213,12 +213,15 @@ private struct AgentChatScreen: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
-                Button {
-                    showConfig = true
-                } label: {
-                    Image(systemName: "ellipsis.circle")
+                HStack(spacing: 8) {
+                    playbackControls
+                    Button {
+                        showConfig = true
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                    }
+                    .accessibilityLabel("Agent 配置")
                 }
-                .accessibilityLabel("Agent 配置")
             }
         }
         .hideTabBarWhileVisible()
@@ -234,6 +237,20 @@ private struct AgentChatScreen: View {
                 )
             }
         }
+    }
+
+    private var playbackControls: some View {
+        PlaybackControlsView(
+            soundPlaybackEnabled: messageSpeechController.soundPlaybackEnabled,
+            isPlaybackSpeaking: messageSpeechController.isSpeaking,
+            colors: colors,
+            onToggleSoundPlayback: {
+                messageSpeechController.setSoundPlaybackEnabled(!messageSpeechController.soundPlaybackEnabled)
+            },
+            onInterruptPlayback: {
+                messageSpeechController.interruptCurrentPlayback()
+            }
+        )
     }
 
     private func saveProfile(_ profile: AgentProfile) {
@@ -257,6 +274,12 @@ private struct AgentConfigView: View {
     @State private var gatewayUrl: String
     @State private var backendId: String
     @State private var token: String
+    @State private var ttsEngine: String
+    @State private var minimaxApiKey: String
+    @State private var minimaxVoiceId: String
+    @State private var fetchedMiniMaxVoices: [MiniMaxVoiceOption] = []
+    @State private var isRefreshingMiniMaxVoices = false
+    @State private var ttsStatusMessage: String?
     @State private var showsToken = false
 
     init(profile: AgentProfile, colors: MochiColors, onSave: @escaping (AgentProfile) -> Void) {
@@ -267,6 +290,9 @@ private struct AgentConfigView: View {
         _gatewayUrl = State(initialValue: profile.gatewayUrl)
         _backendId = State(initialValue: profile.backendId)
         _token = State(initialValue: profile.token)
+        _ttsEngine = State(initialValue: profile.ttsEngine.isEmpty ? "system" : profile.ttsEngine)
+        _minimaxApiKey = State(initialValue: profile.minimaxApiKey)
+        _minimaxVoiceId = State(initialValue: profile.minimaxVoiceId.isEmpty ? MiniMaxVoiceCatalog.defaultVoiceId : profile.minimaxVoiceId)
     }
 
     var body: some View {
@@ -311,6 +337,39 @@ private struct AgentConfigView: View {
                     }
                 }
             }
+
+            Section("语音合成 (TTS)") {
+                Picker("TTS 引擎", selection: $ttsEngine) {
+                    Text("系统 TTS").tag("system")
+                    Text("MiniMax").tag("minimax")
+                }
+                .pickerStyle(.segmented)
+
+                if ttsEngine == "minimax" {
+                    SecureField("MiniMax API Key", text: $minimaxApiKey)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+
+                    Picker("MiniMax 音色", selection: $minimaxVoiceId) {
+                        ForEach(minimaxVoices) { voice in
+                            Text(voiceLabel(voice)).tag(voice.id)
+                        }
+                    }
+
+                    Button {
+                        Task { await refreshMiniMaxVoices() }
+                    } label: {
+                        Label(isRefreshingMiniMaxVoices ? "正在刷新音色..." : "从 MiniMax 刷新可用音色", systemImage: "arrow.clockwise")
+                    }
+                    .disabled(isRefreshingMiniMaxVoices)
+                }
+
+                if let ttsStatusMessage {
+                    Text(ttsStatusMessage)
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
+                }
+            }
         }
         .navigationTitle("Agent 配置")
         .navigationBarTitleDisplayMode(.inline)
@@ -325,11 +384,41 @@ private struct AgentConfigView: View {
                     updated.gatewayUrl = gatewayUrl.trimmingCharacters(in: .whitespacesAndNewlines)
                     updated.backendId = backendId.trimmingCharacters(in: .whitespacesAndNewlines)
                     updated.token = token.trimmingCharacters(in: .whitespacesAndNewlines)
+                    updated.ttsEngine = ttsEngine == "minimax" ? "minimax" : "system"
+                    updated.minimaxApiKey = minimaxApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+                    updated.minimaxVoiceId = minimaxVoiceId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? MiniMaxVoiceCatalog.defaultVoiceId : minimaxVoiceId
                     updated.updatedAt = Date()
                     onSave(updated)
                     dismiss()
                 }
             }
+        }
+    }
+
+    private var minimaxVoices: [MiniMaxVoiceOption] {
+        MiniMaxVoiceCatalog.buildSelectableVoices(
+            currentVoiceId: minimaxVoiceId,
+            fetchedVoices: fetchedMiniMaxVoices
+        )
+    }
+
+    private func voiceLabel(_ voice: MiniMaxVoiceOption) -> String {
+        voice.name == voice.id ? voice.id : "\(voice.name) · \(voice.id)"
+    }
+
+    @MainActor
+    private func refreshMiniMaxVoices() async {
+        guard !minimaxApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            ttsStatusMessage = "请先填写 MiniMax API Key"
+            return
+        }
+        isRefreshingMiniMaxVoices = true
+        defer { isRefreshingMiniMaxVoices = false }
+        do {
+            fetchedMiniMaxVoices = try await MiniMaxVoiceCatalog.fetchAvailableVoices(apiKey: minimaxApiKey)
+            ttsStatusMessage = "已刷新 \(fetchedMiniMaxVoices.count) 个 MiniMax 音色"
+        } catch {
+            ttsStatusMessage = "刷新音色失败：\(error.localizedDescription)"
         }
     }
 }

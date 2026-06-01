@@ -13,8 +13,11 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.core.content.ContextCompat
+import com.openclaw.remote.auth.AccountAgentProfileResult
 import com.openclaw.remote.auth.GatewayAuthClient
 import com.openclaw.remote.audio.AudioRecorderAndroid
+import com.openclaw.remote.data.AgentPlatform
+import com.openclaw.remote.data.AgentProfile
 import com.openclaw.remote.data.GatewayConfig
 import com.openclaw.remote.data.SettingsManagerAndroid
 import com.openclaw.remote.headset.A9UltraSppManager
@@ -213,6 +216,7 @@ class MainActivity : ComponentActivity() {
                                         deviceLabel = config.deviceLabel.ifBlank { "我的设备" },
                                     )
                                 )
+                                syncAccountAgentsFromServer(authClient, gatewayUrl, session.accessToken)
                                 authGateNotice = null
                                 viewModel.clearAuthNotice()
                                 viewModel.connect()
@@ -405,6 +409,21 @@ class MainActivity : ComponentActivity() {
                         viewModel.addLocalMessage("无法新增 Agent")
                         return@launch
                     }
+                    val latestConfig = settingsManager.configFlow.first()
+                    GatewayAuthClient().also { authClient ->
+                        try {
+                            authClient.upsertAccountAgent(
+                                gatewayUrl = latestConfig.gatewayUrl.ifBlank { profile.gatewayUrl },
+                                accessToken = latestConfig.accessToken,
+                                profile = profile.toAccountAgentProfileResult(),
+                            )
+                        } catch (error: Exception) {
+                            viewModel.addLocalMessage("Agent 配置同步失败，请稍后重试")
+                            return@launch
+                        } finally {
+                            authClient.close()
+                        }
+                    }
                     delay(1000)
                     viewModel.requestPair(profile.id, profile.backendId)
                 }
@@ -471,6 +490,38 @@ class MainActivity : ComponentActivity() {
         )
     }
 
+    private suspend fun syncAccountAgentsFromServer(
+        authClient: GatewayAuthClient,
+        gatewayUrl: String,
+        accessToken: String,
+    ) {
+        val remoteAgents = runCatching {
+            authClient.listAccountAgents(gatewayUrl, accessToken)
+        }.getOrElse { error ->
+            viewModel.addLocalMessage("Agent 配置同步失败，已保留本地配置")
+            return
+        }
+        if (remoteAgents.isNotEmpty()) {
+            val profiles = remoteAgents
+                .filter { it.backendId.isNotBlank() }
+                .map { it.toAgentProfile() }
+            settingsManager.replaceAccountProfiles(profiles)
+            return
+        }
+
+        val localProfiles = settingsManager.profilesFlow.first().profiles
+            .filter { it.backendId.isNotBlank() }
+        for (profile in localProfiles) {
+            runCatching {
+                authClient.upsertAccountAgent(
+                    gatewayUrl = gatewayUrl,
+                    accessToken = accessToken,
+                    profile = profile.toAccountAgentProfileResult(),
+                )
+            }
+        }
+    }
+
     private fun checkPermissions() {
         val missing = requiredRuntimePermissions().filter { permission ->
             ContextCompat.checkSelfPermission(this, permission) != PackageManager.PERMISSION_GRANTED
@@ -490,6 +541,34 @@ class MainActivity : ComponentActivity() {
         return permissions
     }
 }
+
+private fun AccountAgentProfileResult.toAgentProfile(): AgentProfile =
+    AgentProfile(
+        id = agentProfileId,
+        platform = AgentPlatform.fromWireValue(platform),
+        displayName = displayName,
+        gatewayUrl = gatewayUrl,
+        backendId = backendId,
+        backendLabel = backendLabel,
+        token = "",
+        isPaired = isPaired,
+        asrMode = if (asrMode == "backend") "backend" else "router",
+        asrProfileId = if (asrMode == "backend") "" else "",
+    )
+
+private fun AgentProfile.toAccountAgentProfileResult(): AccountAgentProfileResult =
+    AccountAgentProfileResult(
+        agentProfileId = id,
+        platform = platform.wireValue,
+        displayName = resolvedDisplayName,
+        gatewayUrl = gatewayUrl,
+        backendId = backendId,
+        backendLabel = backendLabel ?: resolvedDisplayName,
+        isPaired = isPaired,
+        asrMode = asrMode,
+        sortOrder = 0,
+        pinned = false,
+    )
 
 private data class AuthRefreshOutcome(
     val canUseSession: Boolean,

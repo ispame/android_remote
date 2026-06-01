@@ -3,14 +3,50 @@ import SwiftUI
 import UIKit
 #endif
 
+struct PlaybackControlsView: View {
+    let soundPlaybackEnabled: Bool
+    let isPlaybackSpeaking: Bool
+    let colors: MochiColors
+    let onToggleSoundPlayback: () -> Void
+    let onInterruptPlayback: () -> Void
+
+    var body: some View {
+        HStack(spacing: 4) {
+            if isPlaybackSpeaking {
+                Button(action: onInterruptPlayback) {
+                    Image(systemName: "stop.circle.fill")
+                        .font(.system(size: 20))
+                        .foregroundColor(colors.recordingRed)
+                        .frame(width: 32, height: 32)
+                        .background(Circle().fill(colors.recordingRed.opacity(0.12)))
+                }
+                .accessibilityLabel("打断当前播放")
+            }
+
+            Button(action: onToggleSoundPlayback) {
+                Image(systemName: soundPlaybackEnabled ? "speaker.wave.2.fill" : "speaker.slash.fill")
+                    .font(.system(size: 20))
+                    .foregroundColor(soundPlaybackEnabled ? colors.icon : colors.textSecondary)
+                    .frame(width: 32, height: 32)
+                    .background(Circle().fill(soundPlaybackEnabled ? colors.inputBg : colors.inputBorder.opacity(0.65)))
+            }
+            .accessibilityLabel(soundPlaybackEnabled ? "切换到无声" : "切换到播放")
+        }
+    }
+}
+
 struct TopBarView: View {
     let connectionState: ConnectionState
     let selectedProfile: AgentProfile
     let profiles: [AgentProfile]
     let profileStatuses: [String: AgentAvailabilityStatus]
     let unreadCounts: [String: Int]
+    let soundPlaybackEnabled: Bool
+    let isPlaybackSpeaking: Bool
     let isDark: Bool
     let colors: MochiColors
+    let onToggleSoundPlayback: () -> Void
+    let onInterruptPlayback: () -> Void
     let onToggleTheme: () -> Void
     let onNavigateToSettings: () -> Void
     let onSelectProfile: (String) -> Void
@@ -72,6 +108,14 @@ struct TopBarView: View {
             }
 
             Spacer()
+
+            PlaybackControlsView(
+                soundPlaybackEnabled: soundPlaybackEnabled,
+                isPlaybackSpeaking: isPlaybackSpeaking,
+                colors: colors,
+                onToggleSoundPlayback: onToggleSoundPlayback,
+                onInterruptPlayback: onInterruptPlayback
+            )
 
             // Theme toggle — matches Android's 32dp IconButton with CircleShape background
             Button(action: onToggleTheme) {
@@ -312,8 +356,16 @@ struct MainScreenView: View {
                     profiles: settingsManager.profiles,
                     profileStatuses: Dictionary(uniqueKeysWithValues: settingsManager.profiles.map { ($0.id, wsManager.availabilityStatus(for: $0)) }),
                     unreadCounts: wsManager.unreadCounts,
+                    soundPlaybackEnabled: messageSpeechController.soundPlaybackEnabled,
+                    isPlaybackSpeaking: messageSpeechController.isSpeaking,
                     isDark: isDark,
                     colors: colors,
+                    onToggleSoundPlayback: {
+                        messageSpeechController.setSoundPlaybackEnabled(!messageSpeechController.soundPlaybackEnabled)
+                    },
+                    onInterruptPlayback: {
+                        messageSpeechController.interruptCurrentPlayback()
+                    },
                     onToggleTheme: onToggleTheme,
                     onNavigateToSettings: onNavigateToSettings,
                     onSelectProfile: onSelectProfile
@@ -358,7 +410,7 @@ struct MainScreenView: View {
                                             selectedMessageIds = [message.id]
                                         },
                                         onSpeak: {
-                                            messageSpeechController.speak(message.content)
+                                            messageSpeechController.speakManualText(message.content, config: settingsManager.config)
                                         },
                                         onApprovalCommand: { command in
                                             guard !handledApprovalMessageIds.contains(message.id),

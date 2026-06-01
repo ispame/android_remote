@@ -52,7 +52,19 @@ class SettingsManagerAndroid(private val context: Context) : SettingsManager {
 
     override suspend fun updateConfig(config: GatewayConfig) {
         context.dataStore.edit { prefs ->
-            val state = prefs.toProfilesState()
+            val previousAccountId = prefs[ACCOUNT_ID].orEmpty()
+            val accountChanged = previousAccountId.isNotBlank() && previousAccountId != config.accountId
+            val state = if (accountChanged) {
+                val resetProfile = AgentProfilesState.default().selectedProfile.copy(
+                    gatewayUrl = config.gatewayUrl.ifBlank { AgentProfile.DEFAULT_GATEWAY_URL },
+                    asrMode = config.asrMode.normalizedAsrMode(),
+                    asrProfileId = if (config.asrMode == "backend") "" else config.asrProfileId,
+                    updatedAt = currentTimestampMillis(),
+                )
+                AgentProfilesState(listOf(resetProfile), resetProfile.id)
+            } else {
+                prefs.toProfilesState()
+            }
             val selectedId = config.profileId.ifBlank { state.selectedProfileId }
             val index = state.profiles.indexOfFirst { it.id == selectedId }
                 .takeIf { it >= 0 }
@@ -297,6 +309,30 @@ class SettingsManagerAndroid(private val context: Context) : SettingsManager {
 
     override suspend fun clearConfig() {
         context.dataStore.edit { it.clear() }
+    }
+
+    suspend fun replaceAccountProfiles(profiles: List<AgentProfile>, selectedProfileId: String? = null) {
+        context.dataStore.edit { prefs ->
+            val normalizedProfiles = profiles
+                .take(SettingsManager.MAX_AGENT_PROFILES)
+                .map { profile ->
+                    profile.normalizedForSave(
+                        asrMode = profile.asrMode.normalizedAsrMode(),
+                        asrProfileId = if (profile.asrMode == "backend") "" else profile.asrProfileId,
+                    )
+                }
+                .ifEmpty {
+                    val profile = AgentProfilesState.default().selectedProfile.copy(
+                        asrMode = prefs.globalAsrMode(),
+                        asrProfileId = prefs.globalAsrProfileId(),
+                    )
+                    listOf(profile)
+                }
+            val selectedId = selectedProfileId
+                ?.takeIf { id -> normalizedProfiles.any { it.id == id } }
+                ?: normalizedProfiles.first().id
+            persistProfiles(prefs, normalizedProfiles, selectedId)
+        }
     }
 
     private fun Preferences.toProfilesState(): AgentProfilesState {

@@ -10,7 +10,7 @@ struct OpenClawRemoteApp: App {
     @StateObject private var wsManager: WebSocketManager
     @StateObject private var headsetController: HeadsetConversationController
     @StateObject private var audioRecorder = AudioRecorder()
-    @StateObject private var messageSpeechController = MessageSpeechController()
+    @StateObject private var messageSpeechController: MessageSpeechController
     @StateObject private var scheduledTaskStore = ScheduledTaskStore()
     @StateObject private var agentTaskService: AgentTaskService
     @StateObject private var recordingStore: RecordingStore
@@ -19,6 +19,7 @@ struct OpenClawRemoteApp: App {
     @State private var isDark = false
     @State private var authNotice: String? = nil
     @State private var tokenRefreshTask: Task<Void, Never>? = nil
+    @State private var assistantSpeechTrigger = AssistantSpeechTrigger()
 
     init() {
         let settings = SettingsManager()
@@ -34,10 +35,19 @@ struct OpenClawRemoteApp: App {
         _agentTaskService = StateObject(wrappedValue: taskService)
         let recordings = RecordingStore()
         _recordingStore = StateObject(wrappedValue: recordings)
+        let speechController = MessageSpeechController(
+            initialSoundPlaybackEnabled: settings.soundPlaybackEnabled,
+            persistSoundPlaybackEnabled: { enabled in
+                settings.updateSoundPlaybackEnabled(enabled)
+            }
+        )
+        speechController.syncConfiguration(settings.config)
+        _messageSpeechController = StateObject(wrappedValue: speechController)
         _headsetController = StateObject(wrappedValue: HeadsetConversationController(
             wsManager: manager,
             settingsManager: settings,
-            recordingStore: recordings
+            recordingStore: recordings,
+            soundPlaybackController: speechController
         ))
     }
 
@@ -100,6 +110,10 @@ struct OpenClawRemoteApp: App {
             }
             .onReceive(settingsManager.$configPublished) { config in
                 scheduleTokenRefresh(for: config)
+                messageSpeechController.syncConfiguration(config)
+            }
+            .onReceive(settingsManager.$soundPlaybackEnabled) { enabled in
+                messageSpeechController.syncSoundPlaybackEnabled(enabled)
             }
             .onAppear {
                 let isSystemDark = UITraitCollection.current.userInterfaceStyle == .dark
@@ -155,8 +169,26 @@ struct OpenClawRemoteApp: App {
                 accessToken: settingsManager.config.accessToken
             )
             wsManager.rememberBackendForPairing(backendId)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-                wsManager.requestPair(backendId: backendId)
+            let authGatewayUrl = settingsManager.config.gatewayUrl
+            let accessToken = settingsManager.config.accessToken
+            Task {
+                do {
+                    _ = try await GatewayAuthClient.upsertAccountAgent(
+                        gatewayUrl: authGatewayUrl,
+                        accessToken: accessToken,
+                        profile: profile.toGatewayAccountAgentProfile()
+                    )
+                } catch {
+                    await MainActor.run {
+                        wsManager.addLocalMessage("Agent 配置同步失败，请稍后重试", senderId: "assistant")
+                    }
+                    return
+                }
+                await MainActor.run {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                        wsManager.requestPair(backendId: backendId)
+                    }
+                }
             }
         case .error:
             break
@@ -190,8 +222,14 @@ struct OpenClawRemoteApp: App {
             case .none:
                 break
             }
-        case .newMessage(_, _):
-            break
+        case .newMessage(let profileId, _):
+            let replies = assistantSpeechTrigger.onMessagesChanged(wsManager.messages)
+            if !replies.isEmpty, !headsetController.isAwaitingOrPlayingReply {
+                messageSpeechController.enqueueAssistantReplies(
+                    texts: replies.map(\.content),
+                    config: settingsManager.config(forProfileId: profileId)
+                )
+            }
         case .taskListResponse,
              .taskCreateResponse,
              .taskUpdateResponse,
@@ -256,12 +294,18 @@ struct OpenClawRemoteApp: App {
                 pairedBackendLabel: current.pairedBackendLabel,
                 asrMode: current.asrMode,
                 asrProfileId: current.asrProfileId,
+                ttsEngine: current.ttsEngine,
+                minimaxApiKey: current.minimaxApiKey,
+                minimaxVoiceId: current.minimaxVoiceId,
                 lastLoginMode: loginMode,
                 lastPhoneNumber: phoneNumber
             )
         )
         authNotice = nil
         applySelectedProfile()
+        Task {
+            await syncAccountAgentsAfterLogin(gatewayUrl: gatewayUrl, accessToken: session.accessToken)
+        }
     }
 
     private func clearAuthSession(message: String) {
@@ -284,10 +328,43 @@ struct OpenClawRemoteApp: App {
                 pairedBackendLabel: current.pairedBackendLabel,
                 asrMode: current.asrMode,
                 asrProfileId: current.asrProfileId,
+                ttsEngine: current.ttsEngine,
+                minimaxApiKey: current.minimaxApiKey,
+                minimaxVoiceId: current.minimaxVoiceId,
                 lastLoginMode: current.lastLoginMode,
                 lastPhoneNumber: current.lastPhoneNumber
             )
         )
+    }
+
+    private func syncAccountAgentsAfterLogin(gatewayUrl: String, accessToken: String) async {
+        do {
+            let remoteProfiles = try await GatewayAuthClient.listAccountAgents(
+                gatewayUrl: gatewayUrl,
+                accessToken: accessToken
+            )
+            if !remoteProfiles.isEmpty {
+                await MainActor.run {
+                    settingsManager.replaceAccountProfiles(remoteProfiles)
+                    applySelectedProfile()
+                }
+                return
+            }
+            let localProfiles = await MainActor.run {
+                settingsManager.profiles.filter { !$0.backendId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            }
+            for profile in localProfiles {
+                _ = try? await GatewayAuthClient.upsertAccountAgent(
+                    gatewayUrl: gatewayUrl,
+                    accessToken: accessToken,
+                    profile: profile.toGatewayAccountAgentProfile()
+                )
+            }
+        } catch {
+            await MainActor.run {
+                authNotice = "Agent 配置同步失败，已保留本地配置"
+            }
+        }
     }
 
     private func scheduleTokenRefresh(for config: GatewayConfig) {
@@ -343,7 +420,10 @@ struct OpenClawRemoteApp: App {
                         pairedBackendId: current.pairedBackendId,
                         pairedBackendLabel: current.pairedBackendLabel,
                         asrMode: current.asrMode,
-                        asrProfileId: current.asrProfileId
+                        asrProfileId: current.asrProfileId,
+                        ttsEngine: current.ttsEngine,
+                        minimaxApiKey: current.minimaxApiKey,
+                        minimaxVoiceId: current.minimaxVoiceId
                     )
                 )
                 authNotice = nil
@@ -375,5 +455,22 @@ final class BosonRemoteControlAppDelegate: UIResponder, UIApplicationDelegate {
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
         return true
+    }
+}
+
+private extension AgentProfile {
+    func toGatewayAccountAgentProfile() -> GatewayAccountAgentProfile {
+        GatewayAccountAgentProfile(
+            agentProfileId: id,
+            platform: platform.rawValue,
+            displayName: resolvedDisplayName,
+            gatewayUrl: gatewayUrl,
+            backendId: backendId,
+            backendLabel: backendLabel ?? resolvedDisplayName,
+            isPaired: isPaired,
+            asrMode: asrMode == "backend" ? "backend" : "router",
+            sortOrder: sortIndex,
+            pinned: isPinned
+        )
     }
 }

@@ -44,7 +44,7 @@ final class HeadsetConversationController: NSObject, ObservableObject {
     private let wsManager: WebSocketManager
     private let settingsManager: SettingsManager
     private let recordingStore: RecordingStore?
-    private let synthesizer = AVSpeechSynthesizer()
+    private let soundPlaybackController: SoundPlaybackController
     private let promptTonePlayer = HeadsetPromptTonePlayer()
     private var cancellables = Set<AnyCancellable>()
     private var activeSide: HeadsetSide?
@@ -77,18 +77,32 @@ final class HeadsetConversationController: NSObject, ObservableObject {
         }
     }
 
+    var isAwaitingOrPlayingReply: Bool {
+        if !pendingReplyProfileToSide.isEmpty {
+            return true
+        }
+        if case .processing = sessionState {
+            return true
+        }
+        if case .speaking = sessionState {
+            return true
+        }
+        return false
+    }
+
     init(
         wsManager: WebSocketManager,
         settingsManager: SettingsManager,
         recordingStore: RecordingStore? = nil,
+        soundPlaybackController: SoundPlaybackController,
         bleManager: A9UltraBLEManager = A9UltraBLEManager()
     ) {
         self.wsManager = wsManager
         self.settingsManager = settingsManager
         self.recordingStore = recordingStore
+        self.soundPlaybackController = soundPlaybackController
         self.bleManager = bleManager
         super.init()
-        synthesizer.delegate = self
         bind()
     }
 
@@ -102,7 +116,7 @@ final class HeadsetConversationController: NSObject, ObservableObject {
         sessionDeadlineWorkItem?.cancel()
         removeAudioSessionObservers()
         bleManager.stop()
-        synthesizer.stopSpeaking(at: .immediate)
+        soundPlaybackController.interruptCurrentPlayback()
         headsetReadyForMedia = false
         inputDiagnostics.reset()
         headsetKeyConfigurationLabel = nil
@@ -161,6 +175,16 @@ final class HeadsetConversationController: NSObject, ObservableObject {
                 self?.handleWebSocketEvent(event)
             }
             .store(in: &cancellables)
+
+        soundPlaybackController.$isSpeaking
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] isSpeaking in
+                guard let self, !isSpeaking else { return }
+                if case .speaking = self.sessionState {
+                    self.sessionState = .idle
+                }
+            }
+            .store(in: &cancellables)
     }
 
     private func handleBLEEvent(_ event: HeadsetBLEEvent) {
@@ -177,6 +201,7 @@ final class HeadsetConversationController: NSObject, ObservableObject {
             recordBLESignal(.wake, payload: payload)
             let event = HeadsetWakeSleepEvent.wake(side: side)
             if HeadsetPrivateSessionPolicy.shouldStartSession(on: event, activeSide: activeSide) {
+                soundPlaybackController.onHeadsetWake()
                 let effectiveSide = HeadsetPrivateSessionPolicy.side(for: event)
                 if isDebugRecordingProbeActive {
                     isDebugRecordingProbeActive = false
@@ -223,7 +248,7 @@ final class HeadsetConversationController: NSObject, ObservableObject {
               let side = pendingReplyProfileToSide.removeValue(forKey: profileId) else {
             return
         }
-        speakReply(message.content, side: side)
+        speakReply(message.content, side: side, config: settingsManager.config(forProfileId: profileId))
     }
 
     private func handleAudioChunk(side: HeadsetSide, opusData: Data, frameCount: Int, frameSize: Int) {
@@ -245,7 +270,7 @@ final class HeadsetConversationController: NSObject, ObservableObject {
     }
 
     private func startSession(side: HeadsetSide) {
-        synthesizer.stopSpeaking(at: .immediate)
+        soundPlaybackController.interruptCurrentPlayback()
         finishWorkItem?.cancel()
         sessionDeadlineWorkItem?.cancel()
         activeSide = side
@@ -299,12 +324,6 @@ final class HeadsetConversationController: NSObject, ObservableObject {
             return
         }
 
-        guard let profile = profile(for: side) else {
-            sessionState = .idle
-            speak("\(side.displayName)未配置 Agent", side: side, forceShort: true)
-            return
-        }
-
         sessionState = .processing(side)
         let wav = WAVEncoder.encodePCM16Mono16k(pcm)
         let recordingSettings = settingsManager.recordingSettings
@@ -337,13 +356,13 @@ final class HeadsetConversationController: NSObject, ObservableObject {
             source: .headset
         ) else {
             sessionState = .idle
-            speak("\(side.displayName)录音保存失败", side: side, forceShort: true)
+            speak("\(side.displayName)录音保存失败", side: side, forceShort: true, config: settingsManager.config(forProfileId: profile.id))
             return
         }
 
         if recordingType == .audioOnly {
             sessionState = .idle
-            speak("\(side.displayName)录音已保存", side: side, forceShort: true)
+            speak("\(side.displayName)录音已保存", side: side, forceShort: true, config: settingsManager.config(forProfileId: profile.id))
             return
         }
 
@@ -352,14 +371,14 @@ final class HeadsetConversationController: NSObject, ObservableObject {
         } else {
             pendingHeadsetRecording = recording
             sessionState = .idle
-            speak("录音已保存，请在手机上选择处理方式", side: side, forceShort: true)
+            speak("录音已保存，请在手机上选择处理方式", side: side, forceShort: true, config: settingsManager.config(forProfileId: profile.id))
         }
     }
 
     private func submitRecordingToAgent(recording: RecordingItem, profile: AgentProfile, recordingType: RecordingType, selectedPrompt: String, recordingSettings: RecordingSettings, side: HeadsetSide) {
         guard recordingType.sendsToAgent, !selectedPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             sessionState = .idle
-            speak("录音已保存", side: side, forceShort: true)
+            speak("录音已保存", side: side, forceShort: true, config: settingsManager.config(forProfileId: profile.id))
             return
         }
         var currentJobId = ""
@@ -392,7 +411,7 @@ final class HeadsetConversationController: NSObject, ObservableObject {
             pendingReplyProfileToSide[profile.id] = side
         } else {
             sessionState = .idle
-            speak("\(side.displayName)Agent 未连接", side: side, forceShort: true)
+            speak("\(side.displayName)Agent 未连接", side: side, forceShort: true, config: settingsManager.config(forProfileId: profile.id))
         }
     }
 
@@ -422,7 +441,7 @@ final class HeadsetConversationController: NSObject, ObservableObject {
         return profile
     }
 
-    private func speakReply(_ content: String, side: HeadsetSide) {
+    private func speakReply(_ content: String, side: HeadsetSide, config: GatewayConfig) {
         let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             sessionState = .idle
@@ -432,17 +451,15 @@ final class HeadsetConversationController: NSObject, ObservableObject {
         let spoken = shouldSummarize(trimmed)
             ? "收到一条较长回复，请在 App 上查看。"
             : trimmed
-        speak(spoken, side: side, forceShort: true)
+        speak(spoken, side: side, forceShort: true, config: config)
     }
 
-    private func speak(_ text: String, side: HeadsetSide, forceShort _: Bool = false) {
+    private func speak(_ text: String, side: HeadsetSide, forceShort _: Bool = false, config: GatewayConfig? = nil) {
         prepareHeadsetAudioSession()
-        let utterance = AVSpeechUtterance(string: text)
-        utterance.voice = AVSpeechSynthesisVoice(language: "zh-CN")
-        utterance.rate = 0.48
-        utterance.pitchMultiplier = 1.0
         sessionState = .speaking(side)
-        synthesizer.speak(utterance)
+        if !soundPlaybackController.speakManualText(text, config: config ?? settingsManager.config) {
+            sessionState = .idle
+        }
     }
 
     private func configureSpeechSession() {
@@ -560,15 +577,5 @@ private extension HeadsetSide {
         case .left: return .left
         case .right: return .right
         }
-    }
-}
-
-extension HeadsetConversationController: AVSpeechSynthesizerDelegate {
-    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
-        sessionState = .idle
-    }
-
-    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
-        sessionState = .idle
     }
 }

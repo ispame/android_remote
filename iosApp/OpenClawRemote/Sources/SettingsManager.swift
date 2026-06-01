@@ -13,10 +13,13 @@ final class SettingsManager: ObservableObject {
     private let recordingAsrProfileIdKey = "recording_asr_profile_id"
     private let recordingDefaultTypeKey = "recording_default_type"
     private let recordingCustomPromptKey = "recording_custom_prompt"
+    private let soundPlaybackEnabledKey = "sound_playback_enabled_v1"
+    private let agentTtsMigratedKey = "agent_tts_migrated_v1"
 
     @Published private(set) var profiles: [AgentProfile]
     @Published private(set) var selectedProfileId: String
     @Published private(set) var recordingSettings = RecordingSettings()
+    @Published private(set) var soundPlaybackEnabled: Bool
     @Published var configPublished: GatewayConfig
 
     private let _config = CurrentValueSubject<GatewayConfig, Never>(GatewayConfig())
@@ -26,6 +29,12 @@ final class SettingsManager: ObservableObject {
 
     var configFlow: AnyPublisher<GatewayConfig, Never> {
         _config.eraseToAnyPublisher()
+    }
+
+    func config(forProfileId profileId: String) -> GatewayConfig {
+        let profile = profiles.first { $0.id == profileId } ?? selectedProfile
+        let deviceLabel = defaults.string(forKey: "device_label") ?? "我的设备"
+        return Self.makeConfig(from: profile, deviceLabel: deviceLabel, defaults: defaults)
     }
 
     var selectedProfile: AgentProfile {
@@ -61,7 +70,8 @@ final class SettingsManager: ObservableObject {
         self.defaults = defaults
         let legacyConfig = Self.loadLegacyConfig(from: defaults)
         let loadedProfiles = Self.loadProfiles(from: defaults, key: profilesKey)
-        let initialProfiles: [AgentProfile]
+        let shouldMigrateAgentTts = !defaults.bool(forKey: agentTtsMigratedKey)
+        var initialProfiles: [AgentProfile]
         if loadedProfiles.isEmpty {
             initialProfiles = [Self.makeLegacyProfile(from: legacyConfig)]
         } else {
@@ -71,6 +81,14 @@ final class SettingsManager: ObservableObject {
                 copy.asrProfileId = legacyConfig.asrProfileId
                 return copy
             }.sortedForAgentList()
+        }
+        if shouldMigrateAgentTts {
+            initialProfiles = initialProfiles.map { profile in
+                var copy = profile
+                Self.applyLegacyTts(from: legacyConfig, to: &copy)
+                return copy
+            }
+            defaults.set(true, forKey: agentTtsMigratedKey)
         }
         let initialSelectedProfileId = defaults.string(forKey: selectedProfileIdKey)
             .flatMap { id in initialProfiles.contains(where: { $0.id == id }) ? id : nil }
@@ -85,6 +103,7 @@ final class SettingsManager: ObservableObject {
         profiles = sortedInitialProfiles
         selectedProfileId = initialSelectedProfileId
         recordingSettings = Self.loadRecordingSettings(from: defaults, profiles: sortedInitialProfiles)
+        soundPlaybackEnabled = defaults.object(forKey: soundPlaybackEnabledKey) as? Bool ?? true
         recordingSettingsReady = true
         configPublished = activeConfig
         _config.send(activeConfig)
@@ -92,6 +111,8 @@ final class SettingsManager: ObservableObject {
     }
 
     func updateConfig(_ config: GatewayConfig) {
+        let previousAccountId = defaults.string(forKey: "account_id") ?? ""
+        let accountChanged = !previousAccountId.isEmpty && previousAccountId != config.accountId
         defaults.set(config.accountId, forKey: "account_id")
         defaults.set(config.accessToken, forKey: "access_token")
         defaults.set(config.refreshToken, forKey: "refresh_token")
@@ -100,6 +121,26 @@ final class SettingsManager: ObservableObject {
         defaults.set(config.deviceLabel, forKey: "device_label")
         defaults.set(config.lastLoginMode, forKey: "last_login_mode")
         defaults.set(config.lastPhoneNumber, forKey: "last_phone_number")
+        if accountChanged {
+            let profile = AgentProfile(
+                platform: .openclaw,
+                displayName: AgentPlatform.openclaw.defaultDisplayName,
+                gatewayUrl: config.gatewayUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "wss://boson-tech.top/ws" : config.gatewayUrl,
+                backendId: "",
+                backendLabel: nil,
+                token: "",
+                isPaired: false,
+                asrMode: config.asrMode == "backend" ? "backend" : "router",
+                asrProfileId: config.asrMode == "backend" ? "" : config.asrProfileId
+            )
+            profiles = [profile]
+            selectedProfileId = profile.id
+            defaults.set(profile.id, forKey: selectedProfileIdKey)
+            persistProfiles()
+            updateGlobalAsr(mode: config.asrMode, profileId: config.asrProfileId)
+            mirrorLegacyKeys(from: selectedProfile)
+            return
+        }
         var profile = selectedProfile
         profile.gatewayUrl = config.gatewayUrl
         profile.backendId = config.pairedBackendId ?? profile.backendId
@@ -108,10 +149,58 @@ final class SettingsManager: ObservableObject {
         profile.isPaired = config.pairedBackendId != nil
         profile.asrMode = config.asrMode == "backend" ? "backend" : "router"
         profile.asrProfileId = config.asrProfileId
+        profile.ttsEngine = Self.normalizedTtsEngine(config.ttsEngine)
+        profile.minimaxApiKey = config.minimaxApiKey
+        profile.minimaxVoiceId = config.minimaxVoiceId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "male-qn-qingse" : config.minimaxVoiceId
         profile.updatedAt = Date()
         replaceProfile(profile, select: true)
         updateGlobalAsr(mode: config.asrMode, profileId: config.asrProfileId)
         mirrorLegacyKeys(from: profile)
+    }
+
+    func replaceAccountProfiles(_ serverProfiles: [GatewayAccountAgentProfile]) {
+        let existingById = profiles.reduce(into: [String: AgentProfile]()) { result, profile in
+            result[profile.id] = profile
+        }
+        let existingByBackendKey = profiles.reduce(into: [String: AgentProfile]()) { result, profile in
+            result[profile.uniqueBackendKey] = profile
+        }
+        let mapped = serverProfiles
+            .filter { !$0.backendId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            .map { profile in
+                var mappedProfile = AgentProfile(
+                    id: profile.agentProfileId,
+                    platform: AgentPlatform(rawValue: profile.platform) ?? .openclaw,
+                    displayName: profile.displayName,
+                    gatewayUrl: profile.gatewayUrl,
+                    backendId: profile.backendId,
+                    backendLabel: profile.backendLabel,
+                    token: "",
+                    isPaired: profile.isPaired,
+                    asrMode: profile.asrMode == "backend" ? "backend" : "router",
+                    asrProfileId: "",
+                    isPinned: profile.pinned,
+                    sortIndex: profile.sortOrder
+                )
+                let backendKey = mappedProfile.uniqueBackendKey
+                if let existing = existingById[mappedProfile.id] ?? existingByBackendKey[backendKey] {
+                    mappedProfile.ttsEngine = existing.ttsEngine
+                    mappedProfile.minimaxApiKey = existing.minimaxApiKey
+                    mappedProfile.minimaxVoiceId = existing.minimaxVoiceId
+                }
+                return mappedProfile
+            }
+        guard !mapped.isEmpty else { return }
+        profiles = mapped.sortedForAgentList()
+        selectedProfileId = profiles[0].id
+        defaults.set(selectedProfileId, forKey: selectedProfileIdKey)
+        persistProfiles()
+        publishActiveConfig()
+    }
+
+    func updateSoundPlaybackEnabled(_ enabled: Bool) {
+        defaults.set(enabled, forKey: soundPlaybackEnabledKey)
+        soundPlaybackEnabled = enabled
     }
 
     func updateDeviceLabel(_ label: String) {
@@ -227,6 +316,9 @@ final class SettingsManager: ObservableObject {
         cleared.isPaired = false
         cleared.asrMode = globalAsrMode
         cleared.asrProfileId = globalAsrProfileId
+        cleared.ttsEngine = "system"
+        cleared.minimaxApiKey = ""
+        cleared.minimaxVoiceId = "male-qn-qingse"
         cleared.isPinned = false
         cleared.updatedAt = Date()
         profiles[index] = cleared
@@ -490,9 +582,22 @@ final class SettingsManager: ObservableObject {
             pairedBackendLabel: defaults.string(forKey: "paired_backend_label"),
             asrMode: defaults.string(forKey: "asr_mode") ?? "router",
             asrProfileId: defaults.string(forKey: "asr_profile_id") ?? "",
+            ttsEngine: defaults.string(forKey: "tts_engine") ?? "system",
+            minimaxApiKey: defaults.string(forKey: "minimax_api_key") ?? "",
+            minimaxVoiceId: defaults.string(forKey: "minimax_voice_id") ?? "male-qn-qingse",
             lastLoginMode: defaults.string(forKey: "last_login_mode") ?? "",
             lastPhoneNumber: defaults.string(forKey: "last_phone_number") ?? ""
         )
+    }
+
+    private static func applyLegacyTts(from config: GatewayConfig, to profile: inout AgentProfile) {
+        profile.ttsEngine = normalizedTtsEngine(config.ttsEngine)
+        profile.minimaxApiKey = config.minimaxApiKey
+        profile.minimaxVoiceId = config.minimaxVoiceId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "male-qn-qingse" : config.minimaxVoiceId
+    }
+
+    private static func normalizedTtsEngine(_ value: String) -> String {
+        value == "minimax" ? "minimax" : "system"
     }
 
     private static func makeLegacyProfile(from config: GatewayConfig) -> AgentProfile {
@@ -506,7 +611,10 @@ final class SettingsManager: ObservableObject {
             token: config.token,
             isPaired: config.pairedBackendId != nil,
             asrMode: config.asrMode,
-            asrProfileId: config.asrProfileId
+            asrProfileId: config.asrProfileId,
+            ttsEngine: normalizedTtsEngine(config.ttsEngine),
+            minimaxApiKey: config.minimaxApiKey,
+            minimaxVoiceId: config.minimaxVoiceId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "male-qn-qingse" : config.minimaxVoiceId
         )
     }
 
@@ -555,6 +663,9 @@ final class SettingsManager: ObservableObject {
             pairedBackendLabel: profile.backendLabel ?? profile.resolvedDisplayName,
             asrMode: profile.asrMode,
             asrProfileId: profile.asrProfileId,
+            ttsEngine: normalizedTtsEngine(profile.ttsEngine),
+            minimaxApiKey: profile.minimaxApiKey,
+            minimaxVoiceId: profile.minimaxVoiceId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "male-qn-qingse" : profile.minimaxVoiceId,
             lastLoginMode: defaults.string(forKey: "last_login_mode") ?? "",
             lastPhoneNumber: defaults.string(forKey: "last_phone_number") ?? ""
         )
