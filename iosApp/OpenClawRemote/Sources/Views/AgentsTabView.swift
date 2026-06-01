@@ -79,9 +79,10 @@ struct AgentsTabView: View {
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
                 Button(action: onRequestScan) {
-                    Image(systemName: "qrcode.viewfinder")
+                    Text("扫码添加")
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundColor(colors.textSecondary)
                 }
-                .accessibilityLabel("扫码新增 Agent")
             }
         }
         .overlay {

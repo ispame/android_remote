@@ -41,9 +41,10 @@ struct TasksTabView: View {
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
                 Button(action: addRecording) {
-                    Image(systemName: isPhoneRecording ? "stop.circle.fill" : "plus")
+                    Text(isPhoneRecording ? "结束录音" : "开始录音")
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundColor(isPhoneRecording ? colors.primary : colors.textSecondary)
                 }
-                .accessibilityLabel(isPhoneRecording ? "停止录音" : "新增录音")
             }
         }
         .sheet(item: $typeSelectionContext) { context in
@@ -361,6 +362,10 @@ private struct RecordingDetailView: View {
     @State private var reminderError: String?
     @State private var typeSelectionContext: RecordingTypeSelectionContext?
     @State private var sharePayload: RecordingSharePayload?
+    @State private var isPromptExpanded = false
+    @State private var isAsrExpanded = false
+    @State private var isProgressExpanded = false
+    @State private var isMetadataExpanded = false
     @StateObject private var audioPlayer = RecordingAudioPlayer()
 
     init(
@@ -382,33 +387,8 @@ private struct RecordingDetailView: View {
         store.items.first(where: { $0.id == recording.id }) ?? recording
     }
 
-    private var timelineEvents: [RecordingEventItem] {
-        currentRecording.events.sorted { $0.createdAt < $1.createdAt }
-    }
-
-    private var generalTimelineEvents: [RecordingEventItem] {
-        timelineEvents.filter { event in
-            switch event.kind {
-            case .subtask, .scheduledTask, .reminder, .artifact:
-                return false
-            case .created, .asr, .delivered, .agentReply, .status, .error, .other:
-                return true
-            }
-        }
-    }
-
-    private var agentSubtaskEvents: [RecordingEventItem] {
-        timelineEvents.filter { $0.kind == .subtask && $0.recordingOwner != "user" && !$0.recordingNeedsUserInput }
-    }
-
-    private var humanSubtaskEvents: [RecordingEventItem] {
-        timelineEvents.filter { event in
-            event.kind == .subtask && (event.recordingOwner == "user" || event.recordingNeedsUserInput)
-        }
-    }
-
-    private var scheduledEvents: [RecordingEventItem] {
-        timelineEvents.filter { $0.kind == .scheduledTask }
+    private var presentation: RecordingDetailPresentation {
+        RecordingDetailPresentation(recording: currentRecording)
     }
 
     private var reminders: [RecordingReminderItem] {
@@ -417,153 +397,12 @@ private struct RecordingDetailView: View {
 
     var body: some View {
         Form {
-            Section("录音") {
-                RecordingMetadataRow(title: "时间", value: currentRecording.createdAt.earphoneListTimeText)
-                RecordingMetadataRow(title: "来源", value: currentRecording.source.label)
-                RecordingMetadataRow(title: "类型", value: currentRecording.recordingType.label)
-                RecordingMetadataRow(title: "状态", value: currentRecording.processingStatus.label)
-                if let jobId = currentRecording.asrJobId, !jobId.isEmpty {
-                    RecordingMetadataRow(title: "ASR Job", value: jobId, valueFont: .system(size: 12, design: .monospaced))
-                    ProgressView("上传 \(Int(currentRecording.uploadProgress * 100))%", value: currentRecording.uploadProgress)
-                    ProgressView("转写 \(Int(currentRecording.asrProgress * 100))%", value: currentRecording.asrProgress)
-                }
-                if let error = currentRecording.asrError, !error.isEmpty {
-                    RecordingMetadataRow(title: "错误", value: error)
-                }
-                RecordingMetadataRow(
-                    title: "文件",
-                    value: currentRecording.fileURL.lastPathComponent,
-                    valueFont: .system(size: 12, design: .monospaced)
-                )
-                HStack {
-                    Button {
-                        audioPlayer.toggle(url: currentRecording.fileURL)
-                    } label: {
-                        Label(audioPlayer.isPlaying ? "暂停" : "播放", systemImage: audioPlayer.isPlaying ? "pause.circle" : "play.circle")
-                    }
-                    Spacer()
-                    Button {
-                        sharePayload = RecordingSharePayload(items: [currentRecording.fileURL])
-                    } label: {
-                        Label("分享音频", systemImage: "square.and.arrow.up")
-                    }
-                }
-                Button {
-                    typeSelectionContext = RecordingTypeSelectionContext(recording: currentRecording)
-                } label: {
-                    Label(currentRecording.recordingType == .audioOnly ? "选择录音类型" : "重新处理录音", systemImage: "arrow.triangle.2.circlepath")
-                }
-            }
-            Section("录音 Prompt") {
-                Text(currentRecording.selectedPrompt.isEmpty ? "仅录音无 Prompt" : currentRecording.selectedPrompt)
-                    .font(.system(size: 13))
-                    .textSelection(.enabled)
-            }
-            Section("ASR 文本") {
-                TextEditor(text: $asrText)
-                    .frame(minHeight: 220)
-            }
-            Section("执行进度") {
-                if generalTimelineEvents.isEmpty {
-                    Text("Agent 执行进度会在这里展示")
-                        .foregroundColor(.secondary)
-                } else {
-                    ForEach(generalTimelineEvents) { event in
-                        RecordingEventRow(event: event, colors: colors)
-                    }
-                }
-            }
-            Section("Agent 可承接的待办") {
-                if agentSubtaskEvents.isEmpty {
-                    Text("Agent 可执行的录音子任务会在这里拆分展示")
-                        .foregroundColor(.secondary)
-                } else {
-                    ForEach(agentSubtaskEvents) { event in
-                        RecordingEventRow(event: event, colors: colors)
-                    }
-                }
-            }
-            Section {
-                if let reminderError {
-                    Text(reminderError)
-                        .font(.system(size: 13))
-                        .foregroundColor(colors.recordingRed)
-                }
-                if humanSubtaskEvents.isEmpty && reminders.isEmpty {
-                    Text("需要用户或其他人完成的待办会在这里展示")
-                        .foregroundColor(.secondary)
-                } else {
-                    ForEach(humanSubtaskEvents) { event in
-                        RecordingEventRow(event: event, colors: colors)
-                    }
-                    ForEach(reminders) { reminder in
-                        RecordingReminderRow(reminder: reminder, colors: colors) {
-                            store.setReminderCompleted(
-                                recordingId: currentRecording.id,
-                                reminderId: reminder.id,
-                                isCompleted: !reminder.isCompleted
-                            )
-                        }
-                    }
-                }
-            } header: {
-                HStack {
-                    Text("需要人完成的待办")
-                    Spacer()
-                    Button {
-                        isAddingReminder = true
-                    } label: {
-                        Image(systemName: "plus.circle")
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("新增提醒")
-                }
-            }
-            Section("导出的定时任务") {
-                if scheduledEvents.isEmpty {
-                    Text("录音中创建或识别到的定时任务会在这里归档")
-                        .foregroundColor(.secondary)
-                } else {
-                    ForEach(scheduledEvents) { event in
-                        RecordingEventRow(event: event, colors: colors)
-                    }
-                }
-            }
-            Section("导出文件") {
-                if currentRecording.artifacts.isEmpty {
-                    Text("Agent 生成的 Markdown 文件会在这里展示")
-                        .foregroundColor(.secondary)
-                } else {
-                    ForEach(currentRecording.artifacts) { artifact in
-                        HStack(alignment: .top, spacing: 12) {
-                            Image(systemName: "doc.richtext")
-                                .font(.system(size: 16, weight: .semibold))
-                                .foregroundColor(colors.primary)
-                                .frame(width: 24)
-                            VStack(alignment: .leading, spacing: 5) {
-                                Text(artifact.filename)
-                                    .font(.system(size: 14, weight: .semibold))
-                                if let backendPath = artifact.backendPath, !backendPath.isEmpty {
-                                    Text(backendPath)
-                                        .font(.system(size: 11, design: .monospaced))
-                                        .foregroundColor(.secondary)
-                                }
-                                Text(artifact.createdAt.earphoneListTimeText)
-                                    .font(.system(size: 11))
-                                    .foregroundColor(.secondary)
-                            }
-                            Spacer()
-                            Button {
-                                sharePayload = RecordingSharePayload(items: [artifact.fileURL])
-                            } label: {
-                                Image(systemName: "square.and.arrow.up")
-                            }
-                            .accessibilityLabel("分享文件")
-                        }
-                        .padding(.vertical, 3)
-                    }
-                }
-            }
+            recordingSummarySection
+            agentReplySection
+            agentTasksSection
+            humanTodosSection
+            scheduledTasksSection
+            collapsedDetailSection
         }
         .navigationTitle("录音详情")
         .navigationBarTitleDisplayMode(.inline)
@@ -608,6 +447,174 @@ private struct RecordingDetailView: View {
                     copy.asrText = asrText
                     store.update(copy)
                 }
+            }
+        }
+    }
+
+    private var recordingSummarySection: some View {
+        Section("录音") {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text(currentRecording.createdAt.earphoneListTimeText)
+                        .font(.system(size: 15, weight: .semibold))
+                    Spacer()
+                    Text(currentRecording.processingStatus.label)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(colors.primary)
+                }
+                HStack(spacing: 12) {
+                    Label(currentRecording.recordingType.label, systemImage: currentRecording.recordingType.systemImage)
+                    Label(currentRecording.source.label, systemImage: "mic")
+                }
+                .font(.system(size: 12))
+                .foregroundColor(.secondary)
+            }
+            HStack {
+                Button {
+                    audioPlayer.toggle(url: currentRecording.fileURL)
+                } label: {
+                    Label(audioPlayer.isPlaying ? "暂停" : "播放", systemImage: audioPlayer.isPlaying ? "pause.circle" : "play.circle")
+                }
+                Spacer()
+                Button {
+                    sharePayload = RecordingSharePayload(items: [currentRecording.fileURL])
+                } label: {
+                    Label("分享音频", systemImage: "square.and.arrow.up")
+                }
+            }
+            Button {
+                typeSelectionContext = RecordingTypeSelectionContext(recording: currentRecording)
+            } label: {
+                Label(currentRecording.recordingType == .audioOnly ? "选择录音类型" : "重新处理录音", systemImage: "arrow.triangle.2.circlepath")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var agentReplySection: some View {
+        if let reply = presentation.latestAgentReply {
+            Section("Agent 回复") {
+                RecordingEventRow(event: reply, colors: colors)
+            }
+        }
+    }
+
+    private var agentTasksSection: some View {
+        Section("Agent 可承接的待办") {
+            if presentation.agentTaskGroups.isEmpty {
+                Text("Agent 可执行的录音子任务会在这里拆分展示")
+                    .foregroundColor(.secondary)
+            } else {
+                ForEach(presentation.agentTaskGroups) { group in
+                    RecordingAgentTaskGroupRow(group: group, colors: colors) { artifact in
+                        sharePayload = RecordingSharePayload(items: [artifact.fileURL])
+                    }
+                }
+            }
+            if !presentation.unassignedArtifacts.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("未关联文件")
+                        .font(.system(size: 13, weight: .semibold))
+                    ForEach(presentation.unassignedArtifacts) { artifact in
+                        RecordingArtifactRow(artifact: artifact, colors: colors) {
+                            sharePayload = RecordingSharePayload(items: [artifact.fileURL])
+                        }
+                    }
+                }
+                .padding(.vertical, 3)
+            }
+        }
+    }
+
+    private var humanTodosSection: some View {
+        Section {
+            if let reminderError {
+                Text(reminderError)
+                    .font(.system(size: 13))
+                    .foregroundColor(colors.recordingRed)
+            }
+            if presentation.humanTodos.isEmpty && reminders.isEmpty {
+                Text("需要用户或其他人完成的待办会在这里展示")
+                    .foregroundColor(.secondary)
+            } else {
+                ForEach(presentation.humanTodos) { event in
+                    RecordingEventRow(event: event, colors: colors)
+                }
+                ForEach(reminders) { reminder in
+                    RecordingReminderRow(reminder: reminder, colors: colors) {
+                        store.setReminderCompleted(
+                            recordingId: currentRecording.id,
+                            reminderId: reminder.id,
+                            isCompleted: !reminder.isCompleted
+                        )
+                    }
+                }
+            }
+        } header: {
+            HStack {
+                Text("需要人完成的待办")
+                Spacer()
+                Button {
+                    isAddingReminder = true
+                } label: {
+                    Image(systemName: "plus.circle")
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("新增提醒")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var scheduledTasksSection: some View {
+        if !presentation.scheduledEvents.isEmpty {
+            Section("导出的定时任务") {
+                ForEach(presentation.scheduledEvents) { event in
+                    RecordingEventRow(event: event, colors: colors)
+                }
+            }
+        }
+    }
+
+    private var collapsedDetailSection: some View {
+        Section("更多") {
+            DisclosureGroup("录音 Prompt", isExpanded: $isPromptExpanded) {
+                Text(currentRecording.selectedPrompt.isEmpty ? "仅录音无 Prompt" : currentRecording.selectedPrompt)
+                    .font(.system(size: 13))
+                    .textSelection(.enabled)
+            }
+            DisclosureGroup("ASR 文本", isExpanded: $isAsrExpanded) {
+                TextEditor(text: $asrText)
+                    .frame(minHeight: 220)
+            }
+            DisclosureGroup("执行进度", isExpanded: $isProgressExpanded) {
+                if presentation.generalTimelineEvents.isEmpty {
+                    Text("Agent 执行进度会在这里展示")
+                        .foregroundColor(.secondary)
+                } else {
+                    ForEach(presentation.generalTimelineEvents) { event in
+                        RecordingEventRow(event: event, colors: colors)
+                    }
+                }
+            }
+            DisclosureGroup("录音文件/元数据", isExpanded: $isMetadataExpanded) {
+                RecordingMetadataRow(title: "时间", value: currentRecording.createdAt.earphoneListTimeText)
+                RecordingMetadataRow(title: "来源", value: currentRecording.source.label)
+                RecordingMetadataRow(title: "类型", value: currentRecording.recordingType.label)
+                RecordingMetadataRow(title: "状态", value: currentRecording.processingStatus.label)
+                if let jobId = currentRecording.asrJobId, !jobId.isEmpty {
+                    RecordingMetadataRow(title: "ASR Job", value: jobId, valueFont: .system(size: 12, design: .monospaced))
+                    ProgressView("上传 \(Int(currentRecording.uploadProgress * 100))%", value: currentRecording.uploadProgress)
+                    ProgressView("转写 \(Int(currentRecording.asrProgress * 100))%", value: currentRecording.asrProgress)
+                }
+                if let error = currentRecording.asrError, !error.isEmpty {
+                    RecordingMetadataRow(title: "错误", value: error)
+                }
+                RecordingMetadataRow(
+                    title: "文件",
+                    value: currentRecording.fileURL.lastPathComponent,
+                    valueFont: .system(size: 12, design: .monospaced)
+                )
             }
         }
     }
@@ -751,6 +758,63 @@ private struct RecordingEventRow: View {
                     .font(.system(size: 11))
                     .foregroundColor(.secondary)
             }
+        }
+        .padding(.vertical, 3)
+    }
+}
+
+private struct RecordingAgentTaskGroupRow: View {
+    let group: RecordingAgentTaskGroup
+    let colors: MochiColors
+    let onShareArtifact: (RecordingArtifactItem) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            RecordingEventRow(event: group.event, colors: colors)
+            if !group.artifacts.isEmpty {
+                Divider()
+                Text("文件结果")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(.secondary)
+                ForEach(group.artifacts) { artifact in
+                    RecordingArtifactRow(artifact: artifact, colors: colors) {
+                        onShareArtifact(artifact)
+                    }
+                }
+            }
+        }
+        .padding(.vertical, 3)
+    }
+}
+
+private struct RecordingArtifactRow: View {
+    let artifact: RecordingArtifactItem
+    let colors: MochiColors
+    let onShare: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "doc.richtext")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundColor(colors.primary)
+                .frame(width: 24)
+            VStack(alignment: .leading, spacing: 5) {
+                Text(artifact.filename)
+                    .font(.system(size: 14, weight: .semibold))
+                if let backendPath = artifact.backendPath, !backendPath.isEmpty {
+                    Text(backendPath)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundColor(.secondary)
+                }
+                Text(artifact.createdAt.earphoneListTimeText)
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+            }
+            Spacer()
+            Button(action: onShare) {
+                Image(systemName: "square.and.arrow.up")
+            }
+            .accessibilityLabel("分享文件")
         }
         .padding(.vertical, 3)
     }

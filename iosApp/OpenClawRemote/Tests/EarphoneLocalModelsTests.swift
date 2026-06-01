@@ -20,9 +20,14 @@ struct EarphoneLocalModelsTests {
         try testRecordingStoreTracksPromptEventsAndReminders()
         try testLegacyRecordingDecodesAsAudioOnly()
         try testRecordingStoreConfiguresProcessingTypePromptAndArtifacts()
+        try testRecordingArtifactPersistsRelatedTaskId()
         try testRecordingEventPayloadParsesProtocolFrame()
         try testRecordingEventPayloadPreservesDisplayMetadata()
+        try testRecordingDetailPresentationGroupsArtifactsByAgentTask()
+        try testRecordingDetailPresentationKeepsUnboundArtifactsUnassignedForMultipleTasks()
+        try testRecordingDetailPresentationHidesEmptyScheduledEvents()
         try testMeetingRecordingPromptRequiresExecutableStructuredEvents()
+        try testIdeaRecordingPromptRequiresResearchReport()
         try testRecordingChatContentFormatsPromptAndTranscript()
         try testRecordingSettingsDefaultToFirstConfiguredAgent()
         try testRecordingSettingsFallbackWhenPrimaryAgentIsDeleted()
@@ -398,6 +403,36 @@ struct EarphoneLocalModelsTests {
         try expect(artifactText == "# 会议纪要\n\n结论。", "artifact file content should match event payload")
     }
 
+    private static func testRecordingArtifactPersistsRelatedTaskId() throws {
+        let defaults = try temporaryDefaults()
+        let directory = try temporaryDirectory()
+        let store = RecordingStore(defaults: defaults, documentsDirectory: directory)
+        let item = try store.createRecording(agentId: "agent-1", audioData: Data([0x01]), source: .phone)
+
+        let payload = try unwrap(RecordingEventPayload(json: [
+            "recording_id": item.id,
+            "event_id": "artifact-event-related",
+            "kind": "artifact",
+            "title": "调研报告",
+            "content": "research.md",
+            "status": "completed",
+            "data": [
+                "related_task_id": "task-research",
+                "artifact": [
+                    "filename": "research.md",
+                    "mime_type": "text/markdown",
+                    "encoding": "utf8",
+                    "content": "# 调研报告",
+                ]
+            ],
+        ]), "artifact payload should parse")
+
+        store.appendEvent(payload)
+
+        let recording = try unwrap(store.recordings(for: "agent-1").first, "recording should be present")
+        try expect(recording.artifacts.first?.relatedTaskId == "task-research", "artifact should persist related task id from event metadata")
+    }
+
     private static func testRecordingEventPayloadParsesProtocolFrame() throws {
         let payload = RecordingEventPayload(json: [
             "recording_id": "recording-1",
@@ -440,12 +475,96 @@ struct EarphoneLocalModelsTests {
         try expect(payload?.event.metadata["assumptions"] == "先按手机端本地搜索场景调研", "recording event should stringify list metadata")
     }
 
+    private static func testRecordingDetailPresentationGroupsArtifactsByAgentTask() throws {
+        let recording = recordingFixture(
+            events: [
+                RecordingEventItem(
+                    id: "task-1-event",
+                    kind: .subtask,
+                    title: "调研 Loose Index",
+                    content: "输出调研报告",
+                    status: .running,
+                    metadata: ["owner": "agent", "task_id": "task-1"]
+                ),
+                RecordingEventItem(
+                    id: "task-2-event",
+                    kind: .subtask,
+                    title: "整理会议纪要",
+                    content: "整理成 Markdown",
+                    status: .completed,
+                    metadata: ["owner": "agent", "task_id": "task-2"]
+                ),
+            ],
+            artifacts: [
+                artifactFixture(id: "artifact-1", filename: "research.md", relatedTaskId: "task-1"),
+                artifactFixture(id: "artifact-2", filename: "compare.md", relatedTaskId: "task-1"),
+                artifactFixture(id: "artifact-3", filename: "meeting.md", relatedTaskId: "task-2"),
+            ]
+        )
+
+        let presentation = RecordingDetailPresentation(recording: recording)
+
+        try expect(presentation.agentTaskGroups.map(\.taskId) == ["task-1", "task-2"], "agent tasks should preserve event order")
+        try expect(presentation.agentTaskGroups[0].artifacts.map(\.filename) == ["research.md", "compare.md"], "first task should group multiple related files")
+        try expect(presentation.agentTaskGroups[1].artifacts.map(\.filename) == ["meeting.md"], "second task should include its related file")
+        try expect(presentation.unassignedArtifacts.isEmpty, "all related artifacts should be assigned to task groups")
+    }
+
+    private static func testRecordingDetailPresentationKeepsUnboundArtifactsUnassignedForMultipleTasks() throws {
+        let recording = recordingFixture(
+            events: [
+                RecordingEventItem(kind: .subtask, title: "任务一", content: "", metadata: ["owner": "agent", "task_id": "task-1"]),
+                RecordingEventItem(kind: .subtask, title: "任务二", content: "", metadata: ["owner": "agent", "task_id": "task-2"]),
+            ],
+            artifacts: [
+                artifactFixture(id: "artifact-unbound", filename: "unbound.md", relatedTaskId: nil),
+            ]
+        )
+
+        let presentation = RecordingDetailPresentation(recording: recording)
+
+        try expect(presentation.agentTaskGroups.allSatisfy { $0.artifacts.isEmpty }, "unbound artifact should not be guessed when there are multiple agent tasks")
+        try expect(presentation.unassignedArtifacts.map(\.filename) == ["unbound.md"], "unbound artifact should remain visible as unassigned")
+    }
+
+    private static func testRecordingDetailPresentationHidesEmptyScheduledEvents() throws {
+        let recording = recordingFixture(
+            events: [
+                RecordingEventItem(kind: .agentReply, title: "Agent 回复", content: "已完成"),
+                RecordingEventItem(kind: .status, title: "处理中", content: "执行中"),
+            ],
+            artifacts: []
+        )
+
+        let presentation = RecordingDetailPresentation(recording: recording)
+
+        try expect(presentation.latestAgentReply?.content == "已完成", "latest agent reply should be exposed for the hero card")
+        try expect(presentation.scheduledEvents.isEmpty, "scheduled section should be empty when no scheduled task events exist")
+        try expect(presentation.generalTimelineEvents.map(\.kind) == [.status], "general timeline should exclude agent reply from low-priority progress")
+    }
+
     private static func testMeetingRecordingPromptRequiresExecutableStructuredEvents() throws {
         try expect(RecordingSettings.meetingPrompt.contains("# 会议纪要"), "meeting prompt should require the meeting note heading")
         try expect(RecordingSettings.meetingPrompt.contains("## 会议核心结论"), "meeting prompt should require core conclusion heading")
         try expect(RecordingSettings.meetingPrompt.contains("优先基于合理假设直接开始"), "meeting prompt should tell the agent to proceed without unnecessary questions")
         try expect(RecordingSettings.recordingEventProtocolPrompt.contains("一个合法 JSON 数组"), "event protocol should require one JSON array")
         try expect(RecordingSettings.recordingEventProtocolPrompt.contains("禁止输出多个相邻 JSON 对象"), "event protocol should forbid the malformed multi-object format")
+        try expect(RecordingSettings.recordingEventProtocolPrompt.contains("task_id"), "event protocol should require stable task ids for agent subtasks")
+        try expect(RecordingSettings.recordingEventProtocolPrompt.contains("related_task_id"), "event protocol should bind artifact files to agent subtasks")
+    }
+
+    private static func testIdeaRecordingPromptRequiresResearchReport() throws {
+        let prompt = RecordingSettings.ideaPrompt
+
+        try expect(prompt.contains("研究型灵感报告"), "idea prompt should identify the output as a research report")
+        try expect(prompt.contains("# 灵感研究报告"), "idea prompt should require a Markdown report title")
+        try expect(prompt.contains("## 摘要"), "idea prompt should require an executive summary section")
+        try expect(prompt.contains("## 问题/机会"), "idea prompt should require problem/opportunity analysis")
+        try expect(prompt.contains("## 核心洞察"), "idea prompt should require insight and reasoning")
+        try expect(prompt.contains("## 方案"), "idea prompt should require an implementation plan")
+        try expect(prompt.contains("## 风险"), "idea prompt should require risk analysis")
+        try expect(prompt.contains("## 行动项"), "idea prompt should require next actions")
+        try expect(prompt.contains("后台 Agent"), "idea prompt should describe background report generation")
     }
 
     private static func testRecordingChatContentFormatsPromptAndTranscript() throws {
@@ -658,6 +777,42 @@ struct EarphoneLocalModelsTests {
             updatedAt: Date(timeIntervalSince1970: 100),
             isPinned: false,
             sortIndex: 0
+        )
+    }
+
+    private static func recordingFixture(
+        events: [RecordingEventItem],
+        artifacts: [RecordingArtifactItem]
+    ) -> RecordingItem {
+        RecordingItem(
+            id: "recording-fixture",
+            agentId: "agent-1",
+            createdAt: Date(timeIntervalSince1970: 1_800_000_000),
+            duration: 0,
+            asrText: "转写文本",
+            prompt: "录音 Prompt",
+            recordingType: .meeting,
+            processingStatus: .processing,
+            fileURL: URL(fileURLWithPath: "/tmp/recording-fixture.wav"),
+            source: .phone,
+            events: events,
+            artifacts: artifacts
+        )
+    }
+
+    private static func artifactFixture(
+        id: String,
+        filename: String,
+        relatedTaskId: String?
+    ) -> RecordingArtifactItem {
+        RecordingArtifactItem(
+            id: id,
+            filename: filename,
+            mimeType: "text/markdown",
+            fileURL: URL(fileURLWithPath: "/tmp/\(filename)"),
+            sourceEventId: id,
+            relatedTaskId: relatedTaskId,
+            createdAt: Date(timeIntervalSince1970: 1_800_000_000)
         )
     }
 

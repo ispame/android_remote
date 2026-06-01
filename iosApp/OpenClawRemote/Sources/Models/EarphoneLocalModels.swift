@@ -220,6 +220,7 @@ struct RecordingArtifactItem: Identifiable, Codable, Equatable {
     var fileURL: URL
     var backendPath: String?
     var sourceEventId: String?
+    var relatedTaskId: String?
     var createdAt: Date
 
     init(
@@ -229,6 +230,7 @@ struct RecordingArtifactItem: Identifiable, Codable, Equatable {
         fileURL: URL,
         backendPath: String? = nil,
         sourceEventId: String? = nil,
+        relatedTaskId: String? = nil,
         createdAt: Date = Date()
     ) {
         self.id = id
@@ -237,6 +239,7 @@ struct RecordingArtifactItem: Identifiable, Codable, Equatable {
         self.fileURL = fileURL
         self.backendPath = backendPath
         self.sourceEventId = sourceEventId
+        self.relatedTaskId = relatedTaskId
         self.createdAt = createdAt
     }
 }
@@ -381,6 +384,84 @@ struct RecordingItem: Identifiable, Codable, Equatable {
         events = try container.decodeIfPresent([RecordingEventItem].self, forKey: .events) ?? []
         reminders = try container.decodeIfPresent([RecordingReminderItem].self, forKey: .reminders) ?? []
         artifacts = try container.decodeIfPresent([RecordingArtifactItem].self, forKey: .artifacts) ?? []
+    }
+}
+
+struct RecordingAgentTaskGroup: Identifiable, Equatable {
+    var id: String { taskId }
+
+    var taskId: String
+    var event: RecordingEventItem
+    var artifacts: [RecordingArtifactItem]
+}
+
+struct RecordingDetailPresentation: Equatable {
+    var latestAgentReply: RecordingEventItem?
+    var agentTaskGroups: [RecordingAgentTaskGroup]
+    var humanTodos: [RecordingEventItem]
+    var scheduledEvents: [RecordingEventItem]
+    var generalTimelineEvents: [RecordingEventItem]
+    var unassignedArtifacts: [RecordingArtifactItem]
+
+    init(recording: RecordingItem) {
+        let events = recording.events.sorted { $0.createdAt < $1.createdAt }
+        latestAgentReply = events.filter { $0.kind == .agentReply }.last
+        humanTodos = events.filter(Self.isHumanTodo)
+        scheduledEvents = events.filter { $0.kind == .scheduledTask }
+        generalTimelineEvents = events.filter(Self.isGeneralTimelineEvent)
+
+        let agentTasks = events.filter(Self.isAgentTask)
+        let artifacts = recording.artifacts.sorted { $0.createdAt < $1.createdAt }
+        var assignedArtifactIds = Set<String>()
+
+        agentTaskGroups = agentTasks.map { event in
+            let taskId = Self.taskId(for: event)
+            let relatedArtifacts = artifacts.filter { artifact in
+                guard artifact.relatedTaskId == taskId else { return false }
+                assignedArtifactIds.insert(artifact.id)
+                return true
+            }
+            return RecordingAgentTaskGroup(taskId: taskId, event: event, artifacts: relatedArtifacts)
+        }
+
+        let unassigned = artifacts.filter { !assignedArtifactIds.contains($0.id) }
+        if agentTaskGroups.count == 1 {
+            agentTaskGroups[0].artifacts.append(contentsOf: unassigned)
+            unassignedArtifacts = []
+        } else {
+            unassignedArtifacts = unassigned
+        }
+    }
+
+    private static func isGeneralTimelineEvent(_ event: RecordingEventItem) -> Bool {
+        switch event.kind {
+        case .subtask, .scheduledTask, .reminder, .artifact, .agentReply:
+            return false
+        case .created, .asr, .delivered, .status, .error, .other:
+            return true
+        }
+    }
+
+    private static func isAgentTask(_ event: RecordingEventItem) -> Bool {
+        event.kind == .subtask && owner(for: event) != "user" && !needsUserInput(event)
+    }
+
+    private static func isHumanTodo(_ event: RecordingEventItem) -> Bool {
+        event.kind == .subtask && (owner(for: event) == "user" || needsUserInput(event))
+    }
+
+    private static func taskId(for event: RecordingEventItem) -> String {
+        let value = event.metadata["task_id"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return value?.isEmpty == false ? value! : event.id
+    }
+
+    private static func owner(for event: RecordingEventItem) -> String {
+        event.metadata["owner"]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+    }
+
+    private static func needsUserInput(_ event: RecordingEventItem) -> Bool {
+        let rawValue = event.metadata["needs_user_input"]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return rawValue == "true" || rawValue == "1" || rawValue == "yes"
     }
 }
 

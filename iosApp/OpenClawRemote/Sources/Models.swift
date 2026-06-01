@@ -641,9 +641,22 @@ struct RecordingSettings: Equatable {
     """
 
     static let ideaPrompt = """
-    以下是灵感记录。请提炼灵感核心，给出可执行建议，并在需要时主动补充必要信息或调研结果。
-    请把整理后的灵感保存为 Markdown 文件，内容包含灵感概述、建议、补充信息、下一步行动，并输出 artifact 事件。
-    如果识别到后续需要用户跟进的事项，请输出 reminder 或 subtask 事件。
+    以下是灵感记录。请把它交给后台 Agent 生成一份研究型灵感报告，而不是只做简短摘要或聊天式回复。
+    报告必须保存为 Markdown artifact，并使用以下结构：
+    # 灵感研究报告
+    ## 摘要
+    ## 问题/机会
+    ## 核心洞察
+    ## 方案
+    ## 风险
+    ## 行动项
+
+    写作要求：
+    1. 不只复述录音，要补充必要背景、推理过程、约束、取舍和可执行路径。
+    2. 信息不足时先写明假设，并基于合理假设继续推进，不要默认停下来询问用户。
+    3. 行动项要区分 Agent 可继续完成的事项和需要用户确认/执行的事项。
+    4. 如果识别到后续提醒、定时任务或子任务，请在报告的行动项中明确标注，不要输出事件块。
+    5. 后台会生成 Markdown artifact 和 3-5 句摘要；报告正文必须完整、深入、可直接导出。
     """
 
     static let recordingEventProtocolPrompt = """
@@ -651,14 +664,14 @@ struct RecordingSettings: Equatable {
     事件块必须只输出一次，并且内容必须是一个合法 JSON 数组。禁止输出多个相邻 JSON 对象，禁止使用 {"boson-recording-event": {...}} 包裹格式：
     ```boson-recording-event
     [
-      {"kind":"subtask","title":"调研 Loose Index / 轻量化索引技术方案","content":"搜集轻量化索引方案、开源项目、技术论文，输出调研报告","status":"pending","data":{"owner":"agent","next_action":"开始调研并补充文档","needs_user_input":false,"assumptions":["缺少业务场景时，先按手机端本地搜索场景调研"]}},
-      {"kind":"artifact","title":"会议纪要","content":"meeting.md","status":"completed","data":{"artifact":{"filename":"meeting.md","mime_type":"text/markdown","encoding":"utf8","content":"# 会议纪要\\n\\n文件内容","backend_path":"可选路径"}}}
+      {"kind":"subtask","title":"调研 Loose Index / 轻量化索引技术方案","content":"搜集轻量化索引方案、开源项目、技术论文，输出调研报告","status":"pending","data":{"task_id":"research-loose-index","owner":"agent","next_action":"开始调研并补充文档","needs_user_input":false,"assumptions":["缺少业务场景时，先按手机端本地搜索场景调研"]}},
+      {"kind":"artifact","title":"Loose Index 调研报告","content":"research.md","status":"completed","data":{"related_task_id":"research-loose-index","artifact":{"filename":"research.md","mime_type":"text/markdown","encoding":"utf8","content":"# 调研报告\\n\\n文件内容","backend_path":"可选路径"}}}
     ]
     ```
     支持 kind: agent_reply, subtask, scheduled_task, reminder, artifact, error。
-    Agent 可承接的事项每一项都必须单独输出 subtask，data.owner="agent"；需要人完成或确认的事项输出 data.owner="user"，只有真正阻塞时才设置 data.needs_user_input=true。
+    Agent 可承接的事项每一项都必须单独输出 subtask，data.owner="agent"，并在 data.task_id 写稳定短 ID；需要人完成或确认的事项输出 data.owner="user"，只有真正阻塞时才设置 data.needs_user_input=true。
     请优先基于合理假设直接开始执行，把假设写入 data.assumptions；不要默认询问用户先做哪一项。
-    保存文档时必须输出 artifact 事件，data.artifact 格式为 {"filename":"name.md","mime_type":"text/markdown","encoding":"utf8","content":"文件内容","backend_path":"可选路径"}。
+    保存文档时必须输出 artifact 事件；如果文件是某个 Agent 待办的产物，必须在 data.related_task_id 填对应 subtask 的 data.task_id。data.artifact 格式为 {"filename":"name.md","mime_type":"text/markdown","encoding":"utf8","content":"文件内容","backend_path":"可选路径"}。
     请不要在面向用户的正文里解释这个事件协议。
     """
 

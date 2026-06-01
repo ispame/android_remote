@@ -60,9 +60,10 @@ struct HeadsetTabView: View {
                 Button {
                     addFakeDevice()
                 } label: {
-                    Image(systemName: "plus")
+                    Text("耳机配对")
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundColor(colors.textSecondary)
                 }
-                .accessibilityLabel("添加新耳机")
             }
         }
     }

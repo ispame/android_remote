@@ -346,6 +346,7 @@ final class RecordingStore: ObservableObject {
                 fileURL: fileURL,
                 backendPath: payload.backendPath,
                 sourceEventId: sourceEventId,
+                relatedTaskId: eventRelatedTaskId(items[index].events.first { $0.id == sourceEventId }),
                 createdAt: Date()
             ))
             items[index].artifacts.sort { $0.createdAt < $1.createdAt }
@@ -373,6 +374,16 @@ final class RecordingStore: ObservableObject {
         }
         let result = String(safe).trimmingCharacters(in: .whitespacesAndNewlines)
         return result.isEmpty ? "recording-artifact.md" : result
+    }
+
+    private func eventRelatedTaskId(_ event: RecordingEventItem?) -> String? {
+        guard let event else { return nil }
+        for key in ["related_task_id", "task_id"] {
+            if let value = event.metadata[key]?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty {
+                return value
+            }
+        }
+        return nil
     }
 
     private static func loadItems(from defaults: UserDefaults, key: String) -> [RecordingItem] {
