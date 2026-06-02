@@ -35,6 +35,7 @@ import com.openclaw.remote.ui.screen.AuthScreen
 import com.openclaw.remote.ui.screen.MainScreen
 import com.openclaw.remote.ui.screen.QRParseResult
 import com.openclaw.remote.ui.screen.SettingsScreen
+import com.openclaw.remote.ui.screen.WalletScreen
 import com.openclaw.remote.ui.screen.QRScannerScreen
 import com.openclaw.remote.ui.screen.parseQRPack
 import com.openclaw.remote.ui.theme.MochiTheme
@@ -106,6 +107,8 @@ class MainActivity : ComponentActivity() {
             var isDark by rememberSaveable(systemDark) { mutableStateOf(systemDark) }
             var showSettings by remember { mutableStateOf(false) }
             var showQRScanner by remember { mutableStateOf(false) }
+            var showWallet by remember { mutableStateOf(false) }
+            var walletNotice by remember { mutableStateOf<String?>(null) }
             var authGateNotice by remember { mutableStateOf<String?>(null) }
             val assistantSpeechTrigger = remember { AssistantSpeechTrigger() }
             val authClient = remember { GatewayAuthClient() }
@@ -141,6 +144,7 @@ class MainActivity : ComponentActivity() {
                     if (!authenticated) {
                         showQRScanner = false
                         showSettings = false
+                        showWallet = false
                     }
                 }
 
@@ -166,6 +170,15 @@ class MainActivity : ComponentActivity() {
                             outcome.loginRequired -> authGateNotice = outcome.message
                             outcome.message != null -> authGateNotice = outcome.message
                         }
+                    }
+                }
+
+                LaunchedEffect(Unit) {
+                    viewModel.paymentRequiredRequests.collect { request ->
+                        walletNotice = request.message.ifBlank { "余额不足，请开通套餐或充值余额" }
+                        showWallet = true
+                        showSettings = false
+                        showQRScanner = false
                     }
                 }
 
@@ -227,6 +240,15 @@ class MainActivity : ComponentActivity() {
                             viewModel.clearAuthNotice()
                         },
                     )
+                } else if (showWallet) {
+                    WalletScreen(
+                        config = config,
+                        initialNotice = walletNotice,
+                        onBack = {
+                            walletNotice = null
+                            showWallet = false
+                        },
+                    )
                 } else if (showQRScanner) {
                     QRScannerScreen(
                         onQRCodeScanned = { scannedText ->
@@ -254,7 +276,11 @@ class MainActivity : ComponentActivity() {
                             viewModel.unpair()
                         },
                         onBack = { showSettings = false },
-                        onNavigateToQRScanner = { if (authenticated) showQRScanner = true }
+                        onNavigateToQRScanner = { if (authenticated) showQRScanner = true },
+                        onNavigateToWallet = {
+                            showSettings = false
+                            showWallet = true
+                        },
                     )
                 } else {
                     MainScreen(

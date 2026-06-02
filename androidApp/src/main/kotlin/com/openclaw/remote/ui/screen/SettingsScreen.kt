@@ -24,6 +24,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AddCircle
 import androidx.compose.material.icons.filled.ChatBubble
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.CreditCard
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.Link
@@ -142,6 +143,7 @@ fun SettingsScreen(
     onUnpair: () -> Unit,
     onBack: () -> Unit,
     onNavigateToQRScanner: () -> Unit,
+    onNavigateToWallet: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
     val colors = MochiTheme.colors
@@ -701,6 +703,15 @@ fun SettingsScreen(
                 HorizontalDivider(color = colors.divider, thickness = 0.5.dp)
 
                 SectionTitle("账号会话", colors)
+                OutlinedButton(
+                    onClick = onNavigateToWallet,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(8.dp),
+                ) {
+                    Icon(Icons.Default.CreditCard, contentDescription = null, modifier = Modifier.size(20.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("钱包与套餐")
+                }
                 Text(
                     text = if (config.accountId.isNotBlank()) {
                         "已登录 · ${maskedAccountLabel(config.accountId)}"

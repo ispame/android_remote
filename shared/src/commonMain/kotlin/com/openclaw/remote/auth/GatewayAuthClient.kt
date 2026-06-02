@@ -1,5 +1,6 @@
 package com.openclaw.remote.auth
 
+import io.ktor.client.call.body
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.request.get
@@ -16,6 +17,7 @@ import io.ktor.serialization.kotlinx.json.json
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
@@ -54,6 +56,71 @@ data class AccountAgentProfileResult(
     val asrMode: String,
     val sortOrder: Int,
     val pinned: Boolean,
+)
+
+data class BillingProductResult(
+    val productId: String,
+    val kind: String,
+    val title: String,
+    val subtitle: String,
+    val displayName: String,
+    val amountCents: Int,
+    val currency: String,
+    val billingPeriod: String,
+    val benefits: List<String>,
+    val badge: String?,
+    val sortOrder: Int,
+    val availableProviders: List<String>,
+)
+
+data class BillingProductsResult(
+    val walletProducts: List<BillingProductResult>,
+    val plans: List<BillingProductResult>,
+)
+
+data class BillingWalletResult(
+    val balanceCents: Int,
+    val currency: String,
+)
+
+data class BillingSubscriptionResult(
+    val subscriptionId: String,
+    val productId: String,
+    val status: String,
+    val currentPeriodEnd: String,
+)
+
+data class BillingOrderResult(
+    val orderId: String,
+    val productId: String,
+    val productKind: String,
+    val provider: String,
+    val status: String,
+    val amountCents: Int,
+    val currency: String,
+    val expiresAt: String,
+    val paymentUrl: String,
+    val copyText: String,
+    val qrImageUrl: String,
+    val pollAfterMs: Int,
+)
+
+data class BillingUsageEventResult(
+    val usageEventId: String,
+    val usageType: String,
+    val quantity: Int,
+    val amountCents: Int,
+    val backendId: String?,
+    val createdAt: String,
+)
+
+data class BillingSummaryResult(
+    val accountId: String,
+    val wallet: BillingWalletResult,
+    val currentSubscription: BillingSubscriptionResult?,
+    val products: BillingProductsResult,
+    val recentOrders: List<BillingOrderResult>,
+    val recentUsageEvents: List<BillingUsageEventResult>,
 )
 
 class GatewayAuthClient(
@@ -311,6 +378,71 @@ class GatewayAuthClient(
         )
     }
 
+    suspend fun billingSummary(
+        gatewayUrl: String,
+        accessToken: String,
+    ): BillingSummaryResult {
+        val response = client.get("${requireAuthBaseUrl(gatewayUrl)}/api/v2/billing/summary") {
+            header(HttpHeaders.Authorization, "Bearer ${accessToken.trim()}")
+        }
+        return parseBillingSummary(requireJson(response))
+    }
+
+    suspend fun billingProducts(
+        gatewayUrl: String,
+        accessToken: String,
+    ): BillingProductsResult {
+        val response = client.get("${requireAuthBaseUrl(gatewayUrl)}/api/v2/billing/products") {
+            header(HttpHeaders.Authorization, "Bearer ${accessToken.trim()}")
+        }
+        return parseBillingProducts(requireJson(response))
+    }
+
+    suspend fun createBillingOrder(
+        gatewayUrl: String,
+        accessToken: String,
+        productId: String,
+        provider: String = "manual_qr",
+    ): BillingOrderResult {
+        val response = client.post("${requireAuthBaseUrl(gatewayUrl)}/api/v2/billing/orders") {
+            header(HttpHeaders.Authorization, "Bearer ${accessToken.trim()}")
+            contentType(ContentType.Application.Json)
+            setBody(
+                buildJsonObject {
+                    put("product_id", productId)
+                    put("provider", provider)
+                }.toString()
+            )
+        }
+        return parseBillingOrder(requireJson(response))
+    }
+
+    suspend fun billingOrder(
+        gatewayUrl: String,
+        accessToken: String,
+        orderId: String,
+    ): BillingOrderResult {
+        val response = client.get("${requireAuthBaseUrl(gatewayUrl)}/api/v2/billing/orders/${orderId.trim()}") {
+            header(HttpHeaders.Authorization, "Bearer ${accessToken.trim()}")
+        }
+        return parseBillingOrder(requireJson(response))
+    }
+
+    suspend fun billingOrderQrBytes(
+        gatewayUrl: String,
+        accessToken: String,
+        orderId: String,
+    ): ByteArray {
+        val response = client.get("${requireAuthBaseUrl(gatewayUrl)}/api/v2/billing/orders/${orderId.trim()}/qr.png") {
+            header(HttpHeaders.Authorization, "Bearer ${accessToken.trim()}")
+        }
+        if (response.status.value !in 200..299) {
+            val rawBody = response.bodyAsText()
+            throw gatewayAuthError(response, rawBody)
+        }
+        return response.body()
+    }
+
     fun close() {
         client.close()
     }
@@ -335,6 +467,88 @@ class GatewayAuthClient(
         return json ?: throw IllegalStateException("Invalid JSON response")
     }
 }
+
+internal fun parseBillingSummary(body: JsonObject): BillingSummaryResult {
+    val products = parseBillingProducts(body["products"] as? JsonObject ?: JsonObject(emptyMap()))
+    val usage = body["usage"] as? JsonObject
+    return BillingSummaryResult(
+        accountId = body.string("account_id"),
+        wallet = parseBillingWallet(body["wallet"] as? JsonObject ?: JsonObject(emptyMap())),
+        currentSubscription = (body["current_subscription"] as? JsonObject)?.let(::parseBillingSubscription),
+        products = products,
+        recentOrders = body.array("recent_orders").mapNotNull { (it as? JsonObject)?.let(::parseBillingOrder) },
+        recentUsageEvents = usage?.array("recent_events")?.mapNotNull { (it as? JsonObject)?.let(::parseBillingUsageEvent) }.orEmpty(),
+    )
+}
+
+internal fun parseBillingProducts(body: JsonObject): BillingProductsResult =
+    BillingProductsResult(
+        walletProducts = body.array("wallet_products").mapNotNull { (it as? JsonObject)?.let(::parseBillingProduct) },
+        plans = body.array("plans").mapNotNull { (it as? JsonObject)?.let(::parseBillingProduct) },
+    )
+
+internal fun parseBillingProduct(body: JsonObject): BillingProductResult =
+    BillingProductResult(
+        productId = body.string("product_id"),
+        kind = body.string("kind"),
+        title = body.string("title").ifBlank { body.string("display_name") },
+        subtitle = body.string("subtitle"),
+        displayName = body.string("display_name"),
+        amountCents = body.int("amount_cents"),
+        currency = body.string("currency").ifBlank { "CNY" },
+        billingPeriod = body.string("billing_period").ifBlank { "none" },
+        benefits = body.array("benefits").mapNotNull { it.jsonStringOrNull() },
+        badge = body.stringOrNull("badge"),
+        sortOrder = body.int("sort_order"),
+        availableProviders = body.array("available_providers").mapNotNull { it.jsonStringOrNull() },
+    )
+
+internal fun parseBillingOrder(body: JsonObject): BillingOrderResult =
+    BillingOrderResult(
+        orderId = body.string("order_id"),
+        productId = body.string("product_id"),
+        productKind = body.string("product_kind"),
+        provider = body.string("provider"),
+        status = body.string("status"),
+        amountCents = body.int("amount_cents"),
+        currency = body.string("currency").ifBlank { "CNY" },
+        expiresAt = body.string("expires_at"),
+        paymentUrl = body.string("payment_url"),
+        copyText = body.string("copy_text"),
+        qrImageUrl = body.string("qr_image_url"),
+        pollAfterMs = body.int("poll_after_ms").takeIf { it > 0 } ?: 3000,
+    )
+
+fun formatBillingAmountCents(amountCents: Int, currency: String): String {
+    val major = amountCents / 100
+    val minor = kotlin.math.abs(amountCents % 100)
+    val formatted = "$major.${minor.toString().padStart(2, '0')}"
+    return if (currency.equals("CNY", ignoreCase = true)) "¥$formatted" else "${currency.uppercase()} $formatted"
+}
+
+private fun parseBillingWallet(body: JsonObject): BillingWalletResult =
+    BillingWalletResult(
+        balanceCents = body.int("balance_cents"),
+        currency = body.string("currency").ifBlank { "CNY" },
+    )
+
+private fun parseBillingSubscription(body: JsonObject): BillingSubscriptionResult =
+    BillingSubscriptionResult(
+        subscriptionId = body.string("subscription_id"),
+        productId = body.string("product_id").ifBlank { body.string("plan_id") },
+        status = body.string("status"),
+        currentPeriodEnd = body.string("current_period_end"),
+    )
+
+private fun parseBillingUsageEvent(body: JsonObject): BillingUsageEventResult =
+    BillingUsageEventResult(
+        usageEventId = body.string("usage_event_id"),
+        usageType = body.string("usage_type"),
+        quantity = body.int("quantity"),
+        amountCents = body.int("amount_cents"),
+        backendId = body.stringOrNull("backend_id"),
+        createdAt = body.string("created_at"),
+    )
 
 internal fun authBaseUrlFromGatewayUrl(gatewayUrl: String): String? {
     val trimmed = gatewayUrl.trim().removeSuffix("/")
@@ -377,3 +591,9 @@ private fun JsonObject.int(name: String): Int =
 
 private fun JsonObject.boolean(name: String): Boolean =
     this[name]?.jsonPrimitive?.booleanOrNull ?: false
+
+private fun JsonObject.array(name: String): List<JsonElement> =
+    (this[name] as? JsonArray)?.toList().orEmpty()
+
+private fun JsonElement.jsonStringOrNull(): String? =
+    this.jsonPrimitive.contentOrNull?.trim()?.takeIf { it.isNotEmpty() }

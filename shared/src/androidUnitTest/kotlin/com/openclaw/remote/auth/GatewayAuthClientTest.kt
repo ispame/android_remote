@@ -1,5 +1,7 @@
 package com.openclaw.remote.auth
 
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -33,5 +35,71 @@ class GatewayAuthClientTest {
     fun rejectsBlankOrUnsupportedGatewayUrl() {
         assertNull(authBaseUrlFromGatewayUrl(" "))
         assertNull(authBaseUrlFromGatewayUrl("gateway.example.com/ws"))
+    }
+
+    @Test
+    fun parsesBillingSummaryWithDynamicPlanProductsAndOrders() {
+        val json = Json.parseToJsonElement(
+            """
+            {
+              "account_id": "acct_1",
+              "wallet": {"balance_cents": 0, "currency": "CNY"},
+              "current_subscription": {
+                "subscription_id": "sub_1",
+                "product_id": "plan_starter_monthly",
+                "status": "active",
+                "current_period_end": "2026-07-01T00:00:00.000Z"
+              },
+              "products": {
+                "plans": [{
+                  "product_id": "plan_starter_monthly",
+                  "kind": "plan",
+                  "title": "Starter 月套餐",
+                  "subtitle": "个人套餐",
+                  "display_name": "Starter Monthly",
+                  "amount_cents": 1900,
+                  "currency": "CNY",
+                  "billing_period": "month",
+                  "benefits": ["基础消息权益"],
+                  "badge": "推荐",
+                  "sort_order": 10,
+                  "available_providers": ["manual_qr"]
+                }],
+                "wallet_products": []
+              },
+              "recent_orders": [{
+                "order_id": "ord_1",
+                "product_id": "plan_starter_monthly",
+                "product_kind": "plan",
+                "provider": "manual_qr",
+                "status": "pending",
+                "amount_cents": 1900,
+                "currency": "CNY",
+                "expires_at": "2026-06-01T00:15:00.000Z",
+                "payment_url": "https://pay.example.com/o/ord_1",
+                "copy_text": "BosonRelay 订单 ord_1",
+                "qr_image_url": "/api/v2/billing/orders/ord_1/qr.png",
+                "poll_after_ms": 3000
+              }],
+              "usage": {"recent_events": []}
+            }
+            """.trimIndent()
+        ).jsonObject
+
+        val summary = parseBillingSummary(json)
+
+        assertEquals("acct_1", summary.accountId)
+        assertEquals(0, summary.wallet.balanceCents)
+        assertEquals("plan_starter_monthly", summary.currentSubscription?.productId)
+        assertEquals("Starter 月套餐", summary.products.plans.single().title)
+        assertEquals(listOf("基础消息权益"), summary.products.plans.single().benefits)
+        assertEquals("ord_1", summary.recentOrders.single().orderId)
+        assertEquals("/api/v2/billing/orders/ord_1/qr.png", summary.recentOrders.single().qrImageUrl)
+    }
+
+    @Test
+    fun formatsBillingAmountsForWalletDisplay() {
+        assertEquals("¥19.00", formatBillingAmountCents(1900, "CNY"))
+        assertEquals("USD 12.34", formatBillingAmountCents(1234, "USD"))
     }
 }

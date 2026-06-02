@@ -1,5 +1,6 @@
 import SwiftUI
 import Foundation
+import UIKit
 
 // MARK: - Connection Status Card
 
@@ -228,147 +229,56 @@ struct SettingsTopBarView: View {
     }
 }
 
-private struct AgentFormState: Identifiable, Equatable {
-    var id: String
-    var isDraft: Bool
-    var platform: AgentPlatform
-    var displayName: String
-    var gatewayUrl: String
-    var backendId: String
-    var token: String
-    var backendLabel: String?
-    var isPaired: Bool
+private struct AdvancedSettingsDraft: Equatable {
+    var deviceLabel: String
+    var asrMode: String
+    var asrProfileId: String
 
-    init(profile: AgentProfile, isDraft: Bool = false) {
-        id = profile.id
-        self.isDraft = isDraft
-        platform = profile.platform
-        displayName = profile.resolvedDisplayName
-        gatewayUrl = profile.gatewayUrl
-        backendId = profile.backendId
-        token = profile.token
-        backendLabel = profile.backendLabel
-        isPaired = profile.isPaired
+    init(config: GatewayConfig) {
+        deviceLabel = config.deviceLabel
+        asrMode = config.asrMode == "backend" ? "backend" : "router"
+        asrProfileId = asrMode == "router" ? config.asrProfileId : ""
     }
 
-    static func draft(gatewayUrl: String) -> AgentFormState {
-        AgentFormState(
-            profile: AgentProfile(
-                id: UUID().uuidString,
-                platform: .custom,
-                displayName: "",
-                gatewayUrl: gatewayUrl,
-                backendId: "",
-                token: "",
-                isPaired: false
-            ),
-            isDraft: true
-        )
+    var normalizedDeviceLabel: String {
+        let trimmed = deviceLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "我的设备" : trimmed
     }
 
-    var resolvedName: String {
-        let trimmed = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmed.isEmpty { return trimmed }
-        if let backendLabel, !backendLabel.isEmpty { return backendLabel }
-        return platform.defaultDisplayName
+    var savedAsrProfileId: String {
+        asrMode == "router" ? asrProfileId.trimmingCharacters(in: .whitespacesAndNewlines) : ""
     }
 }
 
-private struct AgentFormCardView: View {
-    @Binding var form: AgentFormState
-    let index: Int
-    let status: AgentAvailabilityStatus
-    let isSelected: Bool
-    let isOnlyPersistedProfile: Bool
-    let colors: MochiColors
-    let onSelect: () -> Void
-    let onRemove: () -> Void
-    let onPair: () -> Void
+private enum AsrProviderLoadState: Equatable {
+    case idle
+    case loading
+    case loaded([AsrProviderProfile])
+    case failed(String)
+}
 
-    private var statusColor: Color {
-        switch status {
-        case .available: return colors.onlineGreen
-        case .pairing, .connecting: return colors.accent
-        case .unconfigured, .unpaired: return colors.textSecondary
-        case .offline: return colors.recordingRed
-        }
-    }
+private struct AdvancedInfoRow: View {
+    let title: String
+    let value: String
+    var isSensitive = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 10) {
-                Button(action: onSelect) {
-                    HStack(spacing: 8) {
-                        Image(systemName: isSelected ? "checkmark.circle.fill" : form.platform.iconName)
-                            .font(.system(size: 16, weight: .semibold))
-                        Text("Agent \(index + 1)")
-                            .font(.system(size: 14, weight: .semibold))
-                    }
-                    .foregroundColor(isSelected ? colors.primary : colors.textPrimary)
-                }
-                .buttonStyle(.plain)
-
-                Text(status.label)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(statusColor)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(statusColor.opacity(0.12))
-                    .cornerRadius(8)
-
-                Spacer()
-
-                Button(action: onRemove) {
-                    Image(systemName: "minus.circle.fill")
-                        .font(.system(size: 20, weight: .semibold))
-                        .foregroundColor(colors.recordingRed)
-                        .frame(width: 32, height: 32)
-                }
-                .accessibilityLabel(isOnlyPersistedProfile ? "清空Agent配置" : "删除Agent")
-            }
-
-            OutlinedTextField(
-                label: "Agent 名称（Agent label）",
-                placeholder: form.platform.defaultDisplayName,
-                text: $form.displayName,
-                colors: colors
-            )
-
-            OutlinedTextField(
-                label: "Gateway URL",
-                placeholder: "wss://boson-tech.top/ws",
-                text: $form.gatewayUrl,
-                colors: colors
-            )
-
-            OutlinedTextField(
-                label: "Backend Id",
-                placeholder: "bk_xxx",
-                text: $form.backendId,
-                colors: colors
-            )
-
-            Button(action: onPair) {
-                HStack {
-                    Image(systemName: "link")
-                    Text("配对")
-                }
-                .font(.system(size: 15, weight: .medium))
-                .foregroundColor(colors.onPrimary)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 12)
-                .background(form.backendId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? colors.textSecondary.opacity(0.35) : colors.primary)
-                .cornerRadius(8)
-            }
-            .disabled(form.backendId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Text(title)
+                .foregroundColor(.secondary)
+            Spacer(minLength: 12)
+            Text(displayValue)
+                .font(.system(.body, design: isSensitive ? .monospaced : .default))
+                .foregroundColor(.primary)
+                .multilineTextAlignment(.trailing)
+                .textSelection(.enabled)
         }
-        .padding(14)
-        .background(colors.surface)
-        .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .strokeBorder(isSelected ? colors.primary : colors.divider, lineWidth: isSelected ? 1.5 : 1)
-        )
-        .cornerRadius(8)
+        .accessibilityElement(children: .combine)
+    }
+
+    private var displayValue: String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "未配置" : trimmed
     }
 }
 
@@ -383,280 +293,181 @@ struct SettingsScreenView: View {
     let onNavigateToQRScanner: () -> Void
     let onSelectProfile: (String) -> Void
 
-    @Environment(\.dismiss) private var dismiss
-    @State private var deviceLabel: String = ""
-    @State private var phoneNumber: String = ""
-    @State private var smsCode: String = ""
-    @State private var isAuthLoading = false
-    @State private var currentPassword: String = ""
-    @State private var newPassword: String = ""
-    @State private var confirmNewPassword: String = ""
-    @State private var agentForms: [AgentFormState] = []
-    @State private var asrMode: String = "router"
-    @State private var asrProfileId: String = ""
-    @State private var asrProfiles: [AsrProviderProfile] = []
-    @State private var showSaved = false
+    @State private var draft: AdvancedSettingsDraft
+    @State private var asrProviderLoadState: AsrProviderLoadState = .idle
+    @State private var loadedAsrGatewayUrl = ""
     @State private var statusMessage: String?
 
-    private var canAddDraft: Bool {
-        agentForms.count < SettingsManager.maxAgentProfiles && !agentForms.contains(where: { $0.isDraft })
+    init(
+        wsManager: WebSocketManager,
+        settingsManager: SettingsManager,
+        isDark: Bool,
+        colors: MochiColors,
+        onToggleTheme: @escaping () -> Void,
+        onRequestPair: @escaping (String) -> Void,
+        onUnpair: @escaping () -> Void,
+        onNavigateToQRScanner: @escaping () -> Void,
+        onSelectProfile: @escaping (String) -> Void
+    ) {
+        self.wsManager = wsManager
+        self.settingsManager = settingsManager
+        self.isDark = isDark
+        self.colors = colors
+        self.onToggleTheme = onToggleTheme
+        self.onRequestPair = onRequestPair
+        self.onUnpair = onUnpair
+        self.onNavigateToQRScanner = onNavigateToQRScanner
+        self.onSelectProfile = onSelectProfile
+        _draft = State(initialValue: AdvancedSettingsDraft(config: settingsManager.config))
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            Divider().background(colors.divider)
+        Form {
+            Section(
+                header: Text("连接与诊断"),
+                footer: Text("Agent 的 URL、Backend ID 和 Token 在 Agent 对话页右上角的配置中修改。")
+            ) {
+                AdvancedInfoRow(title: "当前 Agent", value: selectedProfile.resolvedDisplayName)
+                AdvancedInfoRow(title: "连接状态", value: connectionStatusText)
+                AdvancedInfoRow(title: "配对状态", value: pairingStatusText)
+                AdvancedInfoRow(title: "Gateway URL", value: selectedProfile.gatewayUrl, isSensitive: true)
+                AdvancedInfoRow(title: "Backend ID", value: selectedProfile.backendId, isSensitive: true)
+                AdvancedInfoRow(title: "登录状态", value: accountStatusText)
 
-            ScrollView {
-                VStack(spacing: 16) {
-                    HStack {
-                        Button(action: onToggleTheme) {
-                            Image(systemName: isDark ? "sun.max.fill" : "moon.fill")
-                                .font(.system(size: 20))
-                                .foregroundColor(isDark ? colors.accent : colors.primary)
-                                .frame(width: 32, height: 32)
-                        }
-                        Spacer()
-                    }
-                    .padding(.horizontal, 12)
+                Button {
+                    reconnectCurrentAgent()
+                } label: {
+                    Label("重连", systemImage: "arrow.clockwise")
+                }
 
-                    Button(action: onNavigateToQRScanner) {
-                        HStack {
-                            Image(systemName: "qrcode.viewfinder")
-                            Text("扫码或新增Agent")
-                        }
-                        .font(.system(size: 15, weight: .medium))
-                        .foregroundColor(colors.onPrimary)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
-                        .background(colors.primary)
-                        .cornerRadius(8)
-                    }
+                Button(role: .destructive) {
+                    unpairCurrentAgent()
+                } label: {
+                    Label("取消当前 Agent 配对", systemImage: "link.badge.minus")
+                }
+                .disabled(!canUnpairCurrentAgent)
 
-                    VStack(spacing: 12) {
-                        ForEach(agentForms.indices, id: \.self) { index in
-                            AgentFormCardView(
-                                form: $agentForms[index],
-                                index: index,
-                                status: status(for: agentForms[index]),
-                                isSelected: agentForms[index].id == settingsManager.selectedProfileId,
-                                isOnlyPersistedProfile: settingsManager.profiles.count == 1 && !agentForms[index].isDraft,
-                                colors: colors,
-                                onSelect: {
-                                    selectForm(agentForms[index])
-                                },
-                                onRemove: {
-                                    removeForm(agentForms[index])
-                                },
-                                onPair: {
-                                    pairForm(agentForms[index])
-                                }
-                            )
-                        }
+                Button {
+                    copyDiagnostics()
+                } label: {
+                    Label("复制诊断信息", systemImage: "doc.on.doc")
+                }
+            }
 
-                        Button(action: addDraftAgent) {
-                            Image(systemName: "plus.circle.fill")
-                                .font(.system(size: 24, weight: .semibold))
-                                .foregroundColor(canAddDraft ? colors.primary : colors.textSecondary.opacity(0.4))
-                                .frame(width: 44, height: 36)
-                        }
-                        .disabled(!canAddDraft)
-                        .accessibilityLabel("新增Agent")
-                    }
+            Section(
+                header: Text("设备信息"),
+                footer: Text("该名称会作为终端标签显示在 Agent 配对和会话管理中。")
+            ) {
+                TextField("设备名称", text: $draft.deviceLabel)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+            }
 
-                    Divider()
+            Section(
+                header: Text("语音识别"),
+                footer: Text(draft.asrMode == "router" ? "Router 会先转写音频，再把文本发给 Agent。" : "音频会直接交给 Agent，由 Agent 后端自行识别。")
+            ) {
+                Picker("语音识别", selection: $draft.asrMode) {
+                    Text("Router 识别").tag("router")
+                    Text("Agent 识别").tag("backend")
+                }
+                .pickerStyle(.segmented)
 
-                    SectionTitleView(text: "语音识别", colors: colors)
-                    Picker("语音识别", selection: $asrMode) {
-                        Text("Router 识别").tag("router")
-                        Text("Agent 识别").tag("backend")
-                    }
-                    .pickerStyle(.segmented)
-
-                    if asrMode == "router", asrProfiles.isEmpty {
-                        OutlinedTextField(
-                            label: "Provider / Model Profile",
-                            placeholder: "默认 profile 或 volcengine-bigmodel",
-                            text: $asrProfileId,
-                            colors: colors
-                        )
-                    } else if asrMode == "router" {
-                        Picker("Provider / Model", selection: $asrProfileId) {
-                            ForEach(asrProfiles) { profile in
-                                Text("\(profile.providerLabel) · \(profile.modelLabel)").tag(profile.id)
-                            }
-                        }
-                        .pickerStyle(.menu)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 10)
-                        .background(colors.inputBg)
-                        .cornerRadius(8)
-                    }
-
-                    SectionTitleView(text: "短信登录", colors: colors)
-                    OutlinedTextField(
-                        label: "手机号",
-                        placeholder: "+8613800138000",
-                        text: $phoneNumber,
-                        colors: colors
-                    )
-                    OutlinedTextField(
-                        label: "验证码",
-                        placeholder: "123456",
-                        text: $smsCode,
-                        colors: colors
-                    )
-                    HStack(spacing: 12) {
-                        Button {
-                            Task { await requestSmsCode() }
-                        } label: {
-                            Text("发送验证码")
-                                .font(.system(size: 14, weight: .medium))
-                                .foregroundColor(colors.textPrimary)
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 10)
-                                .background(colors.inputBg)
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 8)
-                                        .stroke(colors.inputBorder, lineWidth: 1)
-                                )
-                                .cornerRadius(8)
-                        }
-                        .disabled(isAuthLoading)
-
-                        Button {
-                            Task { await verifySmsCode() }
-                        } label: {
-                            Text("登录")
-                                .font(.system(size: 14, weight: .medium))
-                                .foregroundColor(colors.onPrimary)
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 10)
-                                .background(colors.primary)
-                                .cornerRadius(8)
-                        }
-                        .disabled(isAuthLoading)
-                    }
-                    Button {
-                        Task { await logoutSession() }
-                    } label: {
-                        Text("退出登录")
-                            .font(.system(size: 14, weight: .medium))
-                            .foregroundColor(colors.textPrimary)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 10)
-                            .background(colors.inputBg)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 8)
-                                    .stroke(colors.inputBorder, lineWidth: 1)
-                            )
-                            .cornerRadius(8)
-                    }
-                    .disabled(isAuthLoading)
-
-                    SectionTitleView(text: "修改密码", colors: colors)
-                    OutlinedSecureField(
-                        label: "当前密码",
-                        placeholder: "current password",
-                        text: $currentPassword,
-                        colors: colors
-                    )
-                    OutlinedSecureField(
-                        label: "新密码",
-                        placeholder: "new password",
-                        text: $newPassword,
-                        colors: colors
-                    )
-                    OutlinedSecureField(
-                        label: "确认新密码",
-                        placeholder: "confirm password",
-                        text: $confirmNewPassword,
-                        colors: colors
-                    )
-                    Button {
-                        Task { await changePassword() }
-                    } label: {
-                        Text("修改密码")
-                            .font(.system(size: 14, weight: .medium))
-                            .foregroundColor(colors.textPrimary)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 10)
-                            .background(colors.inputBg)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 8)
-                                    .stroke(colors.inputBorder, lineWidth: 1)
-                            )
-                            .cornerRadius(8)
-                    }
-                    .disabled(isAuthLoading)
-
-                    SectionTitleView(text: "账号会话", colors: colors)
-                    Text(accountStatusText)
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundColor(colors.textPrimary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 12)
-                        .background(colors.inputBg)
-                        .cornerRadius(8)
-
-                    SectionTitleView(text: "设备信息", colors: colors)
-                    OutlinedTextField(
-                        label: "设备名称",
-                        placeholder: "例如：我的手机",
-                        text: $deviceLabel,
-                        colors: colors
-                    )
+                if draft.asrMode == "router" {
+                    asrProviderPicker
 
                     Button {
-                        saveAll()
-                        showSaved = true
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { showSaved = false }
+                        loadAsrProfiles(force: true)
                     } label: {
-                        Text("保存")
-                            .font(.system(size: 15, weight: .medium))
-                            .foregroundColor(colors.onPrimary)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 12)
-                            .background(colors.primary)
-                            .cornerRadius(8)
-                    }
-
-                    if showSaved {
-                        Text("设置已保存")
-                            .font(.system(size: 12, weight: .regular))
-                            .foregroundColor(colors.accent)
-                    }
-
-                    if let statusMessage {
-                        Text(statusMessage)
-                            .font(.system(size: 12, weight: .regular))
-                            .foregroundColor(colors.recordingRed)
-                            .multilineTextAlignment(.center)
-                            .frame(maxWidth: .infinity)
+                        Label("刷新模型列表", systemImage: "arrow.clockwise")
                     }
                 }
-                .padding(16)
             }
-            .background(colors.background)
+
+            Section {
+                Button {
+                    saveAdvancedSettings()
+                } label: {
+                    Text("保存高级设置")
+                        .frame(maxWidth: .infinity, alignment: .center)
+                }
+            }
+
+            if let statusMessage {
+                Section {
+                    Text(statusMessage)
+                        .foregroundColor(statusMessage == "设置已保存" ? colors.accent : .secondary)
+                }
+            }
         }
+        .listStyle(.insetGrouped)
         .background(colors.background)
         .onAppear {
-            syncFormsFromProfiles(keepingDraft: false)
-            syncGlobalSettings()
-            loadAsrProfiles()
+            syncDraftFromSettings()
+            loadAsrProfiles(force: false)
         }
-        .onReceive(settingsManager.$profiles) { _ in
-            syncFormsFromProfiles(keepingDraft: true)
+        .onChange(of: settingsManager.selectedProfileId) { _ in
+            syncDraftFromSettings()
+            loadAsrProfiles(force: true)
         }
         .onChange(of: asrGatewayUrl) { _ in
-            loadAsrProfiles()
+            loadAsrProfiles(force: true)
+        }
+        .onChange(of: draft.asrMode) { mode in
+            if mode == "router" {
+                loadAsrProfiles(force: false)
+            } else {
+                asrProviderLoadState = .idle
+            }
         }
     }
 
+    @ViewBuilder
+    private var asrProviderPicker: some View {
+        switch asrProviderLoadState {
+        case .idle:
+            TextField("手动 Profile ID", text: $draft.asrProfileId)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+
+        case .loading:
+            HStack {
+                ProgressView()
+                Text("正在加载模型列表")
+                    .foregroundColor(.secondary)
+            }
+
+        case .loaded(let profiles):
+            if profiles.isEmpty {
+                TextField("手动 Profile ID", text: $draft.asrProfileId)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+            } else {
+                Picker("Provider / Model", selection: $draft.asrProfileId) {
+                    ForEach(profiles) { profile in
+                        Text("\(profile.providerLabel) · \(profile.modelLabel)").tag(profile.id)
+                    }
+                }
+            }
+
+        case .failed(let message):
+            VStack(alignment: .leading, spacing: 8) {
+                Text(message)
+                    .font(.footnote)
+                    .foregroundColor(.secondary)
+                TextField("手动 Profile ID", text: $draft.asrProfileId)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+            }
+        }
+    }
+
+    private var selectedProfile: AgentProfile {
+        settingsManager.selectedProfile
+    }
+
     private var asrGatewayUrl: String {
-        agentForms.first(where: { !$0.gatewayUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })?.gatewayUrl
-            ?? settingsManager.selectedProfile.gatewayUrl
+        selectedProfile.gatewayUrl
     }
 
     private var accountStatusText: String {
@@ -664,211 +475,109 @@ struct SettingsScreenView: View {
         return accountId.isEmpty ? "未登录" : "已登录 · \(maskedAccountLabel(accountId))"
     }
 
-    private func syncFormsFromProfiles(keepingDraft: Bool) {
-        let drafts = keepingDraft ? agentForms.filter(\.isDraft) : []
-        var forms = settingsManager.profiles.map { AgentFormState(profile: $0) }
-        for draft in drafts where forms.count < SettingsManager.maxAgentProfiles {
-            forms.append(draft)
+    private var connectionStatusText: String {
+        switch wsManager.connectionState {
+        case .disconnected: return "未连接"
+        case .connecting: return "连接中"
+        case .connected: return "已连接，等待注册"
+        case .registered: return "已注册"
+        case .paired: return "已配对"
         }
-        agentForms = forms
-        deviceLabel = settingsManager.config.deviceLabel
     }
 
-    private func syncGlobalSettings() {
-        asrMode = settingsManager.globalAsrMode
-        asrProfileId = settingsManager.globalAsrProfileId
-    }
-
-    private func status(for form: AgentFormState) -> AgentAvailabilityStatus {
-        if form.backendId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return .unconfigured
-        }
-        guard !form.isDraft, let profile = settingsManager.profiles.first(where: { $0.id == form.id }) else {
-            return .unpaired
-        }
-        return wsManager.availabilityStatus(for: profile)
-    }
-
-    private func selectForm(_ form: AgentFormState) {
-        guard !form.isDraft else { return }
-        settingsManager.selectProfile(form.id)
-        wsManager.applyProfile(
-            settingsManager.selectedProfile,
-            deviceLabel: settingsManager.config.deviceLabel,
-            accessToken: settingsManager.config.accessToken
-        )
-        onSelectProfile(form.id)
-    }
-
-    private func addDraftAgent() {
-        guard canAddDraft else {
-            statusMessage = "最多支持 \(SettingsManager.maxAgentProfiles) 个 Agent"
-            return
-        }
-        let gateway = agentForms.first(where: { !$0.backendId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })?.gatewayUrl
-            ?? settingsManager.selectedProfile.gatewayUrl
-        agentForms.append(.draft(gatewayUrl: gateway))
-        statusMessage = nil
-    }
-
-    private func removeForm(_ form: AgentFormState) {
-        if form.isDraft {
-            agentForms.removeAll { $0.id == form.id }
-            statusMessage = nil
-            return
-        }
-
-        if !form.backendId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, form.isPaired {
-            wsManager.unpair(profileId: form.id, backendId: form.backendId)
-        }
-
-        if settingsManager.profiles.count <= 1 {
-            settingsManager.clearProfile(form.id)
-            wsManager.clearProfileState(profileId: form.id)
-        } else {
-            settingsManager.deleteProfile(form.id)
-            wsManager.removeProfileState(profileId: form.id)
-            wsManager.syncProfiles(settingsManager.profiles)
-            wsManager.applyProfile(
-                settingsManager.selectedProfile,
-                deviceLabel: settingsManager.config.deviceLabel,
-                accessToken: settingsManager.config.accessToken
-            )
-        }
-        syncFormsFromProfiles(keepingDraft: true)
-        statusMessage = nil
-    }
-
-    private func pairForm(_ form: AgentFormState) {
-        guard let profile = saveForm(form, select: true) else { return }
-        guard !profile.backendId.isEmpty else {
-            statusMessage = "请填写 Backend Id"
-            return
-        }
-        wsManager.syncProfiles(settingsManager.profiles)
-        wsManager.applyProfile(
-            profile,
-            deviceLabel: settingsManager.config.deviceLabel,
-            accessToken: settingsManager.config.accessToken
-        )
-        wsManager.rememberBackendForPairing(profile.backendId)
-        onRequestPair(profile.backendId)
-    }
-
-    @discardableResult
-    private func saveForm(_ form: AgentFormState, select: Bool) -> AgentProfile? {
-        let backendId = form.backendId.trimmingCharacters(in: .whitespacesAndNewlines)
-        let gatewayUrl = normalizedGatewayUrl(form.gatewayUrl)
-        if let error = sharedGatewayError(for: form, gatewayUrl: gatewayUrl, backendId: backendId) {
-            statusMessage = error
-            return nil
-        }
-        if form.isDraft, settingsManager.profiles.count >= SettingsManager.maxAgentProfiles {
-            statusMessage = "最多支持 \(SettingsManager.maxAgentProfiles) 个 Agent"
-            return nil
-        }
-
-        let existing = settingsManager.profiles.first { $0.id == form.id }
-        let backendChanged = existing?.backendId != backendId
-        let displayName = form.displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? form.platform.defaultDisplayName
-            : form.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
-        let backendLabel = backendChanged ? (backendId.isEmpty ? nil : backendId) : (existing?.backendLabel ?? form.backendLabel ?? backendId)
-        let profile = AgentProfile(
-            id: form.id,
-            platform: form.platform,
-            displayName: displayName,
-            gatewayUrl: gatewayUrl,
-            backendId: backendId,
-            backendLabel: backendLabel,
-            token: existing?.token ?? form.token.trimmingCharacters(in: .whitespacesAndNewlines),
-            isPaired: !backendId.isEmpty && !backendChanged && (existing?.isPaired ?? form.isPaired),
-            asrMode: asrMode,
-            asrProfileId: asrMode == "router" ? asrProfileId : "",
-            ttsEngine: existing?.ttsEngine ?? "system",
-            minimaxApiKey: existing?.minimaxApiKey ?? "",
-            minimaxVoiceId: existing?.minimaxVoiceId ?? MiniMaxVoiceCatalog.defaultVoiceId
-        )
-
-        guard settingsManager.saveProfile(profile, select: select) else {
-            statusMessage = settingsManager.profileAcceptError(gatewayUrl: gatewayUrl, backendId: backendId) ?? "无法保存 Agent"
-            return nil
-        }
-        agentForms.removeAll { $0.id == form.id && $0.isDraft }
-        syncFormsFromProfiles(keepingDraft: true)
-        statusMessage = nil
-        return settingsManager.profiles.first { $0.id == profile.id } ?? profile
-    }
-
-    private func saveAll() {
-        for form in agentForms {
-            if form.isDraft,
-               form.displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-               form.backendId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                continue
+    private var pairingStatusText: String {
+        switch wsManager.pairingState(for: selectedProfile) {
+        case .unpaired: return "未配对"
+        case .pending: return "配对中"
+        case .paired:
+            if let label = selectedProfile.backendLabel, !label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return "已配对 · \(label)"
             }
-            _ = saveForm(form, select: form.id == settingsManager.selectedProfileId)
+            return "已配对"
         }
-        let current = settingsManager.config
-        settingsManager.updateConfig(
-            GatewayConfig(
-                gatewayUrl: settingsManager.selectedProfile.gatewayUrl,
-                accountId: current.accountId,
-                accessToken: current.accessToken,
-                refreshToken: current.refreshToken,
-                accessExpiresAt: current.accessExpiresAt,
-                refreshExpiresAt: current.refreshExpiresAt,
-                deviceLabel: deviceLabel.trimmingCharacters(in: .whitespacesAndNewlines),
-                token: settingsManager.selectedProfile.token,
-                pairedBackendId: current.pairedBackendId,
-                pairedBackendLabel: current.pairedBackendLabel,
-                asrMode: asrMode,
-                asrProfileId: asrMode == "router" ? asrProfileId : "",
-                ttsEngine: current.ttsEngine,
-                minimaxApiKey: current.minimaxApiKey,
-                minimaxVoiceId: current.minimaxVoiceId,
-                lastLoginMode: current.lastLoginMode,
-                lastPhoneNumber: current.lastPhoneNumber
-            )
-        )
-        settingsManager.updateDeviceLabel(deviceLabel)
-        settingsManager.updateGlobalAsr(mode: asrMode, profileId: asrProfileId)
-        wsManager.syncProfiles(settingsManager.profiles)
-        wsManager.updateAsrConfiguration(mode: asrMode, profileId: asrProfileId)
+    }
+
+    private var canUnpairCurrentAgent: Bool {
+        !selectedProfile.backendId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && wsManager.pairingState(for: selectedProfile) == .paired
+    }
+
+    private var diagnosticsText: String {
+        [
+            "Agent: \(selectedProfile.resolvedDisplayName)",
+            "Connection: \(connectionStatusText)",
+            "Pairing: \(pairingStatusText)",
+            "Gateway URL: \(selectedProfile.gatewayUrl)",
+            "Backend ID: \(selectedProfile.backendId)",
+            "Account: \(accountStatusText)",
+            "Device: \(draft.normalizedDeviceLabel)",
+            "ASR Mode: \(draft.asrMode)",
+            "ASR Profile: \(draft.savedAsrProfileId)"
+        ].joined(separator: "\n")
+    }
+
+    private func syncDraftFromSettings() {
+        draft = AdvancedSettingsDraft(config: settingsManager.config)
+        statusMessage = nil
+    }
+
+    private func saveAdvancedSettings() {
+        settingsManager.updateDeviceLabel(draft.normalizedDeviceLabel)
+        settingsManager.updateGlobalAsr(mode: draft.asrMode, profileId: draft.savedAsrProfileId)
+        wsManager.updateAsrConfiguration(mode: draft.asrMode, profileId: draft.savedAsrProfileId)
         wsManager.applyProfile(
             settingsManager.selectedProfile,
             deviceLabel: settingsManager.config.deviceLabel,
             accessToken: settingsManager.config.accessToken
         )
-        syncFormsFromProfiles(keepingDraft: true)
+        draft = AdvancedSettingsDraft(config: settingsManager.config)
+        statusMessage = "设置已保存"
     }
 
-    private func sharedGatewayError(for form: AgentFormState, gatewayUrl: String, backendId: String) -> String? {
-        guard !backendId.isEmpty else { return nil }
-        let target = AgentProfile.normalizedGatewayKey(gatewayUrl)
-        let otherGateways = agentForms
-            .filter { $0.id != form.id && !$0.backendId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-            .map { AgentProfile.normalizedGatewayKey(normalizedGatewayUrl($0.gatewayUrl)) }
-        if let first = otherGateways.first, first != target {
-            return "当前版本仅支持同一 Gateway 下最多 \(SettingsManager.maxAgentProfiles) 个 Agent"
+    private func reconnectCurrentAgent() {
+        wsManager.reconnect(to: selectedProfile.gatewayUrl)
+        statusMessage = "正在重连当前 Agent"
+    }
+
+    private func unpairCurrentAgent() {
+        onUnpair()
+        statusMessage = "已发送取消配对请求"
+    }
+
+    private func copyDiagnostics() {
+        UIPasteboard.general.string = diagnosticsText
+        statusMessage = "诊断信息已复制"
+    }
+
+    private func loadAsrProfiles(force: Bool) {
+        guard draft.asrMode == "router" else {
+            asrProviderLoadState = .idle
+            return
         }
-        return nil
-    }
+        if !force, loadedAsrGatewayUrl == asrGatewayUrl {
+            if case .loaded = asrProviderLoadState { return }
+        }
+        guard let url = asrProvidersUrl(from: asrGatewayUrl) else {
+            asrProviderLoadState = .failed("Gateway URL 无效，请手动填写 Profile ID")
+            return
+        }
 
-    private func normalizedGatewayUrl(_ value: String) -> String {
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? "wss://boson-tech.top/ws" : trimmed
-    }
-
-    private func authGatewayUrl() -> String {
-        normalizedGatewayUrl(settingsManager.selectedProfile.gatewayUrl)
-    }
-
-    private func loadAsrProfiles() {
-        guard let url = asrProvidersUrl(from: asrGatewayUrl) else { return }
-        URLSession.shared.dataTask(with: url) { data, _, _ in
+        loadedAsrGatewayUrl = asrGatewayUrl
+        asrProviderLoadState = .loading
+        URLSession.shared.dataTask(with: url) { data, _, error in
+            if let error {
+                DispatchQueue.main.async {
+                    asrProviderLoadState = .failed("模型列表加载失败：\(error.localizedDescription)")
+                }
+                return
+            }
             guard let data,
-                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                DispatchQueue.main.async {
+                    asrProviderLoadState = .failed("模型列表解析失败，请手动填写 Profile ID")
+                }
+                return
+            }
             let defaultProfileId = json["defaultProfileId"] as? String
             let rawProfiles = json["profiles"] as? [[String: Any]] ?? []
             let profiles = rawProfiles.compactMap { item -> AsrProviderProfile? in
@@ -884,9 +593,9 @@ struct SettingsScreenView: View {
                 )
             }
             DispatchQueue.main.async {
-                asrProfiles = profiles
-                if shouldReplaceChatAsrProfile(asrProfileId, profiles: profiles) {
-                    asrProfileId = preferredChatAsrProfileId(profiles: profiles, defaultProfileId: defaultProfileId)
+                asrProviderLoadState = .loaded(profiles)
+                if shouldReplaceChatAsrProfile(draft.asrProfileId, profiles: profiles) {
+                    draft.asrProfileId = preferredChatAsrProfileId(profiles: profiles, defaultProfileId: defaultProfileId)
                 }
             }
         }.resume()
@@ -922,154 +631,6 @@ struct SettingsScreenView: View {
             value.removeLast()
         }
         return URL(string: "\(value)/api/asr/providers")
-    }
-
-    @MainActor
-    private func applyAuthSession(_ session: GatewayAuthSessionResponse) {
-        let current = settingsManager.config
-        settingsManager.updateConfig(
-            GatewayConfig(
-                gatewayUrl: settingsManager.selectedProfile.gatewayUrl,
-                accountId: session.accountId,
-                accessToken: session.accessToken,
-                refreshToken: session.refreshToken,
-                accessExpiresAt: session.accessExpiresAt,
-                refreshExpiresAt: session.refreshExpiresAt,
-                deviceLabel: deviceLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "我的设备" : deviceLabel,
-                token: settingsManager.selectedProfile.token,
-                pairedBackendId: settingsManager.config.pairedBackendId,
-                pairedBackendLabel: settingsManager.config.pairedBackendLabel,
-                asrMode: asrMode,
-                asrProfileId: asrMode == "router" ? asrProfileId : "",
-                ttsEngine: current.ttsEngine,
-                minimaxApiKey: current.minimaxApiKey,
-                minimaxVoiceId: current.minimaxVoiceId,
-                lastLoginMode: current.lastLoginMode,
-                lastPhoneNumber: current.lastPhoneNumber
-            )
-        )
-        currentPassword = ""
-        newPassword = ""
-        confirmNewPassword = ""
-        wsManager.applyProfile(
-            settingsManager.selectedProfile,
-            deviceLabel: settingsManager.config.deviceLabel,
-            accessToken: settingsManager.config.accessToken
-        )
-    }
-
-    @MainActor
-    private func requestSmsCode() async {
-        guard !phoneNumber.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            statusMessage = "请先填写手机号"
-            return
-        }
-        isAuthLoading = true
-        defer { isAuthLoading = false }
-        do {
-            let result = try await GatewayAuthClient.requestSms(
-                gatewayUrl: authGatewayUrl(),
-                phoneNumber: phoneNumber
-            )
-            statusMessage = "验证码已发送，\(result.retryAfterSeconds) 秒后可重试"
-        } catch {
-            statusMessage = "发送验证码失败：\(error.localizedDescription)"
-        }
-    }
-
-    @MainActor
-    private func verifySmsCode() async {
-        guard !phoneNumber.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              !smsCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            statusMessage = "请填写手机号和验证码"
-            return
-        }
-        isAuthLoading = true
-        defer { isAuthLoading = false }
-        do {
-            let session = try await GatewayAuthClient.verifySms(
-                gatewayUrl: authGatewayUrl(),
-                phoneNumber: phoneNumber,
-                code: smsCode,
-                terminalLabel: deviceLabel.isEmpty ? "我的设备" : deviceLabel,
-                platform: "ios"
-            )
-            applyAuthSession(session)
-            statusMessage = "登录成功"
-        } catch {
-            statusMessage = "登录失败：\(error.localizedDescription)"
-        }
-    }
-
-    @MainActor
-    private func changePassword() async {
-        let accessToken = settingsManager.config.accessToken.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !accessToken.isEmpty else {
-            statusMessage = "请先登录"
-            return
-        }
-        guard !currentPassword.isEmpty,
-              newPassword.count >= 8,
-              newPassword == confirmNewPassword else {
-            statusMessage = "请检查当前密码和两次新密码"
-            return
-        }
-        isAuthLoading = true
-        defer { isAuthLoading = false }
-        do {
-            let session = try await GatewayAuthClient.changePassword(
-                gatewayUrl: authGatewayUrl(),
-                accessToken: accessToken,
-                currentPassword: currentPassword,
-                newPassword: newPassword
-            )
-            applyAuthSession(session)
-            statusMessage = "密码已修改"
-        } catch {
-            statusMessage = "修改密码失败：\(error.localizedDescription)"
-        }
-    }
-
-    @MainActor
-    private func logoutSession() async {
-        let current = settingsManager.config
-        isAuthLoading = true
-        defer { isAuthLoading = false }
-        do {
-            let refreshToken = current.refreshToken.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !refreshToken.isEmpty {
-                try await GatewayAuthClient.logout(
-                    gatewayUrl: authGatewayUrl(),
-                    refreshToken: refreshToken
-                )
-            }
-        } catch {
-            statusMessage = "退出登录失败：\(error.localizedDescription)"
-            return
-        }
-        wsManager.disconnect()
-        settingsManager.updateConfig(
-            GatewayConfig(
-                gatewayUrl: settingsManager.selectedProfile.gatewayUrl,
-                accountId: "",
-                accessToken: "",
-                refreshToken: "",
-                accessExpiresAt: "",
-                refreshExpiresAt: "",
-                deviceLabel: settingsManager.config.deviceLabel,
-                token: settingsManager.selectedProfile.token,
-                pairedBackendId: settingsManager.config.pairedBackendId,
-                pairedBackendLabel: settingsManager.config.pairedBackendLabel,
-                asrMode: asrMode,
-                asrProfileId: asrMode == "router" ? asrProfileId : "",
-                ttsEngine: current.ttsEngine,
-                minimaxApiKey: current.minimaxApiKey,
-                minimaxVoiceId: current.minimaxVoiceId,
-                lastLoginMode: current.lastLoginMode,
-                lastPhoneNumber: current.lastPhoneNumber
-            )
-        )
-        statusMessage = "已退出登录"
     }
 }
 
@@ -1137,6 +698,154 @@ private struct GatewayAccountAgentsResponse: Decodable {
 
 private struct GatewayAccountAgentUpsertResponse: Decodable {
     let agent: GatewayAccountAgentProfile
+}
+
+struct GatewayBillingProduct: Decodable, Identifiable {
+    let productId: String
+    let kind: String
+    let title: String
+    let subtitle: String
+    let displayName: String
+    let amountCents: Int
+    let currency: String
+    let billingPeriod: String
+    let benefits: [String]
+    let badge: String?
+    let sortOrder: Int
+    let availableProviders: [String]
+
+    var id: String { productId }
+
+    private enum CodingKeys: String, CodingKey {
+        case productId = "product_id"
+        case kind
+        case title
+        case subtitle
+        case displayName = "display_name"
+        case amountCents = "amount_cents"
+        case currency
+        case billingPeriod = "billing_period"
+        case benefits
+        case badge
+        case sortOrder = "sort_order"
+        case availableProviders = "available_providers"
+    }
+}
+
+struct GatewayBillingProductsResponse: Decodable {
+    let walletProducts: [GatewayBillingProduct]
+    let plans: [GatewayBillingProduct]
+
+    private enum CodingKeys: String, CodingKey {
+        case walletProducts = "wallet_products"
+        case plans
+    }
+}
+
+struct GatewayBillingWalletResponse: Decodable {
+    let balanceCents: Int
+    let currency: String
+
+    private enum CodingKeys: String, CodingKey {
+        case balanceCents = "balance_cents"
+        case currency
+    }
+}
+
+struct GatewayBillingSubscriptionResponse: Decodable {
+    let subscriptionId: String
+    let productId: String
+    let status: String
+    let currentPeriodEnd: String
+
+    private enum CodingKeys: String, CodingKey {
+        case subscriptionId = "subscription_id"
+        case productId = "product_id"
+        case status
+        case currentPeriodEnd = "current_period_end"
+    }
+}
+
+struct GatewayBillingOrderResponse: Decodable, Identifiable {
+    let orderId: String
+    let productId: String
+    let productKind: String
+    let provider: String
+    let status: String
+    let amountCents: Int
+    let currency: String
+    let expiresAt: String
+    let paymentUrl: String
+    let copyText: String
+    let qrImageUrl: String
+    let pollAfterMs: Int
+
+    var id: String { orderId }
+
+    private enum CodingKeys: String, CodingKey {
+        case orderId = "order_id"
+        case productId = "product_id"
+        case productKind = "product_kind"
+        case provider
+        case status
+        case amountCents = "amount_cents"
+        case currency
+        case expiresAt = "expires_at"
+        case paymentUrl = "payment_url"
+        case copyText = "copy_text"
+        case qrImageUrl = "qr_image_url"
+        case pollAfterMs = "poll_after_ms"
+    }
+}
+
+struct GatewayBillingUsageEventResponse: Decodable, Identifiable {
+    let usageEventId: String
+    let usageType: String
+    let quantity: Int
+    let amountCents: Int
+    let backendId: String?
+    let createdAt: String
+
+    var id: String { usageEventId }
+
+    private enum CodingKeys: String, CodingKey {
+        case usageEventId = "usage_event_id"
+        case usageType = "usage_type"
+        case quantity
+        case amountCents = "amount_cents"
+        case backendId = "backend_id"
+        case createdAt = "created_at"
+    }
+}
+
+struct GatewayBillingUsageSummaryResponse: Decodable {
+    let recentEvents: [GatewayBillingUsageEventResponse]
+
+    private enum CodingKeys: String, CodingKey {
+        case recentEvents = "recent_events"
+    }
+}
+
+struct GatewayBillingSummaryResponse: Decodable {
+    let accountId: String
+    let wallet: GatewayBillingWalletResponse
+    let currentSubscription: GatewayBillingSubscriptionResponse?
+    let products: GatewayBillingProductsResponse
+    let recentOrders: [GatewayBillingOrderResponse]
+    let usage: GatewayBillingUsageSummaryResponse
+
+    private enum CodingKeys: String, CodingKey {
+        case accountId = "account_id"
+        case wallet
+        case currentSubscription = "current_subscription"
+        case products
+        case recentOrders = "recent_orders"
+        case usage
+    }
+}
+
+private struct GatewayBillingOrdersResponse: Decodable {
+    let orders: [GatewayBillingOrderResponse]
 }
 
 enum GatewayAuthClient {
@@ -1326,6 +1035,66 @@ enum GatewayAuthClient {
             ]
         )
         return try await send(request, as: GatewayAccountAgentUpsertResponse.self).agent
+    }
+
+    static func billingSummary(gatewayUrl: String, accessToken: String) async throws -> GatewayBillingSummaryResponse {
+        let request = try authorizedGetRequest(
+            url: "/api/v2/billing/summary",
+            gatewayUrl: gatewayUrl,
+            accessToken: accessToken
+        )
+        return try await send(request, as: GatewayBillingSummaryResponse.self)
+    }
+
+    static func createBillingOrder(
+        gatewayUrl: String,
+        accessToken: String,
+        productId: String,
+        provider: String
+    ) async throws -> GatewayBillingOrderResponse {
+        let request = try jsonRequest(
+            url: "/api/v2/billing/orders",
+            gatewayUrl: gatewayUrl,
+            body: [
+                "product_id": productId,
+                "provider": provider
+            ],
+            headers: [
+                "Authorization": "Bearer \(accessToken.trimmingCharacters(in: .whitespacesAndNewlines))"
+            ]
+        )
+        return try await send(request, as: GatewayBillingOrderResponse.self)
+    }
+
+    static func billingOrder(
+        gatewayUrl: String,
+        accessToken: String,
+        orderId: String
+    ) async throws -> GatewayBillingOrderResponse {
+        let request = try authorizedGetRequest(
+            url: "/api/v2/billing/orders/\(orderId.trimmingCharacters(in: .whitespacesAndNewlines))",
+            gatewayUrl: gatewayUrl,
+            accessToken: accessToken
+        )
+        return try await send(request, as: GatewayBillingOrderResponse.self)
+    }
+
+    static func billingOrderQrData(
+        gatewayUrl: String,
+        accessToken: String,
+        orderId: String
+    ) async throws -> Data {
+        let request = try authorizedGetRequest(
+            url: "/api/v2/billing/orders/\(orderId.trimmingCharacters(in: .whitespacesAndNewlines))/qr.png",
+            gatewayUrl: gatewayUrl,
+            accessToken: accessToken
+        )
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200...299).contains(httpResponse.statusCode) else {
+            throw GatewayAuthError(message: "HTTP \((response as? HTTPURLResponse)?.statusCode ?? -1)")
+        }
+        return data
     }
 
     private static func jsonRequest(

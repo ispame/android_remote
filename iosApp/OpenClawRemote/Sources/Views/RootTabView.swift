@@ -18,6 +18,7 @@ struct RootTabView: View {
     let onQRCodeScanned: (String) -> Void
     let onSwitchAccount: () -> Void
     let onLogout: () -> Void
+    @Binding var walletNotice: String?
 
     @State private var selectedTab: AppTab = .agents
     @State private var showQRScanner = false
@@ -92,6 +93,23 @@ struct RootTabView: View {
             .tag(AppTab.settings)
         }
         .accentColor(colors.primary)
+        .sheet(isPresented: Binding(
+            get: { walletNotice != nil },
+            set: { presented in
+                if !presented {
+                    walletNotice = nil
+                }
+            }
+        )) {
+            CompatibleNavigationStack {
+                WalletAndPlanView(
+                    settingsManager: settingsManager,
+                    colors: colors,
+                    initialNotice: walletNotice
+                )
+                .navigationTitle("钱包与套餐")
+            }
+        }
         .fullScreenCover(isPresented: $showQRScanner) {
             QRScannerScreenView(
                 onQRCodeScanned: { value in

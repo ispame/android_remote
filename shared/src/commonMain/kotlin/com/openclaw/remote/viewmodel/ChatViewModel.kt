@@ -59,6 +59,9 @@ class ChatViewModel(
     private val _authRecoveryRequests = MutableSharedFlow<AuthRecoveryRequest>(extraBufferCapacity = 1)
     val authRecoveryRequests: SharedFlow<AuthRecoveryRequest> = _authRecoveryRequests.asSharedFlow()
 
+    private val _paymentRequiredRequests = MutableSharedFlow<PaymentRequiredRequest>(extraBufferCapacity = 1)
+    val paymentRequiredRequests: SharedFlow<PaymentRequiredRequest> = _paymentRequiredRequests.asSharedFlow()
+
     private var wsManager: WebSocketManager? = null
     private val viewModelScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var activeConnectionKey: ChatConnectionKey? = null
@@ -347,6 +350,9 @@ class ChatViewModel(
                             clearAuthSession(notice)
                         }
                         is WsMessageEvent.Error -> {
+                            if (event.code.trim().uppercase() == "PAYMENT_REQUIRED") {
+                                _paymentRequiredRequests.emit(PaymentRequiredRequest(event.message))
+                            }
                             when (authRecoveryActionForWsError(event.code)) {
                                 AuthRecoveryAction.REFRESH_SESSION -> {
                                     updateProfileState(managerProfileId) { state ->
@@ -783,6 +789,10 @@ internal fun shouldMaintainAuthenticatedConnection(accessToken: String, accessEx
 
 data class AuthRecoveryRequest(
     val code: String,
+    val message: String,
+)
+
+data class PaymentRequiredRequest(
     val message: String,
 )
 

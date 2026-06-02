@@ -18,6 +18,7 @@ struct OpenClawRemoteApp: App {
 
     @State private var isDark = false
     @State private var authNotice: String? = nil
+    @State private var walletNotice: String? = nil
     @State private var tokenRefreshTask: Task<Void, Never>? = nil
     @State private var assistantSpeechTrigger = AssistantSpeechTrigger()
 
@@ -100,7 +101,8 @@ struct OpenClawRemoteApp: App {
                         },
                         onLogout: {
                             clearAuthSession(message: "已退出登录")
-                        }
+                        },
+                        walletNotice: $walletNotice
                     )
                 }
             }
@@ -207,7 +209,11 @@ struct OpenClawRemoteApp: App {
             let suffix = replacementTerminalLabel
                 .flatMap { $0.isEmpty ? nil : "：\($0)" } ?? ""
             clearAuthSession(message: "账号已在另一台设备登录\(suffix)")
-        case .error(let code, _):
+        case .error(let code, let message):
+            if code.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() == "PAYMENT_REQUIRED" {
+                walletNotice = message.isEmpty ? "余额不足，请开通套餐或充值余额" : message
+                return
+            }
             switch authRecoveryAction(forWebSocketErrorCode: code) {
             case .refreshSession:
                 Task {
