@@ -942,6 +942,29 @@ private final class FakeCredentialVault: CredentialVault {
     }
 }
 
+struct GatewayAccountAgentProfile: Codable {
+    var agentProfileId: String
+    var platform: String
+    var displayName: String
+    var gatewayUrl: String
+    var backendId: String
+    var backendLabel: String?
+    var isPaired: Bool
+    var asrMode: String
+    var pinned: Bool
+    var sortOrder: Int
+}
+
+enum WsMessageEvent {
+    case taskListResponse(TaskListResponsePayload)
+    case taskCreateResponse(TaskMutationResponsePayload)
+    case taskUpdateResponse(TaskMutationResponsePayload)
+    case taskDeleteResponse(TaskMutationResponsePayload)
+    case approvalHistoryResponse(ApprovalHistoryResponsePayload)
+    case error(code: String, message: String)
+    case other
+}
+
 private final class FakeAgentTaskRequestClient: AgentTaskRequestClient {
     let subject = PassthroughSubject<WsMessageEvent, Never>()
     var messageChannel: AnyPublisher<WsMessageEvent, Never> {

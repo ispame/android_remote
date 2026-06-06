@@ -3,12 +3,71 @@ import Foundation
 @main
 struct AiServiceByokTests {
     static func main() throws {
+        try testByokProviderCatalogFiltersCapabilities()
+        try testByokProviderTemplatesDeclareCapabilitiesAndAdapters()
+        try testByokProviderTemplatesAutofillDefaults()
         try testAiServiceChoicePersistsByokMetadataWithoutSecrets()
         try testAgentOverrideResolvesByokChoices()
         try testOpenAICompatibleChatRequestShape()
+        try testOpenAICompatibleChatClientExposesConversationCall()
+        try testAnthropicChatRequestShape()
+        try testAnthropicChatClientExposesConversationCall()
         try testOpenAICompatibleAsrRequestShape()
         try testSilentWavFixtureIsValidForAsrValidation()
         print("AiServiceByokTests passed")
+    }
+
+    private static func testByokProviderCatalogFiltersCapabilities() throws {
+        let llmIds = AiProviderCatalog.llmByokProviders.map(\.id)
+        for providerId in ["openai-compatible", "minimax", "kimi", "claude", "doubao"] {
+            try expect(llmIds.contains(providerId), "LLM BYOK providers should include \(providerId)")
+        }
+
+        let asrIds = AiProviderCatalog.asrByokProviders.map(\.id)
+        try expect(asrIds == ["openai-compatible"], "ASR BYOK providers should only include Whisper-compatible providers")
+
+        let ttsIds = AiProviderCatalog.ttsByokProviders.map(\.id)
+        try expect(ttsIds == ["minimax"], "TTS BYOK providers should only include providers with implemented local TTS")
+    }
+
+    private static func testByokProviderTemplatesDeclareCapabilitiesAndAdapters() throws {
+        for provider in AiProviderCatalog.llmByokProviders {
+            try expect(provider.capabilities == ["llm"], "\(provider.id) should declare only LLM capability in the LLM picker")
+            try expect(!provider.adapter.isEmpty, "\(provider.id) should declare the local chat adapter")
+        }
+        try expect(AiProviderCatalog.llmProvider(id: "claude")?.adapter == "anthropic-messages", "Claude should use the Anthropic Messages adapter")
+        try expect(AiProviderCatalog.llmProvider(id: "kimi")?.adapter == "openai-compatible-chat", "Kimi should use OpenAI-compatible chat")
+
+        for provider in AiProviderCatalog.asrByokProviders {
+            try expect(provider.capabilities == ["asr"], "\(provider.id) should declare ASR capability")
+            try expect(provider.adapter == "openai-whisper", "\(provider.id) should use the Whisper-compatible adapter")
+        }
+
+        for provider in AiProviderCatalog.ttsByokProviders {
+            try expect(provider.capabilities == ["tts"], "\(provider.id) should declare TTS capability")
+            try expect(provider.adapter == "minimax-tts", "\(provider.id) should use the MiniMax TTS adapter")
+        }
+    }
+
+    private static func testByokProviderTemplatesAutofillDefaults() throws {
+        let kimi = try unwrap(AiProviderCatalog.llmProvider(id: "kimi"), "Kimi provider should exist")
+        try expect(kimi.baseUrlDefault == "https://api.moonshot.ai/v1", "Kimi should fill Moonshot base URL")
+        try expect(kimi.modelDefault == "moonshot-v1-8k", "Kimi should fill a default model")
+        try expect(kimi.credentialId == "llm:kimi", "Kimi should use a provider-scoped credential id")
+
+        let minimaxTts = try unwrap(AiProviderCatalog.ttsProvider(id: "minimax"), "MiniMax TTS provider should exist")
+        try expect(minimaxTts.baseUrlDefault == "https://api.minimaxi.com/v1", "MiniMax TTS should fill its API base URL")
+        try expect(minimaxTts.credentialId == localMiniMaxCredentialId, "MiniMax TTS should keep the existing credential id")
+
+        let choice = AiProviderCatalog.choice(
+            mode: "byok",
+            provider: minimaxTts,
+            voiceId: "voice-a"
+        )
+        try expect(choice.mode == "byok", "provider choice should preserve BYOK mode")
+        try expect(choice.providerId == "minimax", "provider choice should persist provider id")
+        try expect(choice.baseUrl == "https://api.minimaxi.com/v1", "provider choice should autofill base URL")
+        try expect(choice.voiceId == "voice-a", "provider choice should preserve voice id")
     }
 
     private static func testAiServiceChoicePersistsByokMetadataWithoutSecrets() throws {
@@ -115,6 +174,39 @@ struct AiServiceByokTests {
         try expect(body["stream"] as? Bool == false, "chat request should be non-streaming")
     }
 
+    private static func testOpenAICompatibleChatClientExposesConversationCall() throws {
+        let source = try readSource("iosApp/OpenClawRemote/Sources/OpenAICompatibleAiClients.swift")
+        try expect(source.contains("func chat(baseUrl: String, apiKey: String, model: String, messages: [OpenAICompatibleChatMessage]) async throws -> String"), "OpenAI-compatible client should expose a reusable chat call")
+        try expect(source.contains("messages: messages"), "OpenAI-compatible reusable chat should send caller-provided conversation history")
+    }
+
+    private static func testAnthropicChatRequestShape() throws {
+        let request = try AnthropicChatClient.makeRequest(
+            baseUrl: "https://api.anthropic.com/v1/",
+            apiKey: "sk-ant-test",
+            model: "claude-sonnet-4-20250514",
+            messages: [OpenAICompatibleChatMessage(role: "user", content: "ping")]
+        )
+
+        try expect(request.url?.absoluteString == "https://api.anthropic.com/v1/messages", "Claude request should target Messages API")
+        try expect(request.httpMethod == "POST", "Claude request should be POST")
+        try expect(request.value(forHTTPHeaderField: "x-api-key") == "sk-ant-test", "Claude request should use x-api-key auth")
+        try expect(request.value(forHTTPHeaderField: "anthropic-version") == "2023-06-01", "Claude request should set API version")
+        try expect(request.value(forHTTPHeaderField: "Content-Type") == "application/json", "Claude request should be JSON")
+
+        let body = try decodeJsonObject(request.httpBody, "Claude body should be JSON")
+        try expect(body["model"] as? String == "claude-sonnet-4-20250514", "Claude request should include model")
+        try expect(body["max_tokens"] as? Int == 64, "Claude test request should cap max tokens")
+        let messages = try unwrap(body["messages"] as? [[String: String]], "Claude request should include messages")
+        try expect(messages == [["role": "user", "content": "ping"]], "Claude request should include prompt message")
+    }
+
+    private static func testAnthropicChatClientExposesConversationCall() throws {
+        let source = try readSource("iosApp/OpenClawRemote/Sources/OpenAICompatibleAiClients.swift")
+        try expect(source.contains("func chat(baseUrl: String, apiKey: String, model: String, messages: [OpenAICompatibleChatMessage]) async throws -> String"), "Anthropic client should expose a reusable chat call")
+        try expect(source.contains("messages: messages"), "Anthropic reusable chat should send caller-provided conversation history")
+    }
+
     private static func testOpenAICompatibleAsrRequestShape() throws {
         let request = try OpenAICompatibleAsrClient.makeTranscriptionRequest(
             baseUrl: "https://api.example.com/v1",
@@ -163,6 +255,12 @@ struct AiServiceByokTests {
             throw TestFailure(message)
         }
         return value
+    }
+
+    private static func readSource(_ relativePath: String) throws -> String {
+        let url = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent(relativePath)
+        return try String(contentsOf: url, encoding: .utf8)
     }
 }
 

@@ -111,7 +111,7 @@ struct SimpleSettingsTabView: View {
 
             Section(
                 header: Text("账号"),
-                footer: Text("切换账号和退出登录会清除当前登录态，但保留本机 Agent、录音和耳机配置。")
+                footer: Text("退出登录会保留本机 Agent 配置，重新登录后可继续使用；切换账号会清空本机 Agent 配置。录音和耳机配置始终保留。")
             ) {
                 NavigationLink {
                     WalletAndPlanView(
@@ -139,11 +139,17 @@ struct SimpleSettingsTabView: View {
                 Button("切换账号") {
                     onSwitchAccount()
                 }
+                Text("切换账号会清空本机 Agent 配置")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
                 Button(role: .destructive) {
                     onLogout()
                 } label: {
                     Text("退出登录")
                 }
+                Text("退出登录会保留本机 Agent 配置")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
 
             Section("关于") {
@@ -173,8 +179,20 @@ struct SimpleSettingsTabView: View {
 
     private var aiServiceSummary: String {
         let tts = settingsManager.aiSettings.defaults.tts
-        let ttsLabel = tts.mode == "byok" && tts.providerId == "minimax" ? "MiniMax" : "系统"
+        let ttsLabel: String
+        switch tts.mode {
+        case "router": ttsLabel = "Router TTS"
+        case "byok": ttsLabel = providerLabel(tts)
+        default: ttsLabel = "系统"
+        }
         return "LLM / ASR / \(ttsLabel)"
+    }
+
+    private func providerLabel(_ choice: AiServiceChoice) -> String {
+        let displayName = choice.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !displayName.isEmpty { return displayName }
+        let providerId = choice.providerId.trimmingCharacters(in: .whitespacesAndNewlines)
+        return providerId.isEmpty ? "BYOK" : providerId
     }
 
     private var appVersion: String {
@@ -532,17 +550,49 @@ private func billingPaymentClipboardText(for order: GatewayBillingOrderResponse)
     return paymentUrl.isEmpty ? order.copyText : paymentUrl
 }
 
-private struct AiServiceSettingsView: View {
+struct AIServiceNavigationLink: View {
+    @ObservedObject var settingsManager: SettingsManager
+    let colors: MochiColors
+
+    var body: some View {
+        NavigationLink {
+            AiServiceSettingsView(
+                settingsManager: settingsManager,
+                colors: colors
+            )
+            .navigationTitle("AI 服务")
+        } label: {
+            Label("打开 AI 服务", systemImage: "sparkles")
+        }
+    }
+}
+
+struct AiServiceSettingsView: View {
     @ObservedObject var settingsManager: SettingsManager
     let colors: MochiColors
 
     @State private var billingSummary: GatewayBillingSummaryResponse?
+    @State private var draftLlmMode = "router"
+    @State private var draftLlmProfileId = "default"
+    @State private var draftLlmProviderId = "openai-compatible"
+    @State private var draftLlmBaseUrl = "https://api.openai.com/v1"
+    @State private var draftLlmModel = "gpt-4o-mini"
+    @State private var llmApiKey = ""
     @State private var draftAsrMode = "router"
     @State private var draftAsrProfileId = ""
+    @State private var draftAsrProviderId = "openai-compatible"
+    @State private var draftAsrBaseUrl = "https://api.openai.com/v1"
+    @State private var draftAsrModel = "whisper-1"
+    @State private var asrApiKey = ""
     @State private var draftTtsMode = "system"
+    @State private var draftTtsProviderId = "minimax"
+    @State private var draftTtsBaseUrl = "https://api.minimaxi.com/v1"
+    @State private var draftTtsModel = "speech-2.8-hd"
     @State private var minimaxApiKey = ""
     @State private var minimaxVoiceId = MiniMaxVoiceCatalog.defaultVoiceId
     @State private var fetchedMiniMaxVoices: [MiniMaxVoiceOption] = []
+    @State private var isTestingLlm = false
+    @State private var isTestingAsr = false
     @State private var isRefreshingMiniMaxVoices = false
     @State private var isLoadingBilling = false
     @State private var didLoadDraft = false
@@ -570,23 +620,84 @@ private struct AiServiceSettingsView: View {
                 .disabled(isLoadingBilling)
             }
 
-            Section("Router LLM") {
-                AiSettingsInfoRow(label: "模式", value: "Router 会员模型")
-                AiSettingsInfoRow(label: "Profile", value: llmProfileId)
-                AiSettingsInfoRow(label: "调用方", value: "App / Agent 后端")
+            Section("LLM") {
+                Picker("模型服务", selection: $draftLlmMode) {
+                    Text("Router").tag("router")
+                    Text("BYOK").tag("byok")
+                    Text("Agent").tag("agent")
+                }
+                .pickerStyle(.segmented)
+
+                if draftLlmMode == "router" {
+                    AiSettingsInfoRow(label: "模式", value: "Router 会员模型")
+                    TextField("Profile ID", text: $draftLlmProfileId)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                } else if draftLlmMode == "byok" {
+                    Picker("Provider", selection: $draftLlmProviderId) {
+                        ForEach(AiProviderCatalog.llmByokProviders) { provider in
+                            Text(provider.label).tag(provider.id)
+                        }
+                    }
+                    TextField("Base URL", text: $draftLlmBaseUrl)
+                        .keyboardType(.URL)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    TextField("Model", text: $draftLlmModel)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    AiSettingsInfoRow(label: "本机 Key", value: llmApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "未保存" : "已保存")
+                    SecureField("LLM API Key", text: $llmApiKey)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    Button {
+                        Task { await testLlm() }
+                    } label: {
+                        Label(isTestingLlm ? "正在测试 LLM..." : "测试 LLM", systemImage: "bolt.horizontal.circle")
+                    }
+                    .disabled(isTestingLlm)
+                } else {
+                    Text("LLM 由当前 Agent 后端自行配置，本机不保存 Key。")
+                        .foregroundColor(.secondary)
+                }
             }
 
             Section("ASR") {
                 Picker("识别服务", selection: $draftAsrMode) {
-                    Text("Router ASR").tag("router")
+                    Text("Router").tag("router")
+                    Text("BYOK").tag("byok")
                     Text("Agent 后端").tag("backend")
                 }
                 .pickerStyle(.segmented)
 
                 if draftAsrMode == "router" {
+                    AiSettingsInfoRow(label: "模式", value: "Router ASR")
                     TextField("Profile ID", text: $draftAsrProfileId)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
+                } else if draftAsrMode == "byok" {
+                    Picker("Provider", selection: $draftAsrProviderId) {
+                        ForEach(AiProviderCatalog.asrByokProviders) { provider in
+                            Text(provider.label).tag(provider.id)
+                        }
+                    }
+                    TextField("Base URL", text: $draftAsrBaseUrl)
+                        .keyboardType(.URL)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    TextField("Model", text: $draftAsrModel)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    AiSettingsInfoRow(label: "本机 Key", value: asrApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "未保存" : "已保存")
+                    SecureField("ASR API Key", text: $asrApiKey)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    Button {
+                        Task { await testAsr() }
+                    } label: {
+                        Label(isTestingAsr ? "正在测试 ASR..." : "测试 ASR", systemImage: "waveform.badge.magnifyingglass")
+                    }
+                    .disabled(isTestingAsr)
                 } else {
                     Text("录音或语音识别交给当前 Agent 后端处理")
                         .foregroundColor(.secondary)
@@ -595,12 +706,29 @@ private struct AiServiceSettingsView: View {
 
             Section {
                 Picker("TTS 引擎", selection: $draftTtsMode) {
+                    Text("Router").tag("router")
+                    Text("BYOK").tag("byok")
                     Text("系统 TTS").tag("system")
-                    Text("MiniMax").tag("minimax")
                 }
                 .pickerStyle(.segmented)
 
-                if draftTtsMode == "minimax" {
+                if draftTtsMode == "router" {
+                    AiSettingsInfoRow(label: "模式", value: "Router TTS")
+                    Text("Router TTS 统一能力入口已预留；当前 Router catalog 暂未返回可用 TTS profile 时，实际朗读仍使用系统 TTS。")
+                        .foregroundColor(.secondary)
+                } else if draftTtsMode == "byok" {
+                    Picker("Provider", selection: $draftTtsProviderId) {
+                        ForEach(AiProviderCatalog.ttsByokProviders) { provider in
+                            Text(provider.label).tag(provider.id)
+                        }
+                    }
+                    TextField("Base URL", text: $draftTtsBaseUrl)
+                        .keyboardType(.URL)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    TextField("Model", text: $draftTtsModel)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
                     AiSettingsInfoRow(label: "本机 Key", value: minimaxApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "未保存" : "已保存")
                     SecureField("MiniMax API Key", text: $minimaxApiKey)
                         .textInputAutocapitalization(.never)
@@ -631,11 +759,20 @@ private struct AiServiceSettingsView: View {
             Section("Agent 覆盖") {
                 ForEach(settingsManager.profiles) { profile in
                     let resolved = settingsManager.aiSettings.resolved(for: profile.id)
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(profile.resolvedDisplayName)
-                        Text(agentOverrideSummary(resolved))
-                            .font(.system(size: 12))
-                            .foregroundColor(.secondary)
+                    NavigationLink {
+                        AgentAiOverrideEditorView(
+                            settingsManager: settingsManager,
+                            profile: profile,
+                            colors: colors
+                        )
+                        .navigationTitle(profile.resolvedDisplayName)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(profile.resolvedDisplayName)
+                            Text(agentOverrideSummary(resolved))
+                                .font(.system(size: 12))
+                                .foregroundColor(.secondary)
+                        }
                     }
                 }
             }
@@ -655,16 +792,24 @@ private struct AiServiceSettingsView: View {
         .task(id: settingsManager.config.accessToken) {
             await loadBillingSummary()
         }
+        .onChange(of: draftLlmMode) { _ in saveDraft() }
+        .onChange(of: draftLlmProfileId) { _ in saveDraft() }
+        .onChange(of: draftLlmProviderId) { _ in applyLlmProviderDefaults() }
+        .onChange(of: draftLlmBaseUrl) { _ in saveDraft() }
+        .onChange(of: draftLlmModel) { _ in saveDraft() }
+        .onChange(of: llmApiKey) { _ in saveDraft() }
         .onChange(of: draftAsrMode) { _ in saveDraft() }
         .onChange(of: draftAsrProfileId) { _ in saveDraft() }
+        .onChange(of: draftAsrProviderId) { _ in applyAsrProviderDefaults() }
+        .onChange(of: draftAsrBaseUrl) { _ in saveDraft() }
+        .onChange(of: draftAsrModel) { _ in saveDraft() }
+        .onChange(of: asrApiKey) { _ in saveDraft() }
         .onChange(of: draftTtsMode) { _ in saveDraft() }
+        .onChange(of: draftTtsProviderId) { _ in applyTtsProviderDefaults() }
+        .onChange(of: draftTtsBaseUrl) { _ in saveDraft() }
+        .onChange(of: draftTtsModel) { _ in saveDraft() }
         .onChange(of: minimaxApiKey) { _ in saveDraft() }
         .onChange(of: minimaxVoiceId) { _ in saveDraft() }
-    }
-
-    private var llmProfileId: String {
-        let profileId = settingsManager.aiSettings.defaults.llm.profileId.trimmingCharacters(in: .whitespacesAndNewlines)
-        return profileId.isEmpty ? "default" : profileId
     }
 
     private var currentPlanText: String {
@@ -687,15 +832,47 @@ private struct AiServiceSettingsView: View {
         )
     }
 
+    private var selectedLlmProvider: AiByokProviderTemplate {
+        AiProviderCatalog.llmProvider(id: draftLlmProviderId) ?? AiProviderCatalog.llmByokProviders[0]
+    }
+
+    private var selectedAsrProvider: AiByokProviderTemplate {
+        AiProviderCatalog.asrProvider(id: draftAsrProviderId) ?? AiProviderCatalog.asrByokProviders[0]
+    }
+
+    private var selectedTtsProvider: AiByokProviderTemplate {
+        AiProviderCatalog.ttsProvider(id: draftTtsProviderId) ?? AiProviderCatalog.ttsByokProviders[0]
+    }
+
     private func syncDraftFromSettings() {
         didLoadDraft = false
         let defaults = settingsManager.aiSettings.defaults
-        draftAsrMode = defaults.asr.mode == "backend" ? "backend" : "router"
-        draftAsrProfileId = draftAsrMode == "router" ? defaults.asr.profileId : ""
+        let llm = defaults.llm
+        draftLlmMode = llm.mode == "byok" || llm.mode == "agent" ? llm.mode : "router"
+        draftLlmProfileId = llm.profileId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "default" : llm.profileId
+        let llmProvider = AiProviderCatalog.llmProvider(id: llm.providerId) ?? AiProviderCatalog.llmByokProviders[0]
+        draftLlmProviderId = llmProvider.id
+        draftLlmBaseUrl = llm.baseUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? llmProvider.baseUrlDefault : llm.baseUrl
+        draftLlmModel = llm.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? llmProvider.modelDefault : llm.model
+        llmApiKey = settingsManager.localCredential(id: llmProvider.credentialId) ?? ""
+
+        let asr = defaults.asr
+        draftAsrMode = asr.mode == "backend" || asr.mode == "byok" ? asr.mode : "router"
+        draftAsrProfileId = draftAsrMode == "router" ? asr.profileId : ""
+        let asrProvider = AiProviderCatalog.asrProvider(id: asr.providerId) ?? AiProviderCatalog.asrByokProviders[0]
+        draftAsrProviderId = asrProvider.id
+        draftAsrBaseUrl = asr.baseUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? asrProvider.baseUrlDefault : asr.baseUrl
+        draftAsrModel = asr.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? asrProvider.modelDefault : asr.model
+        asrApiKey = settingsManager.localCredential(id: asrProvider.credentialId) ?? ""
+
         let tts = defaults.tts
-        draftTtsMode = tts.mode == "byok" && tts.providerId == "minimax" ? "minimax" : "system"
+        draftTtsMode = tts.mode == "router" || tts.mode == "byok" ? tts.mode : "system"
+        let ttsProvider = AiProviderCatalog.ttsProvider(id: tts.providerId) ?? AiProviderCatalog.ttsByokProviders[0]
+        draftTtsProviderId = ttsProvider.id
+        draftTtsBaseUrl = tts.baseUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? ttsProvider.baseUrlDefault : tts.baseUrl
+        draftTtsModel = tts.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? ttsProvider.modelDefault : tts.model
         minimaxVoiceId = normalizedMiniMaxVoiceId(tts.voiceId)
-        minimaxApiKey = settingsManager.localTtsCredential(providerId: "minimax") ?? ""
+        minimaxApiKey = settingsManager.localCredential(id: ttsProvider.credentialId) ?? ""
         DispatchQueue.main.async {
             didLoadDraft = true
         }
@@ -704,23 +881,84 @@ private struct AiServiceSettingsView: View {
     private func saveDraft() {
         guard didLoadDraft else { return }
         let normalizedVoiceId = normalizedMiniMaxVoiceId(minimaxVoiceId)
-        settingsManager.updateLocalTtsCredential(providerId: "minimax", apiKey: minimaxApiKey)
+        let llmProvider = selectedLlmProvider
+        let asrProvider = selectedAsrProvider
+        let ttsProvider = selectedTtsProvider
+        settingsManager.updateLocalCredential(id: llmProvider.credentialId, apiKey: llmApiKey)
+        settingsManager.updateLocalCredential(id: asrProvider.credentialId, apiKey: asrApiKey)
+        settingsManager.updateLocalCredential(id: ttsProvider.credentialId, apiKey: minimaxApiKey)
         settingsManager.updateAiSettings(
             AiServiceSettings(
                 defaults: AiServiceDefaults(
-                    llm: settingsManager.aiSettings.defaults.llm,
-                    asr: AiServiceChoice(
-                        mode: draftAsrMode == "backend" ? "backend" : "router",
-                        profileId: draftAsrMode == "router" ? draftAsrProfileId.trimmingCharacters(in: .whitespacesAndNewlines) : ""
+                    llm: AiServiceChoice(
+                        mode: draftLlmMode,
+                        profileId: draftLlmMode == "router" ? draftLlmProfileId.trimmingCharacters(in: .whitespacesAndNewlines) : "",
+                        providerId: llmProvider.id,
+                        baseUrl: draftLlmBaseUrl.trimmingCharacters(in: .whitespacesAndNewlines),
+                        model: draftLlmModel.trimmingCharacters(in: .whitespacesAndNewlines),
+                        credentialId: llmProvider.credentialId,
+                        displayName: llmProvider.label
                     ),
-                    tts: draftTtsMode == "minimax"
-                        ? AiServiceChoice(mode: "byok", providerId: "minimax", voiceId: normalizedVoiceId)
-                        : AiServiceChoice(mode: "system", providerId: "system", voiceId: normalizedVoiceId)
+                    asr: AiServiceChoice(
+                        mode: draftAsrMode,
+                        profileId: draftAsrMode == "router" ? draftAsrProfileId.trimmingCharacters(in: .whitespacesAndNewlines) : "",
+                        providerId: asrProvider.id,
+                        baseUrl: draftAsrBaseUrl.trimmingCharacters(in: .whitespacesAndNewlines),
+                        model: draftAsrModel.trimmingCharacters(in: .whitespacesAndNewlines),
+                        credentialId: asrProvider.credentialId,
+                        displayName: asrProvider.label
+                    ),
+                    tts: draftTtsMode == "router"
+                        ? AiServiceChoice(
+                            mode: "router",
+                            providerId: "router",
+                            voiceId: normalizedVoiceId,
+                            credentialId: ttsProvider.credentialId,
+                            displayName: "Router TTS"
+                        )
+                        : (draftTtsMode == "byok"
+                            ? AiServiceChoice(
+                            mode: "byok",
+                            providerId: ttsProvider.id,
+                            voiceId: normalizedVoiceId,
+                            baseUrl: draftTtsBaseUrl.trimmingCharacters(in: .whitespacesAndNewlines),
+                            model: draftTtsModel.trimmingCharacters(in: .whitespacesAndNewlines),
+                            credentialId: ttsProvider.credentialId,
+                            displayName: ttsProvider.label
+                        )
+                            : AiServiceChoice(mode: "system", providerId: "system", voiceId: normalizedVoiceId, credentialId: ttsProvider.credentialId))
                 ),
                 agentOverrides: settingsManager.aiSettings.agentOverrides
             )
         )
         statusMessage = "AI 服务设置已保存"
+    }
+
+    private func applyLlmProviderDefaults() {
+        guard didLoadDraft else { return }
+        let provider = selectedLlmProvider
+        draftLlmBaseUrl = provider.baseUrlDefault
+        draftLlmModel = provider.modelDefault
+        llmApiKey = settingsManager.localCredential(id: provider.credentialId) ?? ""
+        saveDraft()
+    }
+
+    private func applyAsrProviderDefaults() {
+        guard didLoadDraft else { return }
+        let provider = selectedAsrProvider
+        draftAsrBaseUrl = provider.baseUrlDefault
+        draftAsrModel = provider.modelDefault
+        asrApiKey = settingsManager.localCredential(id: provider.credentialId) ?? ""
+        saveDraft()
+    }
+
+    private func applyTtsProviderDefaults() {
+        guard didLoadDraft else { return }
+        let provider = selectedTtsProvider
+        draftTtsBaseUrl = provider.baseUrlDefault
+        draftTtsModel = provider.modelDefault
+        minimaxApiKey = settingsManager.localCredential(id: provider.credentialId) ?? ""
+        saveDraft()
     }
 
     @MainActor
@@ -744,6 +982,56 @@ private struct AiServiceSettingsView: View {
     }
 
     @MainActor
+    private func testLlm() async {
+        guard !llmApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            statusMessage = "请先填写 LLM API Key"
+            return
+        }
+        isTestingLlm = true
+        defer { isTestingLlm = false }
+        do {
+            let provider = selectedLlmProvider
+            let content: String
+            if provider.apiStyle == "anthropic" {
+                content = try await AnthropicChatClient().testChat(
+                    baseUrl: draftLlmBaseUrl,
+                    apiKey: llmApiKey,
+                    model: draftLlmModel
+                )
+            } else {
+                content = try await OpenAICompatibleChatClient().testChat(
+                    baseUrl: draftLlmBaseUrl,
+                    apiKey: llmApiKey,
+                    model: draftLlmModel
+                )
+            }
+            statusMessage = "LLM 测试成功：\(content.prefix(80))"
+        } catch {
+            statusMessage = "LLM 测试失败：\(error.localizedDescription)"
+        }
+    }
+
+    @MainActor
+    private func testAsr() async {
+        guard !asrApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            statusMessage = "请先填写 ASR API Key"
+            return
+        }
+        isTestingAsr = true
+        defer { isTestingAsr = false }
+        do {
+            let transcript = try await OpenAICompatibleAsrClient().testTranscription(
+                baseUrl: draftAsrBaseUrl,
+                apiKey: asrApiKey,
+                model: draftAsrModel
+            )
+            statusMessage = "ASR 测试成功：\(transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "已连接" : String(transcript.prefix(80)))"
+        } catch {
+            statusMessage = "ASR 测试失败：\(error.localizedDescription)"
+        }
+    }
+
+    @MainActor
     private func refreshMiniMaxVoices() async {
         guard !minimaxApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             statusMessage = "请先填写 MiniMax API Key"
@@ -752,7 +1040,7 @@ private struct AiServiceSettingsView: View {
         isRefreshingMiniMaxVoices = true
         defer { isRefreshingMiniMaxVoices = false }
         do {
-            fetchedMiniMaxVoices = try await MiniMaxVoiceCatalog.fetchAvailableVoices(apiKey: minimaxApiKey)
+            fetchedMiniMaxVoices = try await MiniMaxVoiceCatalog.fetchAvailableVoices(apiKey: minimaxApiKey, baseUrl: draftTtsBaseUrl)
             statusMessage = "已刷新 \(fetchedMiniMaxVoices.count) 个 MiniMax 音色"
         } catch {
             statusMessage = "刷新音色失败：\(error.localizedDescription)"
@@ -760,9 +1048,32 @@ private struct AiServiceSettingsView: View {
     }
 
     private func agentOverrideSummary(_ defaults: AiServiceDefaults) -> String {
-        let asr = defaults.asr.mode == "backend" ? "Agent ASR" : "Router ASR"
-        let tts = defaults.tts.mode == "byok" && defaults.tts.providerId == "minimax" ? "MiniMax" : "系统 TTS"
-        return "继承全局 · \(asr) · \(tts)"
+        let llm: String
+        switch defaults.llm.mode {
+        case "byok": llm = "BYOK \(providerLabel(defaults.llm))"
+        case "agent": llm = "Agent LLM"
+        default: llm = "Router LLM"
+        }
+        let asr: String
+        switch defaults.asr.mode {
+        case "backend": asr = "Agent ASR"
+        case "byok": asr = "BYOK \(providerLabel(defaults.asr))"
+        default: asr = "Router ASR"
+        }
+        let tts: String
+        switch defaults.tts.mode {
+        case "router": tts = "Router TTS"
+        case "byok": tts = providerLabel(defaults.tts)
+        default: tts = "系统 TTS"
+        }
+        return "\(llm) · \(asr) · \(tts)"
+    }
+
+    private func providerLabel(_ choice: AiServiceChoice) -> String {
+        let displayName = choice.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !displayName.isEmpty { return displayName }
+        let providerId = choice.providerId.trimmingCharacters(in: .whitespacesAndNewlines)
+        return providerId.isEmpty ? "BYOK" : providerId
     }
 
     private func voiceLabel(_ voice: MiniMaxVoiceOption) -> String {
@@ -777,6 +1088,254 @@ private struct AiServiceSettingsView: View {
     private func money(_ amountCents: Int, _ currency: String) -> String {
         let value = String(format: "%.2f", Double(amountCents) / 100.0)
         return currency.uppercased() == "CNY" ? "¥\(value)" : "\(currency.uppercased()) \(value)"
+    }
+}
+
+private struct AgentAiOverrideEditorView: View {
+    @ObservedObject var settingsManager: SettingsManager
+    let profile: AgentProfile
+    let colors: MochiColors
+
+    @State private var inherit = true
+    @State private var llmMode = "router"
+    @State private var llmProfileId = "default"
+    @State private var llmProviderId = "openai-compatible"
+    @State private var llmBaseUrl = "https://api.openai.com/v1"
+    @State private var llmModel = "gpt-4o-mini"
+    @State private var asrMode = "router"
+    @State private var asrProfileId = ""
+    @State private var asrProviderId = "openai-compatible"
+    @State private var asrBaseUrl = "https://api.openai.com/v1"
+    @State private var asrModel = "whisper-1"
+    @State private var ttsMode = "system"
+    @State private var ttsProviderId = "minimax"
+    @State private var ttsBaseUrl = "https://api.minimaxi.com/v1"
+    @State private var ttsModel = "speech-2.8-hd"
+    @State private var minimaxVoiceId = MiniMaxVoiceCatalog.defaultVoiceId
+    @State private var didLoadDraft = false
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle("继承全局默认", isOn: $inherit)
+            } footer: {
+                Text("API Key 仍使用本机统一凭据；Agent 覆盖只保存服务、模型和音色选择。")
+            }
+
+            if !inherit {
+                Section("LLM") {
+                    Picker("模型服务", selection: $llmMode) {
+                        Text("Router").tag("router")
+                        Text("BYOK").tag("byok")
+                        Text("Agent").tag("agent")
+                    }
+                    .pickerStyle(.segmented)
+                    if llmMode == "router" {
+                        TextField("Profile ID", text: $llmProfileId)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                    } else if llmMode == "byok" {
+                        Picker("Provider", selection: $llmProviderId) {
+                            ForEach(AiProviderCatalog.llmByokProviders) { provider in
+                                Text(provider.label).tag(provider.id)
+                            }
+                        }
+                        TextField("Base URL", text: $llmBaseUrl)
+                            .keyboardType(.URL)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                        TextField("Model", text: $llmModel)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                    } else {
+                        Text("LLM 由 Agent 后端自行配置。")
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                Section("ASR") {
+                    Picker("识别服务", selection: $asrMode) {
+                        Text("Router").tag("router")
+                        Text("BYOK").tag("byok")
+                        Text("Agent 后端").tag("backend")
+                    }
+                    .pickerStyle(.segmented)
+                    if asrMode == "router" {
+                        TextField("Profile ID", text: $asrProfileId)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                    } else if asrMode == "byok" {
+                        Picker("Provider", selection: $asrProviderId) {
+                            ForEach(AiProviderCatalog.asrByokProviders) { provider in
+                                Text(provider.label).tag(provider.id)
+                            }
+                        }
+                        TextField("Base URL", text: $asrBaseUrl)
+                            .keyboardType(.URL)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                        TextField("Model", text: $asrModel)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                    } else {
+                        Text("音频会交给 Agent 后端识别。")
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                Section("TTS 引擎") {
+                    Picker("TTS 引擎", selection: $ttsMode) {
+                        Text("Router").tag("router")
+                        Text("BYOK").tag("byok")
+                        Text("系统 TTS").tag("system")
+                    }
+                    .pickerStyle(.segmented)
+                    if ttsMode == "router" {
+                        Text("Router TTS 作为统一能力入口预留；当前未接入 Router TTS profile 时会回落到系统朗读。")
+                            .foregroundColor(.secondary)
+                    } else if ttsMode == "byok" {
+                        Picker("Provider", selection: $ttsProviderId) {
+                            ForEach(AiProviderCatalog.ttsByokProviders) { provider in
+                                Text(provider.label).tag(provider.id)
+                            }
+                        }
+                        TextField("Base URL", text: $ttsBaseUrl)
+                            .keyboardType(.URL)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                        TextField("Model", text: $ttsModel)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                        TextField("MiniMax 音色", text: $minimaxVoiceId)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                    }
+                }
+            }
+        }
+        .listStyle(.insetGrouped)
+        .onAppear { syncDraftFromSettings() }
+        .onChange(of: inherit) { _ in saveOverride() }
+        .onChange(of: llmMode) { _ in saveOverride() }
+        .onChange(of: llmProfileId) { _ in saveOverride() }
+        .onChange(of: llmProviderId) { _ in applyLlmProviderDefaults() }
+        .onChange(of: llmBaseUrl) { _ in saveOverride() }
+        .onChange(of: llmModel) { _ in saveOverride() }
+        .onChange(of: asrMode) { _ in saveOverride() }
+        .onChange(of: asrProfileId) { _ in saveOverride() }
+        .onChange(of: asrProviderId) { _ in applyAsrProviderDefaults() }
+        .onChange(of: asrBaseUrl) { _ in saveOverride() }
+        .onChange(of: asrModel) { _ in saveOverride() }
+        .onChange(of: ttsMode) { _ in saveOverride() }
+        .onChange(of: ttsProviderId) { _ in applyTtsProviderDefaults() }
+        .onChange(of: ttsBaseUrl) { _ in saveOverride() }
+        .onChange(of: ttsModel) { _ in saveOverride() }
+        .onChange(of: minimaxVoiceId) { _ in saveOverride() }
+    }
+
+    private func syncDraftFromSettings() {
+        didLoadDraft = false
+        let override = settingsManager.aiSettings.agentOverrides[profile.id]
+        inherit = override?.inherit ?? true
+        let resolved = inherit ? settingsManager.aiSettings.defaults : settingsManager.aiSettings.resolved(for: profile.id)
+        llmMode = resolved.llm.mode == "byok" || resolved.llm.mode == "agent" ? resolved.llm.mode : "router"
+        llmProfileId = resolved.llm.profileId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "default" : resolved.llm.profileId
+        let llmProvider = AiProviderCatalog.llmProvider(id: resolved.llm.providerId) ?? AiProviderCatalog.llmByokProviders[0]
+        llmProviderId = llmProvider.id
+        llmBaseUrl = resolved.llm.baseUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? llmProvider.baseUrlDefault : resolved.llm.baseUrl
+        llmModel = resolved.llm.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? llmProvider.modelDefault : resolved.llm.model
+        asrMode = resolved.asr.mode == "backend" || resolved.asr.mode == "byok" ? resolved.asr.mode : "router"
+        asrProfileId = asrMode == "router" ? resolved.asr.profileId : ""
+        let asrProvider = AiProviderCatalog.asrProvider(id: resolved.asr.providerId) ?? AiProviderCatalog.asrByokProviders[0]
+        asrProviderId = asrProvider.id
+        asrBaseUrl = resolved.asr.baseUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? asrProvider.baseUrlDefault : resolved.asr.baseUrl
+        asrModel = resolved.asr.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? asrProvider.modelDefault : resolved.asr.model
+        ttsMode = resolved.tts.mode == "router" || resolved.tts.mode == "byok" ? resolved.tts.mode : "system"
+        let ttsProvider = AiProviderCatalog.ttsProvider(id: resolved.tts.providerId) ?? AiProviderCatalog.ttsByokProviders[0]
+        ttsProviderId = ttsProvider.id
+        ttsBaseUrl = resolved.tts.baseUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? ttsProvider.baseUrlDefault : resolved.tts.baseUrl
+        ttsModel = resolved.tts.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? ttsProvider.modelDefault : resolved.tts.model
+        minimaxVoiceId = resolved.tts.voiceId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? MiniMaxVoiceCatalog.defaultVoiceId : resolved.tts.voiceId
+        DispatchQueue.main.async {
+            didLoadDraft = true
+        }
+    }
+
+    private func saveOverride() {
+        guard didLoadDraft else { return }
+        var settings = settingsManager.aiSettings
+        let llmProvider = AiProviderCatalog.llmProvider(id: llmProviderId) ?? AiProviderCatalog.llmByokProviders[0]
+        let asrProvider = AiProviderCatalog.asrProvider(id: asrProviderId) ?? AiProviderCatalog.asrByokProviders[0]
+        let ttsProvider = AiProviderCatalog.ttsProvider(id: ttsProviderId) ?? AiProviderCatalog.ttsByokProviders[0]
+        if inherit {
+            settings.agentOverrides[profile.id] = AiAgentOverride(inherit: true)
+        } else {
+            settings.agentOverrides[profile.id] = AiAgentOverride(
+                inherit: false,
+                llm: AiServiceChoice(
+                    mode: llmMode,
+                    profileId: llmMode == "router" ? llmProfileId.trimmingCharacters(in: .whitespacesAndNewlines) : "",
+                    providerId: llmProvider.id,
+                    baseUrl: llmBaseUrl.trimmingCharacters(in: .whitespacesAndNewlines),
+                    model: llmModel.trimmingCharacters(in: .whitespacesAndNewlines),
+                    credentialId: llmProvider.credentialId,
+                    displayName: llmProvider.label
+                ),
+                asr: AiServiceChoice(
+                    mode: asrMode,
+                    profileId: asrMode == "router" ? asrProfileId.trimmingCharacters(in: .whitespacesAndNewlines) : "",
+                    providerId: asrProvider.id,
+                    baseUrl: asrBaseUrl.trimmingCharacters(in: .whitespacesAndNewlines),
+                    model: asrModel.trimmingCharacters(in: .whitespacesAndNewlines),
+                    credentialId: asrProvider.credentialId,
+                    displayName: asrProvider.label
+                ),
+                tts: ttsMode == "router"
+                    ? AiServiceChoice(
+                        mode: "router",
+                        providerId: "router",
+                        voiceId: minimaxVoiceId,
+                        credentialId: ttsProvider.credentialId,
+                        displayName: "Router TTS"
+                    )
+                    : (ttsMode == "byok"
+                        ? AiServiceChoice(
+                        mode: "byok",
+                        providerId: ttsProvider.id,
+                        voiceId: minimaxVoiceId,
+                        baseUrl: ttsBaseUrl.trimmingCharacters(in: .whitespacesAndNewlines),
+                        model: ttsModel.trimmingCharacters(in: .whitespacesAndNewlines),
+                        credentialId: ttsProvider.credentialId,
+                        displayName: ttsProvider.label
+                    )
+                        : AiServiceChoice(mode: "system", providerId: "system", voiceId: minimaxVoiceId, credentialId: ttsProvider.credentialId))
+            )
+        }
+        settingsManager.updateAiSettings(settings)
+    }
+
+    private func applyLlmProviderDefaults() {
+        guard didLoadDraft else { return }
+        let provider = AiProviderCatalog.llmProvider(id: llmProviderId) ?? AiProviderCatalog.llmByokProviders[0]
+        llmBaseUrl = provider.baseUrlDefault
+        llmModel = provider.modelDefault
+        saveOverride()
+    }
+
+    private func applyAsrProviderDefaults() {
+        guard didLoadDraft else { return }
+        let provider = AiProviderCatalog.asrProvider(id: asrProviderId) ?? AiProviderCatalog.asrByokProviders[0]
+        asrBaseUrl = provider.baseUrlDefault
+        asrModel = provider.modelDefault
+        saveOverride()
+    }
+
+    private func applyTtsProviderDefaults() {
+        guard didLoadDraft else { return }
+        let provider = AiProviderCatalog.ttsProvider(id: ttsProviderId) ?? AiProviderCatalog.ttsByokProviders[0]
+        ttsBaseUrl = provider.baseUrlDefault
+        ttsModel = provider.modelDefault
+        saveOverride()
     }
 }
 

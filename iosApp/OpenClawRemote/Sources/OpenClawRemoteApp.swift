@@ -97,10 +97,10 @@ struct OpenClawRemoteApp: App {
                             handleQRParsed(scannedText)
                         },
                         onSwitchAccount: {
-                            clearAuthSession(message: "请登录新账号")
+                            clearAuthSession(message: "请登录新账号", clearProfiles: true)
                         },
                         onLogout: {
-                            clearAuthSession(message: "已退出登录")
+                            clearAuthSession(message: "已退出登录", clearProfiles: false)
                         },
                         walletNotice: $walletNotice
                     )
@@ -320,7 +320,7 @@ struct OpenClawRemoteApp: App {
         }
     }
 
-    private func clearAuthSession(message: String) {
+    private func clearAuthSession(message: String, clearProfiles: Bool) {
         tokenRefreshTask?.cancel()
         tokenRefreshTask = nil
         authNotice = message
@@ -345,7 +345,8 @@ struct OpenClawRemoteApp: App {
                 minimaxVoiceId: current.minimaxVoiceId,
                 lastLoginMode: current.lastLoginMode,
                 lastPhoneNumber: current.lastPhoneNumber
-            )
+            ),
+            clearProfilesOnAccountChange: clearProfiles
         )
     }
 

@@ -551,11 +551,11 @@ enum MiniMaxVoiceCatalog {
             .uniqueBy { "\($0.category.trimmingCharacters(in: .whitespacesAndNewlines))|\($0.name.trimmingCharacters(in: .whitespacesAndNewlines))".lowercased() }
     }
 
-    static func fetchAvailableVoices(apiKey: String) async throws -> [MiniMaxVoiceOption] {
+    static func fetchAvailableVoices(apiKey: String, baseUrl: String = "https://api.minimaxi.com/v1") async throws -> [MiniMaxVoiceOption] {
         let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedKey.isEmpty else { return [] }
         let bodyData = try JSONSerialization.data(withJSONObject: ["voice_type": "all"])
-        var request = URLRequest(url: URL(string: "https://api.minimaxi.com/v1/get_voice")!)
+        var request = URLRequest(url: try minimaxEndpoint(baseUrl: baseUrl, path: "get_voice"))
         request.httpMethod = "POST"
         request.setValue("Bearer \(trimmedKey)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -596,6 +596,15 @@ enum MiniMaxVoiceCatalog {
         if statusCode != 0 {
             throw TtsPlaybackError.providerError(statusCode: statusCode, statusMessage: statusMsg, traceId: root["trace_id"] as? String ?? "")
         }
+    }
+
+    private static func minimaxEndpoint(baseUrl: String, path: String) throws -> URL {
+        let trimmed = baseUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalized = trimmed.isEmpty ? "https://api.minimaxi.com/v1" : trimmed
+        guard let base = URL(string: normalized.hasSuffix("/") ? String(normalized.dropLast()) : normalized) else {
+            throw TtsPlaybackError.invalidResponse("MiniMax Base URL invalid: \(baseUrl)")
+        }
+        return base.appendingPathComponent(path)
     }
 }
 

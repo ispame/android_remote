@@ -527,7 +527,7 @@ struct MainScreenView: View {
                     if audioRecorder.isRecording {
                         audioRecorder.stopRecording { data in
                             if !cancelled {
-                                wsManager.sendAudio(data)
+                                Task { await sendAudioUsingSelectedAsr(data) }
                             }
                         }
                     }
@@ -613,6 +613,44 @@ struct MainScreenView: View {
         }
         wsManager.sendText(command)
         return true
+    }
+
+    @MainActor
+    private func sendAudioUsingSelectedAsr(_ data: Data) async {
+        let asr = settingsManager.aiSettings.resolved(for: selectedProfile.id).asr
+        guard asr.mode == "byok" else {
+            wsManager.sendAudio(data)
+            return
+        }
+        guard wsManager.pairingState == .paired else {
+            wsManager.addLocalMessage("请先配对 \(selectedProfile.platform.label)", senderId: "assistant")
+            return
+        }
+        let credentialId = asr.credentialId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? localAsrOpenAICompatibleCredentialId
+            : asr.credentialId
+        guard let apiKey = settingsManager.localCredential(id: credentialId),
+              !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            wsManager.addLocalMessage("请先在 AI 服务中保存 ASR API Key", senderId: "assistant")
+            return
+        }
+        wsManager.addLocalMessage("正在使用本机 ASR 识别...", senderId: "assistant")
+        do {
+            let transcript = try await OpenAICompatibleAsrClient().transcribe(
+                baseUrl: asr.baseUrl,
+                apiKey: apiKey,
+                model: asr.model,
+                audioData: data
+            )
+            let text = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else {
+                wsManager.addLocalMessage("本机 ASR 没有识别到文本", senderId: "assistant")
+                return
+            }
+            wsManager.sendText(text)
+        } catch {
+            wsManager.addLocalMessage("本机 ASR 失败：\(error.localizedDescription)", senderId: "assistant")
+        }
     }
 
     private func quoteSummary(for content: String) -> String {

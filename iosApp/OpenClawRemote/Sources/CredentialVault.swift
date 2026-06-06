@@ -53,4 +53,10 @@ final class KeychainCredentialVault: CredentialVault {
     }
 }
 
+let localLlmOpenAICompatibleCredentialId = "llm:openai-compatible"
+let localLlmMiniMaxCredentialId = "llm:minimax"
+let localLlmKimiCredentialId = "llm:kimi"
+let localLlmClaudeCredentialId = "llm:claude"
+let localLlmDoubaoCredentialId = "llm:doubao"
+let localAsrOpenAICompatibleCredentialId = "asr:openai-compatible"
 let localMiniMaxCredentialId = "tts:minimax"

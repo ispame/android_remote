@@ -62,7 +62,7 @@ final class SettingsManager: ObservableObject {
 
     var globalAsrMode: String {
         let value = defaults.string(forKey: "asr_mode") ?? selectedProfile.asrMode
-        return value == "backend" ? "backend" : "router"
+        return value == "backend" || value == "byok" ? value : "router"
     }
 
     var globalAsrProfileId: String {
@@ -118,7 +118,10 @@ final class SettingsManager: ObservableObject {
         persistProfiles()
     }
 
-    func updateConfig(_ config: GatewayConfig) {
+    func updateConfig(
+        _ config: GatewayConfig,
+        clearProfilesOnAccountChange: Bool = true
+    ) {
         storeLocalMiniMaxCredential(config.minimaxApiKey)
         let previousAccountId = defaults.string(forKey: "account_id") ?? ""
         let accountChanged = !previousAccountId.isEmpty && previousAccountId != config.accountId
@@ -131,25 +134,30 @@ final class SettingsManager: ObservableObject {
         defaults.set(config.lastLoginMode, forKey: "last_login_mode")
         defaults.set(config.lastPhoneNumber, forKey: "last_phone_number")
         if accountChanged {
-            let profile = AgentProfile(
-                platform: .openclaw,
-                displayName: AgentPlatform.openclaw.defaultDisplayName,
-                gatewayUrl: config.gatewayUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "wss://boson-tech.top/ws" : config.gatewayUrl,
-                backendId: "",
-                backendLabel: nil,
-                token: "",
-                isPaired: false,
-                asrMode: config.asrMode == "backend" ? "backend" : "router",
-                asrProfileId: config.asrMode == "backend" ? "" : config.asrProfileId
-            )
-            profiles = [profile]
-            selectedProfileId = profile.id
-            defaults.set(profile.id, forKey: selectedProfileIdKey)
-            persistProfiles()
+            if clearProfilesOnAccountChange {
+                let profile = AgentProfile(
+                    platform: .openclaw,
+                    displayName: AgentPlatform.openclaw.defaultDisplayName,
+                    gatewayUrl: config.gatewayUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "wss://boson-tech.top/ws" : config.gatewayUrl,
+                    backendId: "",
+                    backendLabel: nil,
+                    token: "",
+                    isPaired: false,
+                    asrMode: config.asrMode == "backend" ? "backend" : "router",
+                    asrProfileId: config.asrMode == "backend" ? "" : config.asrProfileId
+                )
+                profiles = [profile]
+                selectedProfileId = profile.id
+                defaults.set(profile.id, forKey: selectedProfileIdKey)
+                persistProfiles()
+                updateGlobalAsr(mode: config.asrMode, profileId: config.asrProfileId)
+                updateAiSettings(Self.aiSettings(from: config), publish: false)
+                mirrorLegacyKeys(from: selectedProfile)
+                return
+            }
+            // 保留本地 profiles：只同步全局 ASR / AI 设置，让后续 replaceProfile 同步 selectedProfile 字段
             updateGlobalAsr(mode: config.asrMode, profileId: config.asrProfileId)
             updateAiSettings(Self.aiSettings(from: config), publish: false)
-            mirrorLegacyKeys(from: selectedProfile)
-            return
         }
         var profile = selectedProfile
         profile.gatewayUrl = config.gatewayUrl
@@ -195,6 +203,11 @@ final class SettingsManager: ObservableObject {
                 )
                 let backendKey = mappedProfile.uniqueBackendKey
                 if let existing = existingById[mappedProfile.id] ?? existingByBackendKey[backendKey] {
+                    // server 端不返 token / minimax key，只返元数据。
+                    // 保留本地这些字段，避免「退出登录保留 token → 重新登录被 server 同步清空」。
+                    if !existing.token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        mappedProfile.token = existing.token
+                    }
                     mappedProfile.ttsEngine = existing.ttsEngine
                     mappedProfile.minimaxApiKey = existing.minimaxApiKey
                     mappedProfile.minimaxVoiceId = existing.minimaxVoiceId
@@ -379,39 +392,50 @@ final class SettingsManager: ObservableObject {
     }
 
     func updateAiSettings(_ settings: AiServiceSettings, publish: Bool = true) {
-        aiSettings = settings
-        if let data = try? JSONEncoder().encode(settings) {
+        let normalized = Self.normalizedAiSettings(settings)
+        aiSettings = normalized
+        if let data = try? JSONEncoder().encode(normalized) {
             defaults.set(data, forKey: aiServiceSettingsKey)
         }
-        defaults.set(settings.defaults.asr.mode == "backend" ? "backend" : "router", forKey: "asr_mode")
-        defaults.set(settings.defaults.asr.mode == "backend" ? "" : settings.defaults.asr.profileId, forKey: "asr_profile_id")
-        defaults.set(settings.defaults.tts.mode == "byok" && settings.defaults.tts.providerId == "minimax" ? "minimax" : "system", forKey: "tts_engine")
-        defaults.set(settings.defaults.tts.voiceId.isEmpty ? "male-qn-qingse" : settings.defaults.tts.voiceId, forKey: "minimax_voice_id")
+        defaults.set(normalized.defaults.asr.mode, forKey: "asr_mode")
+        defaults.set(normalized.defaults.asr.mode == "router" ? normalized.defaults.asr.profileId : "", forKey: "asr_profile_id")
+        defaults.set(normalized.defaults.tts.mode == "byok" && normalized.defaults.tts.providerId == "minimax" ? "minimax" : "system", forKey: "tts_engine")
+        defaults.set(normalized.defaults.tts.voiceId.isEmpty ? "male-qn-qingse" : normalized.defaults.tts.voiceId, forKey: "minimax_voice_id")
         defaults.removeObject(forKey: "minimax_api_key")
-        applyAiSettingsToProfiles(settings)
+        applyAiSettingsToProfiles(normalized)
         if publish {
             publishActiveConfig()
         }
     }
 
-    func updateLocalTtsCredential(providerId: String, apiKey: String) {
-        guard providerId == "minimax" else { return }
+    func updateLocalCredential(id: String, apiKey: String) {
         let trimmed = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
-            credentialVault.removeSecret(for: localMiniMaxCredentialId)
+            credentialVault.removeSecret(for: id)
         } else {
-            credentialVault.setSecret(trimmed, for: localMiniMaxCredentialId)
+            credentialVault.setSecret(trimmed, for: id)
         }
-        defaults.removeObject(forKey: "minimax_api_key")
-        profiles = Self.injectLocalMiniMaxCredential(into: profiles, vault: credentialVault)
-        persistProfiles()
-        publishActiveConfig()
+        if id == localMiniMaxCredentialId {
+            defaults.removeObject(forKey: "minimax_api_key")
+            profiles = Self.injectLocalMiniMaxCredential(into: profiles, vault: credentialVault)
+            persistProfiles()
+            publishActiveConfig()
+        }
+    }
+
+    func localCredential(id: String) -> String? {
+        let secret = credentialVault.secret(for: id)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return secret.isEmpty ? nil : secret
+    }
+
+    func updateLocalTtsCredential(providerId: String, apiKey: String) {
+        guard providerId == "minimax" else { return }
+        updateLocalCredential(id: localMiniMaxCredentialId, apiKey: apiKey)
     }
 
     func localTtsCredential(providerId: String) -> String? {
         guard providerId == "minimax" else { return nil }
-        let secret = localMiniMaxApiKey().trimmingCharacters(in: .whitespacesAndNewlines)
-        return secret.isEmpty ? nil : secret
+        return localCredential(id: localMiniMaxCredentialId)
     }
 
     func setProfilePinned(_ profileId: String, isPinned: Bool) {
@@ -594,7 +618,7 @@ final class SettingsManager: ObservableObject {
     private func applyAiSettingsToProfiles(_ settings: AiServiceSettings) {
         for index in profiles.indices {
             let resolved = settings.resolved(for: profiles[index].id)
-            let resolvedAsrMode = resolved.asr.mode == "backend" ? "backend" : "router"
+            let resolvedAsrMode = resolved.asr.mode == "backend" || resolved.asr.mode == "byok" ? resolved.asr.mode : "router"
             let resolvedTtsEngine = resolved.tts.mode == "byok" && resolved.tts.providerId == "minimax" ? "minimax" : "system"
             profiles[index].asrMode = resolvedAsrMode
             profiles[index].asrProfileId = resolvedAsrMode == "router" ? resolved.asr.profileId : ""
@@ -692,23 +716,118 @@ final class SettingsManager: ObservableObject {
     private static func loadAiSettings(from defaults: UserDefaults, key: String, legacyConfig: GatewayConfig) -> AiServiceSettings {
         guard let data = defaults.data(forKey: key),
               let settings = try? JSONDecoder().decode(AiServiceSettings.self, from: data) else {
-            return aiSettings(from: legacyConfig)
+            return normalizedAiSettings(aiSettings(from: legacyConfig))
         }
-        return settings
+        return normalizedAiSettings(settings)
     }
 
     private static func aiSettings(from config: GatewayConfig) -> AiServiceSettings {
-        AiServiceSettings(
+        let llmProvider = AiProviderCatalog.llmByokProviders[0]
+        let asrProvider = AiProviderCatalog.asrByokProviders[0]
+        let ttsProvider = AiProviderCatalog.ttsByokProviders[0]
+        return normalizedAiSettings(AiServiceSettings(
             defaults: AiServiceDefaults(
-                llm: AiServiceChoice(mode: "router", profileId: "default"),
+                llm: AiServiceChoice(
+                    mode: "router",
+                    profileId: "default",
+                    providerId: llmProvider.id,
+                    baseUrl: llmProvider.baseUrlDefault,
+                    model: llmProvider.modelDefault,
+                    credentialId: llmProvider.credentialId,
+                    displayName: llmProvider.label
+                ),
                 asr: AiServiceChoice(
-                    mode: config.asrMode == "backend" ? "backend" : "router",
-                    profileId: config.asrMode == "backend" ? "" : config.asrProfileId
+                    mode: config.asrMode == "backend" || config.asrMode == "byok" ? config.asrMode : "router",
+                    profileId: config.asrMode == "router" ? config.asrProfileId : "",
+                    providerId: asrProvider.id,
+                    baseUrl: asrProvider.baseUrlDefault,
+                    model: asrProvider.modelDefault,
+                    credentialId: asrProvider.credentialId,
+                    displayName: asrProvider.label
                 ),
                 tts: config.ttsEngine == "minimax"
-                    ? AiServiceChoice(mode: "byok", providerId: "minimax", voiceId: config.minimaxVoiceId.isEmpty ? "male-qn-qingse" : config.minimaxVoiceId)
-                    : AiServiceChoice(mode: "system", providerId: "system", voiceId: "male-qn-qingse")
+                    ? AiServiceChoice(
+                        mode: "byok",
+                        providerId: ttsProvider.id,
+                        voiceId: config.minimaxVoiceId.isEmpty ? "male-qn-qingse" : config.minimaxVoiceId,
+                        baseUrl: ttsProvider.baseUrlDefault,
+                        model: ttsProvider.modelDefault,
+                        credentialId: ttsProvider.credentialId,
+                        displayName: ttsProvider.label
+                    )
+                    : AiServiceChoice(mode: "system", providerId: "system", voiceId: "male-qn-qingse", credentialId: ttsProvider.credentialId)
             )
+        ))
+    }
+
+    private static func normalizedAiSettings(_ settings: AiServiceSettings) -> AiServiceSettings {
+        var normalized = settings
+        normalized.defaults = normalizedDefaults(settings.defaults)
+        normalized.agentOverrides = settings.agentOverrides.mapValues { override in
+            AiAgentOverride(
+                inherit: override.inherit,
+                llm: override.llm.map { normalizedLlmChoice($0) },
+                asr: override.asr.map { normalizedAsrChoice($0) },
+                tts: override.tts.map { normalizedTtsChoice($0) }
+            )
+        }
+        return normalized
+    }
+
+    private static func normalizedDefaults(_ defaults: AiServiceDefaults) -> AiServiceDefaults {
+        AiServiceDefaults(
+            llm: normalizedLlmChoice(defaults.llm),
+            asr: normalizedAsrChoice(defaults.asr),
+            tts: normalizedTtsChoice(defaults.tts)
+        )
+    }
+
+    private static func normalizedLlmChoice(_ choice: AiServiceChoice) -> AiServiceChoice {
+        let mode = choice.mode == "byok" || choice.mode == "agent" ? choice.mode : "router"
+        let provider = AiProviderCatalog.llmProvider(id: choice.providerId) ?? AiProviderCatalog.llmByokProviders[0]
+        return AiServiceChoice(
+            mode: mode,
+            profileId: mode == "router" ? (choice.profileId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "default" : choice.profileId) : choice.profileId,
+            providerId: provider.id,
+            voiceId: choice.voiceId,
+            baseUrl: choice.baseUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? provider.baseUrlDefault : choice.baseUrl,
+            model: choice.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? provider.modelDefault : choice.model,
+            credentialId: provider.credentialId,
+            displayName: choice.displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? provider.label : choice.displayName
+        )
+    }
+
+    private static func normalizedAsrChoice(_ choice: AiServiceChoice) -> AiServiceChoice {
+        let mode = choice.mode == "byok" || choice.mode == "backend" ? choice.mode : "router"
+        let provider = AiProviderCatalog.asrProvider(id: choice.providerId) ?? AiProviderCatalog.asrByokProviders[0]
+        return AiServiceChoice(
+            mode: mode,
+            profileId: mode == "router" ? choice.profileId : "",
+            providerId: provider.id,
+            voiceId: choice.voiceId,
+            baseUrl: choice.baseUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? provider.baseUrlDefault : choice.baseUrl,
+            model: choice.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? provider.modelDefault : choice.model,
+            credentialId: provider.credentialId,
+            displayName: choice.displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? provider.label : choice.displayName
+        )
+    }
+
+    private static func normalizedTtsChoice(_ choice: AiServiceChoice) -> AiServiceChoice {
+        let provider = AiProviderCatalog.ttsProvider(id: choice.providerId) ?? AiProviderCatalog.ttsByokProviders[0]
+        let isByok = choice.mode == "byok"
+        let isRouter = choice.mode == "router"
+        let voiceId = choice.voiceId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let profileId = choice.profileId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let displayName = choice.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return AiServiceChoice(
+            mode: isRouter ? "router" : (isByok ? "byok" : "system"),
+            profileId: isRouter ? profileId : "",
+            providerId: isRouter ? "router" : (isByok ? provider.id : "system"),
+            voiceId: voiceId.isEmpty ? "male-qn-qingse" : voiceId,
+            baseUrl: isByok ? (choice.baseUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? provider.baseUrlDefault : choice.baseUrl) : "",
+            model: isByok ? (choice.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? provider.modelDefault : choice.model) : "",
+            credentialId: isByok ? provider.credentialId : localMiniMaxCredentialId,
+            displayName: isRouter ? (displayName.isEmpty ? "Router TTS" : displayName) : (isByok ? (displayName.isEmpty ? provider.label : choice.displayName) : "系统 TTS")
         )
     }
 

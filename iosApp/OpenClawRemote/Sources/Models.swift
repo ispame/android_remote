@@ -600,24 +600,250 @@ struct AiServiceChoice: Codable, Equatable {
     var profileId: String
     var providerId: String
     var voiceId: String
+    var baseUrl: String
+    var model: String
+    var credentialId: String
+    var displayName: String
 
     init(
         mode: String,
         profileId: String = "",
         providerId: String = "",
-        voiceId: String = ""
+        voiceId: String = "",
+        baseUrl: String = "",
+        model: String = "",
+        credentialId: String = "",
+        displayName: String = ""
     ) {
         self.mode = mode
         self.profileId = profileId
         self.providerId = providerId
         self.voiceId = voiceId
+        self.baseUrl = baseUrl
+        self.model = model
+        self.credentialId = credentialId
+        self.displayName = displayName
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case mode
+        case profileId
+        case providerId
+        case voiceId
+        case baseUrl
+        case model
+        case credentialId
+        case displayName
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        mode = try container.decodeIfPresent(String.self, forKey: .mode) ?? ""
+        profileId = try container.decodeIfPresent(String.self, forKey: .profileId) ?? ""
+        providerId = try container.decodeIfPresent(String.self, forKey: .providerId) ?? ""
+        voiceId = try container.decodeIfPresent(String.self, forKey: .voiceId) ?? ""
+        baseUrl = try container.decodeIfPresent(String.self, forKey: .baseUrl) ?? ""
+        model = try container.decodeIfPresent(String.self, forKey: .model) ?? ""
+        credentialId = try container.decodeIfPresent(String.self, forKey: .credentialId) ?? ""
+        displayName = try container.decodeIfPresent(String.self, forKey: .displayName) ?? ""
+    }
+}
+
+struct AiByokProviderTemplate: Codable, Equatable, Identifiable {
+    var id: String
+    var label: String
+    var keyScope: String
+    var baseUrlDefault: String
+    var modelDefault: String
+    var credentialId: String
+    var apiStyle: String
+    var capabilities: [String]
+    var adapter: String
+
+    init(
+        id: String,
+        label: String,
+        keyScope: String = "local",
+        baseUrlDefault: String,
+        modelDefault: String,
+        credentialId: String,
+        apiStyle: String = "openai-compatible",
+        capabilities: [String],
+        adapter: String
+    ) {
+        self.id = id
+        self.label = label
+        self.keyScope = keyScope
+        self.baseUrlDefault = baseUrlDefault
+        self.modelDefault = modelDefault
+        self.credentialId = credentialId
+        self.apiStyle = apiStyle
+        self.capabilities = capabilities
+        self.adapter = adapter
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case label
+        case keyScope
+        case baseUrlDefault
+        case modelDefault
+        case credentialId
+        case apiStyle
+        case capabilities
+        case adapter
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(String.self, forKey: .id) ?? ""
+        label = try container.decodeIfPresent(String.self, forKey: .label) ?? id
+        keyScope = try container.decodeIfPresent(String.self, forKey: .keyScope) ?? "local"
+        baseUrlDefault = try container.decodeIfPresent(String.self, forKey: .baseUrlDefault) ?? ""
+        modelDefault = try container.decodeIfPresent(String.self, forKey: .modelDefault) ?? ""
+        credentialId = try container.decodeIfPresent(String.self, forKey: .credentialId) ?? ""
+        apiStyle = try container.decodeIfPresent(String.self, forKey: .apiStyle) ?? "openai-compatible"
+        capabilities = try container.decodeIfPresent([String].self, forKey: .capabilities) ?? []
+        adapter = try container.decodeIfPresent(String.self, forKey: .adapter) ?? apiStyle
+    }
+}
+
+enum AiProviderCatalog {
+    static let llmByokProviders: [AiByokProviderTemplate] = [
+        AiByokProviderTemplate(
+            id: "openai-compatible",
+            label: "OpenAI-compatible",
+            baseUrlDefault: "https://api.openai.com/v1",
+            modelDefault: "gpt-4o-mini",
+            credentialId: localLlmOpenAICompatibleCredentialId,
+            capabilities: ["llm"],
+            adapter: "openai-compatible-chat"
+        ),
+        AiByokProviderTemplate(
+            id: "minimax",
+            label: "MiniMax",
+            baseUrlDefault: "https://api.minimax.io/v1",
+            modelDefault: "MiniMax-M2.7",
+            credentialId: localLlmMiniMaxCredentialId,
+            capabilities: ["llm"],
+            adapter: "openai-compatible-chat"
+        ),
+        AiByokProviderTemplate(
+            id: "kimi",
+            label: "Kimi",
+            baseUrlDefault: "https://api.moonshot.ai/v1",
+            modelDefault: "moonshot-v1-8k",
+            credentialId: localLlmKimiCredentialId,
+            capabilities: ["llm"],
+            adapter: "openai-compatible-chat"
+        ),
+        AiByokProviderTemplate(
+            id: "claude",
+            label: "Claude",
+            baseUrlDefault: "https://api.anthropic.com/v1",
+            modelDefault: "claude-sonnet-4-20250514",
+            credentialId: localLlmClaudeCredentialId,
+            apiStyle: "anthropic",
+            capabilities: ["llm"],
+            adapter: "anthropic-messages"
+        ),
+        AiByokProviderTemplate(
+            id: "doubao",
+            label: "豆包",
+            baseUrlDefault: "https://ark.cn-beijing.volces.com/api/v3",
+            modelDefault: "doubao-seed-2-0-lite-260215",
+            credentialId: localLlmDoubaoCredentialId,
+            capabilities: ["llm"],
+            adapter: "openai-compatible-chat"
+        )
+    ]
+
+    static let asrByokProviders: [AiByokProviderTemplate] = [
+        AiByokProviderTemplate(
+            id: "openai-compatible",
+            label: "Whisper-compatible",
+            baseUrlDefault: "https://api.openai.com/v1",
+            modelDefault: "whisper-1",
+            credentialId: localAsrOpenAICompatibleCredentialId,
+            apiStyle: "openai-whisper",
+            capabilities: ["asr"],
+            adapter: "openai-whisper"
+        )
+    ]
+
+    static let ttsByokProviders: [AiByokProviderTemplate] = [
+        AiByokProviderTemplate(
+            id: "minimax",
+            label: "MiniMax",
+            baseUrlDefault: "https://api.minimaxi.com/v1",
+            modelDefault: "speech-2.8-hd",
+            credentialId: localMiniMaxCredentialId,
+            apiStyle: "minimax-tts",
+            capabilities: ["tts"],
+            adapter: "minimax-tts"
+        )
+    ]
+
+    static func llmProvider(id: String) -> AiByokProviderTemplate? {
+        provider(in: llmByokProviders, id: id)
+    }
+
+    static func asrProvider(id: String) -> AiByokProviderTemplate? {
+        provider(in: asrByokProviders, id: id)
+    }
+
+    static func ttsProvider(id: String) -> AiByokProviderTemplate? {
+        provider(in: ttsByokProviders, id: id)
+    }
+
+    static func choice(
+        mode: String,
+        provider: AiByokProviderTemplate,
+        profileId: String = "",
+        voiceId: String = ""
+    ) -> AiServiceChoice {
+        AiServiceChoice(
+            mode: mode,
+            profileId: mode == "router" ? profileId : "",
+            providerId: provider.id,
+            voiceId: voiceId,
+            baseUrl: provider.baseUrlDefault,
+            model: provider.modelDefault,
+            credentialId: provider.credentialId,
+            displayName: provider.label
+        )
+    }
+
+    private static func provider(in providers: [AiByokProviderTemplate], id: String) -> AiByokProviderTemplate? {
+        let normalized = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        return providers.first { $0.id == normalized } ?? providers.first
     }
 }
 
 struct AiServiceDefaults: Codable, Equatable {
-    var llm = AiServiceChoice(mode: "router", profileId: "default")
-    var asr = AiServiceChoice(mode: "router")
-    var tts = AiServiceChoice(mode: "system", providerId: "system", voiceId: "male-qn-qingse")
+    var llm = AiServiceChoice(
+        mode: "router",
+        profileId: "default",
+        providerId: "openai-compatible",
+        baseUrl: "https://api.openai.com/v1",
+        model: "gpt-4o-mini",
+        credentialId: localLlmOpenAICompatibleCredentialId,
+        displayName: "OpenAI-compatible"
+    )
+    var asr = AiServiceChoice(
+        mode: "router",
+        providerId: "openai-compatible",
+        baseUrl: "https://api.openai.com/v1",
+        model: "whisper-1",
+        credentialId: localAsrOpenAICompatibleCredentialId,
+        displayName: "OpenAI-compatible"
+    )
+    var tts = AiServiceChoice(
+        mode: "system",
+        providerId: "system",
+        voiceId: "male-qn-qingse",
+        credentialId: localMiniMaxCredentialId
+    )
 }
 
 struct AiAgentOverride: Codable, Equatable {
