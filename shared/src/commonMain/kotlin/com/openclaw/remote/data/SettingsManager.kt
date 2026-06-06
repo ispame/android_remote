@@ -12,6 +12,7 @@ interface SettingsManager {
 
     val configFlow: Flow<GatewayConfig>
     val profilesFlow: Flow<AgentProfilesState>
+    val aiSettingsFlow: Flow<AiServiceSettings>
     val soundPlaybackEnabledFlow: Flow<Boolean>
 
     suspend fun updateConfig(config: GatewayConfig)
@@ -29,6 +30,9 @@ interface SettingsManager {
     ): AgentProfile?
     suspend fun deleteProfile(profileId: String)
     suspend fun clearProfile(profileId: String)
+    suspend fun updateAiSettings(settings: AiServiceSettings)
+    suspend fun updateLocalTtsCredential(providerId: String, apiKey: String)
+    suspend fun localTtsCredential(providerId: String): String?
     suspend fun updateGlobalAsr(mode: String, profileId: String)
     suspend fun updateSoundPlaybackEnabled(enabled: Boolean)
     suspend fun canAcceptProfile(gatewayUrl: String, backendId: String): Boolean

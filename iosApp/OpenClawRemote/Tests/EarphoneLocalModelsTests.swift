@@ -37,6 +37,9 @@ struct EarphoneLocalModelsTests {
         try testHeadsetDefaultFakeData()
         try testHeadsetSettingsAddsDemoDevice()
         try testHeadsetSettingsStorePersistsEQAndShortcuts()
+        try testSettingsManagerClearsPairingWhenTokenChanges()
+        try testSettingsManagerDoesNotProjectUnpairedBackendAsPaired()
+        try testSettingsManagerMigratesMiniMaxKeyToCredentialVault()
         print("EarphoneLocalModelsTests passed")
     }
 
@@ -736,6 +739,71 @@ struct EarphoneLocalModelsTests {
         try expect(reloaded.shortcuts[0].action == "同声传译", "edited shortcut should persist")
     }
 
+    private static func testSettingsManagerClearsPairingWhenTokenChanges() throws {
+        let defaults = try temporaryDefaults()
+        let manager = SettingsManager(defaults: defaults)
+        let pairedProfile = AgentProfile(
+            id: "agent-token",
+            platform: .openclaw,
+            displayName: "OpenClaw",
+            gatewayUrl: "wss://boson-tech.top/ws",
+            backendId: "bk_openclaw",
+            backendLabel: "OpenClaw",
+            token: "good-token",
+            isPaired: true
+        )
+
+        try expect(manager.saveProfile(pairedProfile), "paired profile should save")
+        var editedProfile = manager.selectedProfile
+        editedProfile.token = "wrong-token"
+        editedProfile.isPaired = true
+
+        try expect(manager.saveProfile(editedProfile), "edited profile should save")
+        try expect(!manager.selectedProfile.isPaired, "changing the Agent token should clear stale pairing")
+        try expect(manager.config.token == "wrong-token", "edited Agent token should be projected")
+        try expect(manager.config.pairedBackendId == nil, "unpaired profile should not project paired backend")
+    }
+
+    private static func testSettingsManagerDoesNotProjectUnpairedBackendAsPaired() throws {
+        let defaults = try temporaryDefaults()
+        let manager = SettingsManager(defaults: defaults)
+        let unpairedProfile = AgentProfile(
+            id: "agent-unpaired",
+            platform: .openclaw,
+            displayName: "OpenClaw",
+            gatewayUrl: "wss://boson-tech.top/ws",
+            backendId: "bk_openclaw",
+            backendLabel: "OpenClaw",
+            token: "token",
+            isPaired: false
+        )
+
+        try expect(manager.saveProfile(unpairedProfile), "unpaired configured profile should save")
+        try expect(manager.selectedProfile.backendId == "bk_openclaw", "backend id should remain editable config")
+        try expect(manager.config.pairedBackendId == nil, "backend id without isPaired should not be treated as paired")
+        try expect(manager.config.pairedBackendLabel == nil, "unpaired backend should not project a paired label")
+    }
+
+    private static func testSettingsManagerMigratesMiniMaxKeyToCredentialVault() throws {
+        let defaults = try temporaryDefaults()
+        let vault = FakeCredentialVault()
+        defaults.set("minimax", forKey: "tts_engine")
+        defaults.set("legacy-minimax-key", forKey: "minimax_api_key")
+        defaults.set("female_sunny_zh", forKey: "minimax_voice_id")
+
+        let manager = SettingsManager(defaults: defaults, credentialVault: vault)
+
+        try expect(vault.secret(for: localMiniMaxCredentialId) == "legacy-minimax-key", "legacy MiniMax key should migrate to credential vault")
+        try expect(defaults.string(forKey: "minimax_api_key") == nil, "legacy MiniMax key should be removed from UserDefaults")
+        try expect(manager.config.minimaxApiKey == "legacy-minimax-key", "runtime config should still resolve the local MiniMax key")
+
+        guard let profileData = defaults.data(forKey: "agent_profiles_v1"),
+              let rawProfiles = String(data: profileData, encoding: .utf8) else {
+            throw TestFailure("agent profiles should persist")
+        }
+        try expect(!rawProfiles.contains("legacy-minimax-key"), "persisted agent profiles should not contain the local MiniMax key")
+    }
+
     private static func profile(
         id: String,
         name: String,
@@ -855,6 +923,22 @@ private struct TestFailure: Error, CustomStringConvertible {
 
     init(_ description: String) {
         self.description = description
+    }
+}
+
+private final class FakeCredentialVault: CredentialVault {
+    private var secrets: [String: String] = [:]
+
+    func secret(for id: String) -> String? {
+        secrets[id]
+    }
+
+    func setSecret(_ secret: String, for id: String) {
+        secrets[id] = secret
+    }
+
+    func removeSecret(for id: String) {
+        secrets.removeValue(forKey: id)
     }
 }
 

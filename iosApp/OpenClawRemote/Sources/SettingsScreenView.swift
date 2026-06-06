@@ -666,6 +666,20 @@ struct GatewayAuthSessionResponse: Decodable {
     }
 }
 
+struct GatewayAuthMeResponse: Decodable {
+    let accountId: String
+    let displayName: String?
+    let accountDisplayName: String
+    let phoneNumberMasked: String
+
+    private enum CodingKeys: String, CodingKey {
+        case accountId = "account_id"
+        case displayName = "display_name"
+        case accountDisplayName = "account_display_name"
+        case phoneNumberMasked = "phone_number_masked"
+    }
+}
+
 struct GatewayAccountAgentProfile: Codable {
     let agentProfileId: String
     let platform: String
@@ -996,6 +1010,34 @@ enum GatewayAuthClient {
               (200...299).contains(httpResponse.statusCode) || httpResponse.statusCode == 204 else {
             throw GatewayAuthError(message: "HTTP \((response as? HTTPURLResponse)?.statusCode ?? -1)")
         }
+    }
+
+    static func me(gatewayUrl: String, accessToken: String) async throws -> GatewayAuthMeResponse {
+        let request = try authorizedGetRequest(
+            url: "/api/v2/auth/me",
+            gatewayUrl: gatewayUrl,
+            accessToken: accessToken
+        )
+        return try await send(request, as: GatewayAuthMeResponse.self)
+    }
+
+    static func updateAccountDisplayName(
+        gatewayUrl: String,
+        accessToken: String,
+        displayName: String
+    ) async throws -> GatewayAuthMeResponse {
+        let request = try jsonRequest(
+            url: "/api/v2/auth/me",
+            gatewayUrl: gatewayUrl,
+            body: [
+                "display_name": displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+            ],
+            method: "PUT",
+            headers: [
+                "Authorization": "Bearer \(accessToken.trimmingCharacters(in: .whitespacesAndNewlines))"
+            ]
+        )
+        return try await send(request, as: GatewayAuthMeResponse.self)
     }
 
     static func listAccountAgents(gatewayUrl: String, accessToken: String) async throws -> [GatewayAccountAgentProfile] {

@@ -39,6 +39,8 @@ data class AuthSessionResult(
 
 data class AuthMeResult(
     val accountId: String,
+    val displayName: String?,
+    val accountDisplayName: String,
     val phoneNumberMasked: String,
     val activeTerminalLabel: String?,
     val activeTerminalConnectedAt: String?,
@@ -303,15 +305,24 @@ class GatewayAuthClient(
         val response = client.get("${requireAuthBaseUrl(gatewayUrl)}/api/v2/auth/me") {
             header(HttpHeaders.Authorization, "Bearer ${accessToken.trim()}")
         }
-        val body = requireJson(response)
-        val activeTerminal = body["active_terminal"] as? JsonObject
-        return AuthMeResult(
-            accountId = body.string("account_id"),
-            phoneNumberMasked = body.string("phone_number_masked"),
-            activeTerminalLabel = activeTerminal?.stringOrNull("terminal_label"),
-            activeTerminalConnectedAt = activeTerminal?.stringOrNull("connected_at"),
-            pairedBackendsCount = body.int("paired_backends_count"),
-        )
+        return parseAuthMe(requireJson(response))
+    }
+
+    suspend fun updateAccountDisplayName(
+        gatewayUrl: String,
+        accessToken: String,
+        displayName: String,
+    ): AuthMeResult {
+        val response = client.put("${requireAuthBaseUrl(gatewayUrl)}/api/v2/auth/me") {
+            header(HttpHeaders.Authorization, "Bearer ${accessToken.trim()}")
+            contentType(ContentType.Application.Json)
+            setBody(
+                buildJsonObject {
+                    put("display_name", displayName.trim())
+                }.toString()
+            )
+        }
+        return parseAuthMe(requireJson(response))
     }
 
     suspend fun listAccountAgents(
@@ -468,6 +479,20 @@ class GatewayAuthClient(
     }
 }
 
+internal fun parseAuthMe(body: JsonObject): AuthMeResult {
+    val activeTerminal = body["active_terminal"] as? JsonObject
+    val phoneMasked = body.string("phone_number_masked")
+    return AuthMeResult(
+        accountId = body.string("account_id"),
+        displayName = body.stringOrNull("display_name"),
+        accountDisplayName = body.string("account_display_name").ifBlank { phoneMasked },
+        phoneNumberMasked = phoneMasked,
+        activeTerminalLabel = activeTerminal?.stringOrNull("terminal_label"),
+        activeTerminalConnectedAt = activeTerminal?.stringOrNull("connected_at"),
+        pairedBackendsCount = body.int("paired_backends_count"),
+    )
+}
+
 internal fun parseBillingSummary(body: JsonObject): BillingSummaryResult {
     val products = parseBillingProducts(body["products"] as? JsonObject ?: JsonObject(emptyMap()))
     val usage = body["usage"] as? JsonObject
@@ -525,6 +550,9 @@ fun formatBillingAmountCents(amountCents: Int, currency: String): String {
     val formatted = "$major.${minor.toString().padStart(2, '0')}"
     return if (currency.equals("CNY", ignoreCase = true)) "¥$formatted" else "${currency.uppercase()} $formatted"
 }
+
+fun billingPaymentClipboardText(order: BillingOrderResult): String =
+    order.paymentUrl.trim().ifBlank { order.copyText }
 
 private fun parseBillingWallet(body: JsonObject): BillingWalletResult =
     BillingWalletResult(

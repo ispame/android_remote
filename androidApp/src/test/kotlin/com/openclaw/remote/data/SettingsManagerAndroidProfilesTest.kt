@@ -21,7 +21,7 @@ class SettingsManagerAndroidProfilesTest {
     @Before
     fun setUp() = runTest {
         val context = ApplicationProvider.getApplicationContext<Context>()
-        manager = SettingsManagerAndroid(context)
+        manager = SettingsManagerAndroid(context, FakeCredentialVault())
         manager.clearConfig()
     }
 
@@ -160,6 +160,34 @@ class SettingsManagerAndroidProfilesTest {
 
         manager.updatePairedBackend("bk_hermes", "Hermes", hermes.id)
         assertEquals("bk_hermes", manager.configFlow.first().pairedBackendId)
+    }
+
+    @Test
+    fun saveProfileClearsPairingWhenTokenChanges() = runTest {
+        val profile = manager.upsertScannedProfile(
+            gatewayUrl = "wss://boson-tech.top/ws",
+            backendId = "bk_openclaw",
+            token = "good-token",
+            platform = AgentPlatform.OPENCLAW,
+            label = "OpenClaw",
+        )!!
+        manager.updatePairedBackend("bk_openclaw", "OpenClaw", profile.id)
+
+        val pairedProfile = manager.profilesFlow.first().selectedProfile
+        assertTrue(pairedProfile.isPaired)
+
+        val saved = manager.saveProfile(
+            pairedProfile.copy(token = "wrong-token", isPaired = true),
+            select = true,
+        )
+
+        val state = manager.profilesFlow.first()
+        val config = manager.configFlow.first()
+
+        assertTrue(saved)
+        assertEquals("wrong-token", state.selectedProfile.token)
+        assertFalse(state.selectedProfile.isPaired)
+        assertNull(config.pairedBackendId)
     }
 
     @Test

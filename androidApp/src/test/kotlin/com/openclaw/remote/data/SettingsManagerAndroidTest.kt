@@ -14,11 +14,13 @@ import org.robolectric.RobolectricTestRunner
 class SettingsManagerAndroidTest {
     private lateinit var context: Context
     private lateinit var manager: SettingsManagerAndroid
+    private lateinit var credentialVault: FakeCredentialVault
 
     @Before
     fun setUp() = runTest {
         context = ApplicationProvider.getApplicationContext()
-        manager = SettingsManagerAndroid(context)
+        credentialVault = FakeCredentialVault()
+        manager = SettingsManagerAndroid(context, credentialVault)
         manager.clearConfig()
     }
 
@@ -47,6 +49,24 @@ class SettingsManagerAndroidTest {
         assertEquals("minimax", config.ttsEngine)
         assertEquals("test-key", config.minimaxApiKey)
         assertEquals("female_sunny_zh", config.minimaxVoiceId)
+        assertEquals("test-key", credentialVault.get(LOCAL_TTS_MINIMAX_CREDENTIAL_ID))
+    }
+
+    @Test
+    fun minimaxApiKeyIsNotRestoredFromPlaintextDataStoreWhenVaultIsMissing() = runTest {
+        manager.updateConfig(
+            GatewayConfig(
+                ttsEngine = "minimax",
+                minimaxApiKey = "local-only-key",
+                minimaxVoiceId = "female_sunny_zh",
+            )
+        )
+
+        val restoredWithoutVault = SettingsManagerAndroid(context, FakeCredentialVault()).configFlow.first()
+
+        assertEquals("minimax", restoredWithoutVault.ttsEngine)
+        assertEquals("", restoredWithoutVault.minimaxApiKey)
+        assertEquals("female_sunny_zh", restoredWithoutVault.minimaxVoiceId)
     }
 
     @Test
@@ -61,7 +81,7 @@ class SettingsManagerAndroidTest {
             )
         )
 
-        val restored = SettingsManagerAndroid(context).configFlow.first()
+        val restored = SettingsManagerAndroid(context, credentialVault).configFlow.first()
 
         assertEquals("acct-123", restored.accountId)
         assertEquals("access-token-123", restored.accessToken)
@@ -73,12 +93,12 @@ class SettingsManagerAndroidTest {
         assertEquals(true, manager.soundPlaybackEnabledFlow.first())
 
         manager.updateSoundPlaybackEnabled(false)
-        val restoredMuted = SettingsManagerAndroid(context)
+        val restoredMuted = SettingsManagerAndroid(context, credentialVault)
 
         assertEquals(false, restoredMuted.soundPlaybackEnabledFlow.first())
 
         restoredMuted.updateSoundPlaybackEnabled(true)
-        val restoredEnabled = SettingsManagerAndroid(context)
+        val restoredEnabled = SettingsManagerAndroid(context, credentialVault)
 
         assertEquals(true, restoredEnabled.soundPlaybackEnabledFlow.first())
     }

@@ -13,6 +13,8 @@ struct SimpleSettingsTabView: View {
     let onSwitchAccount: () -> Void
     let onLogout: () -> Void
 
+    @State private var accountProfile: GatewayAuthMeResponse?
+
     var body: some View {
         List {
             Section {
@@ -65,6 +67,22 @@ struct SimpleSettingsTabView: View {
                 }
 
                 NavigationLink {
+                    AiServiceSettingsView(
+                        settingsManager: settingsManager,
+                        colors: colors
+                    )
+                    .navigationTitle("AI 服务")
+                } label: {
+                    HStack {
+                        Label("AI 服务", systemImage: "sparkles")
+                        Spacer()
+                        Text(aiServiceSummary)
+                            .font(.system(size: 12))
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                NavigationLink {
                     RecordingSettingsView(
                         settingsManager: settingsManager,
                         colors: colors
@@ -109,7 +127,9 @@ struct SimpleSettingsTabView: View {
                     AccountSecurityView(
                         wsManager: wsManager,
                         settingsManager: settingsManager,
-                        colors: colors
+                        colors: colors,
+                        accountProfile: accountProfile,
+                        onProfileUpdated: { accountProfile = $0 }
                     )
                     .navigationTitle("账号与安全")
                 } label: {
@@ -138,11 +158,23 @@ struct SimpleSettingsTabView: View {
         .listStyle(.insetGrouped)
         .navigationTitle("设置")
         .navigationBarTitleDisplayMode(.inline)
+        .task(id: settingsManager.config.accessToken) {
+            await loadAccountProfile()
+        }
     }
 
     private var accountTitle: String {
-        let accountId = settingsManager.config.accountId.trimmingCharacters(in: .whitespacesAndNewlines)
-        return accountId.isEmpty ? "未登录" : maskedAccountLabel(accountId)
+        if let displayName = accountProfile?.accountDisplayName.trimmingCharacters(in: .whitespacesAndNewlines),
+           !displayName.isEmpty {
+            return displayName
+        }
+        return settingsManager.config.accountId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "未登录" : "账号已登录"
+    }
+
+    private var aiServiceSummary: String {
+        let tts = settingsManager.aiSettings.defaults.tts
+        let ttsLabel = tts.mode == "byok" && tts.providerId == "minimax" ? "MiniMax" : "系统"
+        return "LLM / ASR / \(ttsLabel)"
     }
 
     private var appVersion: String {
@@ -158,10 +190,17 @@ struct SimpleSettingsTabView: View {
         }
     }
 
-    private func maskedAccountLabel(_ accountId: String) -> String {
-        let value = accountId.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard value.count > 12 else { return value }
-        return "\(value.prefix(8))...\(value.suffix(4))"
+    @MainActor
+    private func loadAccountProfile() async {
+        let config = settingsManager.config
+        guard !config.accessToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            accountProfile = nil
+            return
+        }
+        accountProfile = try? await GatewayAuthClient.me(
+            gatewayUrl: config.gatewayUrl,
+            accessToken: config.accessToken
+        )
     }
 }
 
@@ -306,7 +345,7 @@ struct WalletAndPlanView: View {
                             .foregroundColor(.secondary)
 
                         Button {
-                            UIPasteboard.general.string = activeOrder.copyText.isEmpty ? activeOrder.paymentUrl : activeOrder.copyText
+                            UIPasteboard.general.string = billingPaymentClipboardText(for: activeOrder)
                             statusMessage = "支付链接已复制"
                         } label: {
                             Label("复制支付链接", systemImage: "doc.on.doc")
@@ -488,11 +527,424 @@ struct WalletAndPlanView: View {
     }
 }
 
+private func billingPaymentClipboardText(for order: GatewayBillingOrderResponse) -> String {
+    let paymentUrl = order.paymentUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+    return paymentUrl.isEmpty ? order.copyText : paymentUrl
+}
+
+private struct AiServiceSettingsView: View {
+    @ObservedObject var settingsManager: SettingsManager
+    let colors: MochiColors
+
+    @State private var billingSummary: GatewayBillingSummaryResponse?
+    @State private var draftAsrMode = "router"
+    @State private var draftAsrProfileId = ""
+    @State private var draftTtsMode = "system"
+    @State private var minimaxApiKey = ""
+    @State private var minimaxVoiceId = MiniMaxVoiceCatalog.defaultVoiceId
+    @State private var fetchedMiniMaxVoices: [MiniMaxVoiceOption] = []
+    @State private var isRefreshingMiniMaxVoices = false
+    @State private var isLoadingBilling = false
+    @State private var didLoadDraft = false
+    @State private var statusMessage: String?
+
+    var body: some View {
+        Form {
+            Section("权益与钱包") {
+                AiSettingsInfoRow(label: "会员套餐", value: currentPlanText)
+                AiSettingsInfoRow(label: "钱包余额", value: walletBalanceText)
+                NavigationLink {
+                    WalletAndPlanView(
+                        settingsManager: settingsManager,
+                        colors: colors
+                    )
+                    .navigationTitle("钱包与套餐")
+                } label: {
+                    Label("查看钱包与套餐", systemImage: "creditcard.fill")
+                }
+                Button {
+                    Task { await loadBillingSummary() }
+                } label: {
+                    Label(isLoadingBilling ? "正在刷新" : "刷新权益", systemImage: "arrow.clockwise")
+                }
+                .disabled(isLoadingBilling)
+            }
+
+            Section("Router LLM") {
+                AiSettingsInfoRow(label: "模式", value: "Router 会员模型")
+                AiSettingsInfoRow(label: "Profile", value: llmProfileId)
+                AiSettingsInfoRow(label: "调用方", value: "App / Agent 后端")
+            }
+
+            Section("ASR") {
+                Picker("识别服务", selection: $draftAsrMode) {
+                    Text("Router ASR").tag("router")
+                    Text("Agent 后端").tag("backend")
+                }
+                .pickerStyle(.segmented)
+
+                if draftAsrMode == "router" {
+                    TextField("Profile ID", text: $draftAsrProfileId)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                } else {
+                    Text("录音或语音识别交给当前 Agent 后端处理")
+                        .foregroundColor(.secondary)
+                }
+            }
+
+            Section {
+                Picker("TTS 引擎", selection: $draftTtsMode) {
+                    Text("系统 TTS").tag("system")
+                    Text("MiniMax").tag("minimax")
+                }
+                .pickerStyle(.segmented)
+
+                if draftTtsMode == "minimax" {
+                    AiSettingsInfoRow(label: "本机 Key", value: minimaxApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "未保存" : "已保存")
+                    SecureField("MiniMax API Key", text: $minimaxApiKey)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+
+                    Picker("MiniMax 音色", selection: $minimaxVoiceId) {
+                        ForEach(minimaxVoices) { voice in
+                            Text(voiceLabel(voice)).tag(voice.id)
+                        }
+                    }
+
+                    Button {
+                        Task { await refreshMiniMaxVoices() }
+                    } label: {
+                        Label(isRefreshingMiniMaxVoices ? "正在刷新音色..." : "从 MiniMax 刷新可用音色", systemImage: "arrow.clockwise")
+                    }
+                    .disabled(isRefreshingMiniMaxVoices)
+                } else {
+                    Text("使用 iOS 系统语音合成，不需要 API Key")
+                        .foregroundColor(.secondary)
+                }
+            } header: {
+                Text("TTS 引擎")
+            } footer: {
+                Text("MiniMax API Key 只保存在本机 Keychain，不会写入 UserDefaults 或同步到 Router。")
+            }
+
+            Section("Agent 覆盖") {
+                ForEach(settingsManager.profiles) { profile in
+                    let resolved = settingsManager.aiSettings.resolved(for: profile.id)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(profile.resolvedDisplayName)
+                        Text(agentOverrideSummary(resolved))
+                            .font(.system(size: 12))
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
+
+            if let statusMessage {
+                Section {
+                    Text(statusMessage)
+                        .foregroundColor(statusMessage.contains("失败") ? colors.recordingRed : colors.primary)
+                }
+            }
+        }
+        .listStyle(.insetGrouped)
+        .navigationBarTitleDisplayMode(.inline)
+        .onAppear {
+            syncDraftFromSettings()
+        }
+        .task(id: settingsManager.config.accessToken) {
+            await loadBillingSummary()
+        }
+        .onChange(of: draftAsrMode) { _ in saveDraft() }
+        .onChange(of: draftAsrProfileId) { _ in saveDraft() }
+        .onChange(of: draftTtsMode) { _ in saveDraft() }
+        .onChange(of: minimaxApiKey) { _ in saveDraft() }
+        .onChange(of: minimaxVoiceId) { _ in saveDraft() }
+    }
+
+    private var llmProfileId: String {
+        let profileId = settingsManager.aiSettings.defaults.llm.profileId.trimmingCharacters(in: .whitespacesAndNewlines)
+        return profileId.isEmpty ? "default" : profileId
+    }
+
+    private var currentPlanText: String {
+        guard let subscription = billingSummary?.currentSubscription,
+              subscription.status.lowercased() == "active" else {
+            return "无有效套餐"
+        }
+        return "\(subscription.productId) · 至 \(subscription.currentPeriodEnd)"
+    }
+
+    private var walletBalanceText: String {
+        guard let wallet = billingSummary?.wallet else { return "未加载" }
+        return money(wallet.balanceCents, wallet.currency)
+    }
+
+    private var minimaxVoices: [MiniMaxVoiceOption] {
+        MiniMaxVoiceCatalog.buildSelectableVoices(
+            currentVoiceId: minimaxVoiceId,
+            fetchedVoices: fetchedMiniMaxVoices
+        )
+    }
+
+    private func syncDraftFromSettings() {
+        didLoadDraft = false
+        let defaults = settingsManager.aiSettings.defaults
+        draftAsrMode = defaults.asr.mode == "backend" ? "backend" : "router"
+        draftAsrProfileId = draftAsrMode == "router" ? defaults.asr.profileId : ""
+        let tts = defaults.tts
+        draftTtsMode = tts.mode == "byok" && tts.providerId == "minimax" ? "minimax" : "system"
+        minimaxVoiceId = normalizedMiniMaxVoiceId(tts.voiceId)
+        minimaxApiKey = settingsManager.localTtsCredential(providerId: "minimax") ?? ""
+        DispatchQueue.main.async {
+            didLoadDraft = true
+        }
+    }
+
+    private func saveDraft() {
+        guard didLoadDraft else { return }
+        let normalizedVoiceId = normalizedMiniMaxVoiceId(minimaxVoiceId)
+        settingsManager.updateLocalTtsCredential(providerId: "minimax", apiKey: minimaxApiKey)
+        settingsManager.updateAiSettings(
+            AiServiceSettings(
+                defaults: AiServiceDefaults(
+                    llm: settingsManager.aiSettings.defaults.llm,
+                    asr: AiServiceChoice(
+                        mode: draftAsrMode == "backend" ? "backend" : "router",
+                        profileId: draftAsrMode == "router" ? draftAsrProfileId.trimmingCharacters(in: .whitespacesAndNewlines) : ""
+                    ),
+                    tts: draftTtsMode == "minimax"
+                        ? AiServiceChoice(mode: "byok", providerId: "minimax", voiceId: normalizedVoiceId)
+                        : AiServiceChoice(mode: "system", providerId: "system", voiceId: normalizedVoiceId)
+                ),
+                agentOverrides: settingsManager.aiSettings.agentOverrides
+            )
+        )
+        statusMessage = "AI 服务设置已保存"
+    }
+
+    @MainActor
+    private func loadBillingSummary() async {
+        let config = settingsManager.config
+        let accessToken = config.accessToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !accessToken.isEmpty else {
+            billingSummary = nil
+            return
+        }
+        isLoadingBilling = true
+        defer { isLoadingBilling = false }
+        do {
+            billingSummary = try await GatewayAuthClient.billingSummary(
+                gatewayUrl: config.gatewayUrl,
+                accessToken: accessToken
+            )
+        } catch {
+            statusMessage = "权益加载失败：\(error.localizedDescription)"
+        }
+    }
+
+    @MainActor
+    private func refreshMiniMaxVoices() async {
+        guard !minimaxApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            statusMessage = "请先填写 MiniMax API Key"
+            return
+        }
+        isRefreshingMiniMaxVoices = true
+        defer { isRefreshingMiniMaxVoices = false }
+        do {
+            fetchedMiniMaxVoices = try await MiniMaxVoiceCatalog.fetchAvailableVoices(apiKey: minimaxApiKey)
+            statusMessage = "已刷新 \(fetchedMiniMaxVoices.count) 个 MiniMax 音色"
+        } catch {
+            statusMessage = "刷新音色失败：\(error.localizedDescription)"
+        }
+    }
+
+    private func agentOverrideSummary(_ defaults: AiServiceDefaults) -> String {
+        let asr = defaults.asr.mode == "backend" ? "Agent ASR" : "Router ASR"
+        let tts = defaults.tts.mode == "byok" && defaults.tts.providerId == "minimax" ? "MiniMax" : "系统 TTS"
+        return "继承全局 · \(asr) · \(tts)"
+    }
+
+    private func voiceLabel(_ voice: MiniMaxVoiceOption) -> String {
+        voice.name == voice.id ? voice.id : "\(voice.name) · \(voice.id)"
+    }
+
+    private func normalizedMiniMaxVoiceId(_ value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? MiniMaxVoiceCatalog.defaultVoiceId : trimmed
+    }
+
+    private func money(_ amountCents: Int, _ currency: String) -> String {
+        let value = String(format: "%.2f", Double(amountCents) / 100.0)
+        return currency.uppercased() == "CNY" ? "¥\(value)" : "\(currency.uppercased()) \(value)"
+    }
+}
+
+private struct AiSettingsInfoRow: View {
+    let label: String
+    let value: String
+
+    var body: some View {
+        HStack {
+            Text(label)
+            Spacer()
+            Text(value)
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.trailing)
+        }
+    }
+}
+
 private struct AccountSecurityView: View {
     @ObservedObject var wsManager: WebSocketManager
     @ObservedObject var settingsManager: SettingsManager
     let colors: MochiColors
+    let accountProfile: GatewayAuthMeResponse?
+    let onProfileUpdated: (GatewayAuthMeResponse) -> Void
 
+    var body: some View {
+        Form {
+            Section(header: Text("当前账号")) {
+                HStack {
+                    Text("账户显示")
+                    Spacer()
+                    Text(accountTitle)
+                        .foregroundColor(.secondary)
+                }
+                HStack {
+                    Text("注册手机号")
+                    Spacer()
+                    Text(accountProfile?.phoneNumberMasked ?? "同步后显示")
+                        .foregroundColor(.secondary)
+                }
+            }
+
+            Section(
+                header: Text("安全设置"),
+                footer: Text("手机号仅展示脱敏信息。修改密码会刷新当前登录态。")
+            ) {
+                NavigationLink {
+                    EditAccountDisplayNameView(
+                        settingsManager: settingsManager,
+                        colors: colors,
+                        accountProfile: accountProfile,
+                        onProfileUpdated: onProfileUpdated
+                    )
+                    .navigationTitle("修改用户名")
+                } label: {
+                    Label("修改用户名", systemImage: "pencil")
+                }
+
+                NavigationLink {
+                    ChangePasswordView(
+                        wsManager: wsManager,
+                        settingsManager: settingsManager,
+                        colors: colors
+                    )
+                    .navigationTitle("修改密码")
+                } label: {
+                    Label("修改密码", systemImage: "lock.fill")
+                }
+            }
+        }
+        .listStyle(.insetGrouped)
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private var accountTitle: String {
+        if let displayName = accountProfile?.accountDisplayName.trimmingCharacters(in: .whitespacesAndNewlines),
+           !displayName.isEmpty {
+            return displayName
+        }
+        return settingsManager.config.accountId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "未登录" : "账号已登录"
+    }
+}
+
+private struct EditAccountDisplayNameView: View {
+    @ObservedObject var settingsManager: SettingsManager
+    let colors: MochiColors
+    let accountProfile: GatewayAuthMeResponse?
+    let onProfileUpdated: (GatewayAuthMeResponse) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var draftName = ""
+    @State private var isLoading = false
+    @State private var statusMessage: String?
+
+    var body: some View {
+        Form {
+            Section(
+                header: Text("用户名"),
+                footer: Text("用户名保存后会作为账户显示；未设置时显示脱敏手机号。")
+            ) {
+                TextField(accountProfile?.accountDisplayName ?? "用户名", text: $draftName)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .onChange(of: draftName) { value in
+                        if value.count > 32 {
+                            draftName = String(value.prefix(32))
+                        }
+                    }
+
+                Button {
+                    Task { await save() }
+                } label: {
+                    Text(isLoading ? "正在保存..." : "保存用户名")
+                }
+                .disabled(isLoading || draftName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+
+            if let statusMessage {
+                Section {
+                    Text(statusMessage)
+                        .foregroundColor(statusMessage == "用户名已更新" ? colors.accent : colors.recordingRed)
+                }
+            }
+        }
+        .listStyle(.insetGrouped)
+        .navigationBarTitleDisplayMode(.inline)
+        .onAppear {
+            draftName = accountProfile?.displayName ?? ""
+        }
+    }
+
+    @MainActor
+    private func save() async {
+        let current = settingsManager.config
+        let accessToken = current.accessToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !accessToken.isEmpty else {
+            statusMessage = "请先登录"
+            return
+        }
+        let name = draftName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else {
+            statusMessage = "请输入用户名"
+            return
+        }
+
+        isLoading = true
+        defer { isLoading = false }
+        do {
+            let profile = try await GatewayAuthClient.updateAccountDisplayName(
+                gatewayUrl: current.gatewayUrl,
+                accessToken: accessToken,
+                displayName: name
+            )
+            onProfileUpdated(profile)
+            statusMessage = "用户名已更新"
+            dismiss()
+        } catch {
+            statusMessage = "用户名更新失败：\(error.localizedDescription)"
+        }
+    }
+}
+
+private struct ChangePasswordView: View {
+    @ObservedObject var wsManager: WebSocketManager
+    @ObservedObject var settingsManager: SettingsManager
+    let colors: MochiColors
+
+    @Environment(\.dismiss) private var dismiss
     @State private var currentPassword = ""
     @State private var newPassword = ""
     @State private var confirmNewPassword = ""
@@ -501,15 +953,6 @@ private struct AccountSecurityView: View {
 
     var body: some View {
         Form {
-            Section(header: Text("当前账号")) {
-                HStack {
-                    Text("账号")
-                    Spacer()
-                    Text(accountTitle)
-                        .foregroundColor(.secondary)
-                }
-            }
-
             Section(
                 header: Text("修改密码"),
                 footer: Text("密码至少 8 位。修改成功后会刷新当前登录态，并继续使用本机已保存的 Agent 配置。")
@@ -524,9 +967,9 @@ private struct AccountSecurityView: View {
                 Button {
                     Task { await changePassword() }
                 } label: {
-                    Text(isLoading ? "正在修改..." : "修改密码")
+                    Text(isLoading ? "正在修改..." : "确认修改密码")
                 }
-                .disabled(isLoading || !canSubmit)
+                .disabled(isLoading)
             }
 
             if let statusMessage {
@@ -542,11 +985,6 @@ private struct AccountSecurityView: View {
 
     private var canSubmit: Bool {
         !currentPassword.isEmpty && newPassword.count >= 8 && newPassword == confirmNewPassword
-    }
-
-    private var accountTitle: String {
-        let accountId = settingsManager.config.accountId.trimmingCharacters(in: .whitespacesAndNewlines)
-        return accountId.isEmpty ? "未登录" : maskedAccountLabel(accountId)
     }
 
     @MainActor
@@ -573,6 +1011,7 @@ private struct AccountSecurityView: View {
             )
             applyAuthSession(session)
             statusMessage = "密码已修改"
+            dismiss()
         } catch {
             statusMessage = "修改密码失败：\(error.localizedDescription)"
         }
@@ -610,12 +1049,6 @@ private struct AccountSecurityView: View {
             deviceLabel: settingsManager.config.deviceLabel,
             accessToken: settingsManager.config.accessToken
         )
-    }
-
-    private func maskedAccountLabel(_ accountId: String) -> String {
-        let value = accountId.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard value.count > 12 else { return value }
-        return "\(value.prefix(8))...\(value.suffix(4))"
     }
 }
 

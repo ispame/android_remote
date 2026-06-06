@@ -21,14 +21,18 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.AddCircle
+import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.ChatBubble
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CreditCard
 import androidx.compose.material.icons.filled.DarkMode
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.LinkOff
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.RemoveCircle
@@ -68,6 +72,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.openclaw.remote.auth.AuthSessionResult
+import com.openclaw.remote.auth.AuthMeResult
 import com.openclaw.remote.auth.GatewayAuthClient
 import com.openclaw.remote.data.AgentAvailabilityStatus
 import com.openclaw.remote.data.AgentPlatform
@@ -129,6 +134,12 @@ private data class AgentFormState(
     }
 }
 
+private enum class AccountSecurityPanel {
+    Home,
+    EditDisplayName,
+    ChangePassword,
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
@@ -156,9 +167,9 @@ fun SettingsScreen(
     var phoneNumber by remember { mutableStateOf("") }
     var smsCode by remember { mutableStateOf("") }
     var isAuthBusy by remember { mutableStateOf(false) }
-    var currentPassword by remember { mutableStateOf("") }
-    var newPassword by remember { mutableStateOf("") }
-    var confirmNewPassword by remember { mutableStateOf("") }
+    var accountPanel by remember { mutableStateOf<AccountSecurityPanel?>(null) }
+    var accountProfile by remember { mutableStateOf<AuthMeResult?>(null) }
+    var isAccountProfileLoading by remember { mutableStateOf(false) }
     var deviceLabel by remember(config) { mutableStateOf(config.deviceLabel) }
     var asrMode by remember(config) { mutableStateOf(config.asrMode.ifEmpty { "router" }) }
     var asrProfileId by remember(config) { mutableStateOf(config.asrProfileId) }
@@ -201,16 +212,18 @@ fun SettingsScreen(
             deviceLabel = deviceLabel.ifEmpty { "我的设备" },
         )
         settingsManager.updateConfig(nextConfig)
-        currentPassword = ""
-        newPassword = ""
-        confirmNewPassword = ""
     }
 
     suspend fun saveForm(form: AgentFormState, select: Boolean): AgentProfile? {
         val backendId = form.backendId.trim()
         val gatewayUrl = normalizedGateway(form.gatewayUrl)
+        val token = form.token.trim()
         val existing = profilesState.profiles.firstOrNull { it.id == form.id }
-        val backendChanged = existing?.backendId != backendId
+        val backendChanged = existing != null && existing.backendId.trim() != backendId
+        val gatewayChanged = existing != null &&
+            AgentProfile.normalizedGatewayKey(existing.gatewayUrl) != AgentProfile.normalizedGatewayKey(gatewayUrl)
+        val tokenChanged = existing != null && existing.token.trim() != token
+        val connectionChanged = backendChanged || gatewayChanged || tokenChanged
         val displayName = form.displayName.trim().ifEmpty { form.platform.defaultDisplayName }
         val backendLabel = if (backendChanged) {
             backendId.ifBlank { null }
@@ -224,8 +237,8 @@ fun SettingsScreen(
             gatewayUrl = gatewayUrl,
             backendId = backendId,
             backendLabel = backendLabel,
-            token = existing?.token ?: form.token.trim(),
-            isPaired = backendId.isNotEmpty() && !backendChanged && (existing?.isPaired ?: form.isPaired),
+            token = token,
+            isPaired = existing != null && backendId.isNotEmpty() && !connectionChanged && existing.isPaired,
             asrMode = asrMode,
             asrProfileId = if (asrMode == "backend") "" else asrProfileId,
         )
@@ -239,6 +252,21 @@ fun SettingsScreen(
 
     LaunchedEffect(profilesState.profiles) {
         agentForms = profilesState.profiles.map(AgentFormState::fromProfile)
+    }
+
+    LaunchedEffect(config.gatewayUrl, config.accessToken) {
+        if (config.accessToken.isBlank()) {
+            accountProfile = null
+            isAccountProfileLoading = false
+            return@LaunchedEffect
+        }
+        isAccountProfileLoading = true
+        runCatching {
+            authClient.me(config.gatewayUrl, config.accessToken)
+        }.onSuccess {
+            accountProfile = it
+        }
+        isAccountProfileLoading = false
     }
 
     DisposableEffect(Unit) {
@@ -283,6 +311,72 @@ fun SettingsScreen(
                     .padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
+                if (accountPanel != null) {
+                    AccountSecurityContent(
+                        panel = accountPanel ?: AccountSecurityPanel.Home,
+                        accountProfile = accountProfile,
+                        fallbackAccountLabel = accountDisplayLabel(config.accountId, accountProfile),
+                        isProfileLoading = isAccountProfileLoading,
+                        isBusy = isAuthBusy,
+                        colors = colors,
+                        onBack = {
+                            accountPanel = when (accountPanel) {
+                                AccountSecurityPanel.EditDisplayName,
+                                AccountSecurityPanel.ChangePassword -> AccountSecurityPanel.Home
+                                else -> null
+                            }
+                        },
+                        onEditDisplayName = { accountPanel = AccountSecurityPanel.EditDisplayName },
+                        onChangePassword = { accountPanel = AccountSecurityPanel.ChangePassword },
+                        onSaveDisplayName = { displayName ->
+                            scope.launch {
+                                if (config.accessToken.isBlank()) {
+                                    showMessage("请先登录")
+                                    return@launch
+                                }
+                                isAuthBusy = true
+                                runCatching {
+                                    authClient.updateAccountDisplayName(
+                                        gatewayUrl = authGatewayUrl(),
+                                        accessToken = config.accessToken,
+                                        displayName = displayName,
+                                    )
+                                }.onSuccess {
+                                    accountProfile = it
+                                    accountPanel = AccountSecurityPanel.Home
+                                    showMessage("用户名已更新")
+                                }.onFailure {
+                                    showMessage("用户名更新失败：${it.message ?: "unknown"}")
+                                }
+                                isAuthBusy = false
+                            }
+                        },
+                        onSubmitPassword = { currentPassword, newPassword ->
+                            scope.launch {
+                                if (config.accessToken.isBlank()) {
+                                    showMessage("请先登录")
+                                    return@launch
+                                }
+                                isAuthBusy = true
+                                runCatching {
+                                    authClient.changePassword(
+                                        gatewayUrl = authGatewayUrl(),
+                                        accessToken = config.accessToken,
+                                        currentPassword = currentPassword,
+                                        newPassword = newPassword,
+                                    )
+                                }.onSuccess {
+                                    applyAuthSession(it)
+                                    accountPanel = AccountSecurityPanel.Home
+                                    showMessage("密码已修改")
+                                }.onFailure {
+                                    showMessage("修改密码失败：${it.message ?: "unknown"}")
+                                }
+                                isAuthBusy = false
+                            }
+                        },
+                    )
+                } else {
                 ConnectionStatusCard(connectionState, pairingState, pairedBackendLabel, colors, onUnpair)
 
                 Button(
@@ -357,7 +451,18 @@ fun SettingsScreen(
 
                 HorizontalDivider(color = colors.divider, thickness = 0.5.dp)
 
-                SectionTitle("语音识别", colors)
+                SectionTitle("AI 服务", colors)
+                AiServiceSummaryCard(
+                    config = config,
+                    asrMode = asrMode,
+                    asrProfileId = asrProfileId,
+                    ttsEngine = ttsEngine,
+                    minimaxApiKey = minimaxApiKey,
+                    minimaxVoiceId = minimaxVoiceId,
+                    colors = colors,
+                    onOpenWallet = onNavigateToWallet,
+                )
+                Text("语音识别", color = colors.textPrimary, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
                 SegmentedControl(
                     leftText = "Router 识别",
                     rightText = "Agent 识别",
@@ -411,9 +516,7 @@ fun SettingsScreen(
                     }
                 }
 
-                HorizontalDivider(color = colors.divider, thickness = 0.5.dp)
-
-                SectionTitle("语音合成 (TTS)", colors)
+                Text("本机语音合成", color = colors.textPrimary, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
                 Box(modifier = Modifier.fillMaxWidth()) {
                     OutlinedButton(
                         onClick = { ttsEngineMenuExpanded = true },
@@ -631,78 +734,16 @@ fun SettingsScreen(
 
                 HorizontalDivider(color = colors.divider, thickness = 0.5.dp)
 
-                SectionTitle("修改密码", colors)
-                OutlinedTextField(
-                    value = currentPassword,
-                    onValueChange = { currentPassword = it },
-                    label = { Text("当前密码") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    visualTransformation = PasswordVisualTransformation(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                    shape = RoundedCornerShape(8.dp),
-                    colors = mochiTextFieldColors(colors),
-                )
-                OutlinedTextField(
-                    value = newPassword,
-                    onValueChange = { newPassword = it },
-                    label = { Text("新密码") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    visualTransformation = PasswordVisualTransformation(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                    shape = RoundedCornerShape(8.dp),
-                    colors = mochiTextFieldColors(colors),
-                )
-                OutlinedTextField(
-                    value = confirmNewPassword,
-                    onValueChange = { confirmNewPassword = it },
-                    label = { Text("确认新密码") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    visualTransformation = PasswordVisualTransformation(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                    shape = RoundedCornerShape(8.dp),
-                    colors = mochiTextFieldColors(colors),
-                )
+                SectionTitle("账号会话", colors)
                 OutlinedButton(
-                    onClick = {
-                        scope.launch {
-                            if (config.accessToken.isBlank()) {
-                                showMessage("请先登录")
-                                return@launch
-                            }
-                            if (currentPassword.isBlank() || newPassword.length < 8 || newPassword != confirmNewPassword) {
-                                showMessage("请检查当前密码和两次新密码")
-                                return@launch
-                            }
-                            isAuthBusy = true
-                            runCatching {
-                                authClient.changePassword(
-                                    gatewayUrl = authGatewayUrl(),
-                                    accessToken = config.accessToken,
-                                    currentPassword = currentPassword,
-                                    newPassword = newPassword,
-                                )
-                            }.onSuccess {
-                                applyAuthSession(it)
-                                showMessage("密码已修改")
-                            }.onFailure {
-                                showMessage("修改密码失败：${it.message ?: "unknown"}")
-                            }
-                            isAuthBusy = false
-                        }
-                    },
-                    enabled = !isAuthBusy,
+                    onClick = { accountPanel = AccountSecurityPanel.Home },
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(8.dp),
                 ) {
-                    Text("修改密码")
+                    Icon(Icons.Default.AccountCircle, contentDescription = null, modifier = Modifier.size(20.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("账号与安全")
                 }
-
-                HorizontalDivider(color = colors.divider, thickness = 0.5.dp)
-
-                SectionTitle("账号会话", colors)
                 OutlinedButton(
                     onClick = onNavigateToWallet,
                     modifier = Modifier.fillMaxWidth(),
@@ -714,7 +755,7 @@ fun SettingsScreen(
                 }
                 Text(
                     text = if (config.accountId.isNotBlank()) {
-                        "已登录 · ${maskedAccountLabel(config.accountId)}"
+                        "已登录 · ${accountDisplayLabel(config.accountId, accountProfile)}"
                     } else {
                         "未登录"
                     },
@@ -781,8 +822,254 @@ fun SettingsScreen(
                 }
 
                 HelpCard(colors)
+                }
             }
         }
+    }
+}
+
+@Composable
+private fun AccountSecurityContent(
+    panel: AccountSecurityPanel,
+    accountProfile: AuthMeResult?,
+    fallbackAccountLabel: String,
+    isProfileLoading: Boolean,
+    isBusy: Boolean,
+    colors: MochiColors,
+    onBack: () -> Unit,
+    onEditDisplayName: () -> Unit,
+    onChangePassword: () -> Unit,
+    onSaveDisplayName: (String) -> Unit,
+    onSubmitPassword: (String, String) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            SettingsIconButton(
+                imageVector = Icons.Default.ArrowBack,
+                contentDescription = "返回",
+                tint = colors.icon,
+                background = colors.inputBg,
+                onClick = onBack,
+            )
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    text = when (panel) {
+                        AccountSecurityPanel.Home -> "账号与安全"
+                        AccountSecurityPanel.EditDisplayName -> "修改用户名"
+                        AccountSecurityPanel.ChangePassword -> "修改密码"
+                    },
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = colors.textPrimary,
+                )
+                Text(
+                    text = if (isProfileLoading) "正在同步账号资料" else fallbackAccountLabel,
+                    fontSize = 12.sp,
+                    color = colors.textSecondary,
+                )
+            }
+        }
+
+        when (panel) {
+            AccountSecurityPanel.Home -> AccountSecurityHome(
+                accountProfile = accountProfile,
+                fallbackAccountLabel = fallbackAccountLabel,
+                colors = colors,
+                onEditDisplayName = onEditDisplayName,
+                onChangePassword = onChangePassword,
+            )
+            AccountSecurityPanel.EditDisplayName -> EditAccountDisplayNameContent(
+                accountProfile = accountProfile,
+                fallbackAccountLabel = fallbackAccountLabel,
+                isBusy = isBusy,
+                colors = colors,
+                onSave = onSaveDisplayName,
+            )
+            AccountSecurityPanel.ChangePassword -> ChangePasswordContent(
+                isBusy = isBusy,
+                colors = colors,
+                onSubmit = onSubmitPassword,
+            )
+        }
+    }
+}
+
+@Composable
+private fun AccountSecurityHome(
+    accountProfile: AuthMeResult?,
+    fallbackAccountLabel: String,
+    colors: MochiColors,
+    onEditDisplayName: () -> Unit,
+    onChangePassword: () -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(8.dp))
+                .background(colors.surface)
+                .border(0.5.dp, colors.divider, RoundedCornerShape(8.dp))
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            AccountInfoRow("账户显示", accountProfile?.accountDisplayName ?: fallbackAccountLabel, colors)
+            AccountInfoRow("注册手机号", accountProfile?.phoneNumberMasked ?: "同步后显示", colors)
+        }
+
+        OutlinedButton(
+            onClick = onEditDisplayName,
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(8.dp),
+        ) {
+            Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(20.dp))
+            Spacer(modifier = Modifier.width(8.dp))
+            Text("修改用户名")
+        }
+        OutlinedButton(
+            onClick = onChangePassword,
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(8.dp),
+        ) {
+            Icon(Icons.Default.Lock, contentDescription = null, modifier = Modifier.size(20.dp))
+            Spacer(modifier = Modifier.width(8.dp))
+            Text("修改密码")
+        }
+    }
+}
+
+@Composable
+private fun EditAccountDisplayNameContent(
+    accountProfile: AuthMeResult?,
+    fallbackAccountLabel: String,
+    isBusy: Boolean,
+    colors: MochiColors,
+    onSave: (String) -> Unit,
+) {
+    var draft by remember(accountProfile?.displayName, fallbackAccountLabel) {
+        mutableStateOf(accountProfile?.displayName.orEmpty())
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        OutlinedTextField(
+            value = draft,
+            onValueChange = { draft = it.take(32) },
+            label = { Text("用户名") },
+            placeholder = { Text(fallbackAccountLabel) },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            shape = RoundedCornerShape(8.dp),
+            colors = mochiTextFieldColors(colors),
+        )
+        Text(
+            text = "留空不保存。用户名保存后会作为账户显示；未设置时显示脱敏手机号。",
+            color = colors.textSecondary,
+            fontSize = 12.sp,
+        )
+        Button(
+            onClick = { onSave(draft) },
+            enabled = !isBusy && draft.trim().isNotEmpty(),
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(8.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = colors.primary,
+                contentColor = colors.onPrimary,
+            ),
+        ) {
+            Text(if (isBusy) "正在保存..." else "保存用户名")
+        }
+    }
+}
+
+@Composable
+private fun ChangePasswordContent(
+    isBusy: Boolean,
+    colors: MochiColors,
+    onSubmit: (String, String) -> Unit,
+) {
+    var currentPassword by remember { mutableStateOf("") }
+    var newPassword by remember { mutableStateOf("") }
+    var confirmNewPassword by remember { mutableStateOf("") }
+    var validationMessage by remember { mutableStateOf<String?>(null) }
+
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        OutlinedTextField(
+            value = currentPassword,
+            onValueChange = { currentPassword = it },
+            label = { Text("当前密码") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            visualTransformation = PasswordVisualTransformation(),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+            shape = RoundedCornerShape(8.dp),
+            colors = mochiTextFieldColors(colors),
+        )
+        OutlinedTextField(
+            value = newPassword,
+            onValueChange = { newPassword = it },
+            label = { Text("新密码") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            visualTransformation = PasswordVisualTransformation(),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+            shape = RoundedCornerShape(8.dp),
+            colors = mochiTextFieldColors(colors),
+        )
+        OutlinedTextField(
+            value = confirmNewPassword,
+            onValueChange = { confirmNewPassword = it },
+            label = { Text("确认新密码") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            visualTransformation = PasswordVisualTransformation(),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+            shape = RoundedCornerShape(8.dp),
+            colors = mochiTextFieldColors(colors),
+        )
+        validationMessage?.let {
+            Text(text = it, color = colors.recordingRed, fontSize = 12.sp)
+        }
+        Button(
+            onClick = {
+                validationMessage = when {
+                    currentPassword.isBlank() -> "请输入当前密码"
+                    newPassword.length < 8 -> "新密码至少 8 位"
+                    newPassword != confirmNewPassword -> "两次新密码不一致"
+                    else -> null
+                }
+                if (validationMessage == null) onSubmit(currentPassword, newPassword)
+            },
+            enabled = !isBusy,
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(8.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = colors.primary,
+                contentColor = colors.onPrimary,
+            ),
+        ) {
+            Text(if (isBusy) "正在修改..." else "确认修改密码")
+        }
+    }
+}
+
+@Composable
+private fun AccountInfoRow(label: String, value: String, colors: MochiColors) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(label, color = colors.textSecondary, fontSize = 13.sp)
+        Text(
+            value,
+            color = colors.textPrimary,
+            fontSize = 14.sp,
+            fontWeight = FontWeight.Medium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 
@@ -1246,6 +1533,75 @@ private fun HelpCard(colors: MochiColors) {
     }
 }
 
+@Composable
+private fun AiServiceSummaryCard(
+    config: GatewayConfig,
+    asrMode: String,
+    asrProfileId: String,
+    ttsEngine: String,
+    minimaxApiKey: String,
+    minimaxVoiceId: String,
+    colors: MochiColors,
+    onOpenWallet: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .background(colors.surface)
+            .border(0.5.dp, colors.divider, RoundedCornerShape(8.dp))
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        AiServiceInfoRow("会员 / 钱包", if (config.accountId.isBlank()) "未登录" else "可查看套餐与余额", colors)
+        AiServiceInfoRow("Router LLM", "会员模型 · default", colors)
+        AiServiceInfoRow(
+            "ASR",
+            if (asrMode == "backend") "Agent 后端识别" else "Router 识别 · ${asrProfileId.ifBlank { "默认" }}",
+            colors,
+        )
+        AiServiceInfoRow(
+            "本机 TTS",
+            if (ttsEngine == "minimax") {
+                val keyStatus = if (minimaxApiKey.isBlank()) "Key 未保存" else "Key 已保存"
+                "MiniMax · $keyStatus · ${minimaxVoiceId.ifBlank { MiniMaxVoiceCatalog.DEFAULT_VOICE_ID }}"
+            } else {
+                "系统 TTS"
+            },
+            colors,
+        )
+        OutlinedButton(
+            onClick = onOpenWallet,
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(8.dp),
+        ) {
+            Icon(Icons.Default.CreditCard, contentDescription = null, modifier = Modifier.size(20.dp))
+            Spacer(modifier = Modifier.width(8.dp))
+            Text("钱包与套餐")
+        }
+    }
+}
+
+@Composable
+private fun AiServiceInfoRow(label: String, value: String, colors: MochiColors) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(label, color = colors.textSecondary, fontSize = 12.sp)
+        Text(
+            value,
+            color = colors.textPrimary,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Medium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f, fill = false),
+        )
+    }
+}
+
 private data class AsrProviderProfile(
     val id: String,
     val providerLabel: String,
@@ -1255,9 +1611,10 @@ private data class AsrProviderProfile(
 private fun voiceLabel(voice: MiniMaxVoiceOption): String =
     "${voice.category} · ${voice.name}"
 
-private fun maskedAccountLabel(accountId: String): String {
-    val value = accountId.trim()
-    return if (value.length <= 12) value else "${value.take(8)}...${value.takeLast(4)}"
+private fun accountDisplayLabel(accountId: String, accountProfile: AuthMeResult?): String {
+    val displayName = accountProfile?.accountDisplayName?.trim().orEmpty()
+    if (displayName.isNotEmpty()) return displayName
+    return if (accountId.isBlank()) "未登录" else "账号已登录"
 }
 
 private suspend fun fetchAsrProfiles(gatewayUrl: String): Pair<String?, List<AsrProviderProfile>> {

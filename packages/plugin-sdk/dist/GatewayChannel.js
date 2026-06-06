@@ -42,6 +42,7 @@ export class GatewayChannel {
     httpClient;
     reconnectManager;
     heartbeatManager;
+    ai;
     state = "idle";
     backendId = null;
     // Event handlers
@@ -63,6 +64,18 @@ export class GatewayChannel {
             token: this.config.token,
         };
         this.httpClient = new HttpClient(httpConfig);
+        this.ai = {
+            chat: async (params) => {
+                const backendId = params.backendId ?? this.backendId;
+                if (!backendId) {
+                    throw new Error("GatewayChannel is not registered; cannot call Router AI chat");
+                }
+                return await this.httpClient.chat({
+                    ...params,
+                    backendId,
+                });
+            },
+        };
         // Build WsClient deps
         const wsDeps = this.buildWsClientDeps();
         // Build WsClient config

@@ -5,6 +5,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { GatewayChannel } from "../GatewayChannel.js";
 import { HttpClient } from "../http-client.js";
 
 type MockFetch = ReturnType<typeof vi.fn>;
@@ -164,6 +165,112 @@ describe("HttpClient", () => {
       await expect(
         httpClient.pushEvent({ backendId: "b-1", event: "test", data: {} })
       ).rejects.toThrow("HTTP POST https://boson-tech.top/api/plugin/event returned 404");
+    });
+  });
+
+  // ─── ai.chat ─────────────────────────────────────────────────────────────
+
+  describe("ai.chat", () => {
+    it("POSTs backend AI chat requests with backend identity headers", async () => {
+      mockFetch = createMockGlobalFetch({
+        ok: true,
+        status: 200,
+        body: {
+          id: "ai_123",
+          model_profile_id: "default",
+          message: { role: "assistant", content: "hello from router" },
+          usage: { prompt_tokens: 3, completion_tokens: 4 },
+          billing: { charged_cents: 0, usage_event_id: "usage_1" },
+        },
+      });
+      global.fetch = mockFetch as typeof global.fetch;
+
+      httpClient = new HttpClient({ baseUrl: `${BASE_URL}/`, token: TOKEN });
+
+      const response = await httpClient.chat({
+        backendId: "backend-abc",
+        accountId: "acct-123",
+        modelProfileId: "default",
+        agentProfileId: "profile-openclaw",
+        messages: [{ role: "user", content: "hello" }],
+      });
+
+      expect(response.message.content).toBe("hello from router");
+      expect(response.billing.charged_cents).toBe(0);
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+
+      const [url, options] = mockFetch.mock.calls[0] as [string, RequestInit];
+      expect(url).toBe("https://boson-tech.top/api/v2/backend/ai/chat");
+      expect(options.method).toBe("POST");
+
+      const headers = options.headers as Record<string, string>;
+      expect(headers["Content-Type"]).toBe("application/json");
+      expect(headers["X-Plugin-Token"]).toBe(TOKEN);
+      expect(headers["X-Boson-Backend-Id"]).toBe("backend-abc");
+
+      const body = JSON.parse(options.body as string);
+      expect(body).toEqual({
+        account_id: "acct-123",
+        model_profile_id: "default",
+        agent_profile_id: "profile-openclaw",
+        messages: [{ role: "user", content: "hello" }],
+      });
+    });
+
+    it("surfaces Router AI errors with status and code", async () => {
+      mockFetch = createMockGlobalFetch({
+        ok: false,
+        status: 402,
+        body: { error: { code: "PAYMENT_REQUIRED", message: "Insufficient wallet balance" } },
+      });
+      global.fetch = mockFetch as typeof global.fetch;
+
+      httpClient = new HttpClient({ baseUrl: BASE_URL, token: TOKEN });
+
+      await expect(
+        httpClient.chat({
+          backendId: "backend-abc",
+          accountId: "acct-123",
+          messages: [{ role: "user", content: "hello" }],
+        })
+      ).rejects.toMatchObject({
+        statusCode: 402,
+        code: "PAYMENT_REQUIRED",
+      });
+    });
+  });
+
+  describe("GatewayChannel.ai", () => {
+    it("exposes Router AI chat through the channel facade", async () => {
+      mockFetch = createMockGlobalFetch({
+        ok: true,
+        status: 200,
+        body: {
+          id: "ai_channel",
+          model_profile_id: "default",
+          message: { role: "assistant", content: "facade response" },
+          usage: {},
+          billing: { charged_cents: 0, usage_event_id: null },
+        },
+      });
+      global.fetch = mockFetch as typeof global.fetch;
+
+      const channel = new GatewayChannel({
+        baseUrl: BASE_URL,
+        agentId: "agent-1",
+        token: TOKEN,
+        tenantId: "tenant-1",
+      });
+
+      const response = await channel.ai.chat({
+        backendId: "backend-abc",
+        accountId: "acct-123",
+        messages: [{ role: "user", content: "hello" }],
+      });
+
+      expect(response.message.content).toBe("facade response");
+      const headers = mockFetch.mock.calls[0][1].headers as Record<string, string>;
+      expect(headers["X-Boson-Backend-Id"]).toBe("backend-abc");
     });
   });
 });

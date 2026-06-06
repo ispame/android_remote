@@ -29,7 +29,7 @@
 import { WsClient, type WsClientConfig, type WsClientDeps } from "./WsClient.js";
 import { ReconnectManager, type ReconnectConfig } from "./reconnect.js";
 import { HeartbeatManager, type HeartbeatConfig } from "./heartbeat.js";
-import { HttpClient, type HttpClientConfig } from "./http-client.js";
+import { HttpClient, type AiChatParams, type AiChatResponse, type HttpClientConfig } from "./http-client.js";
 import type { Logger } from "./logger.js";
 import { createPrefixedLogger } from "./logger.js";
 import type {
@@ -82,6 +82,10 @@ const DEFAULT_AUTO_RECONNECT = true;
 
 export type ConnectionState = "idle" | "connecting" | "connected" | "reconnecting" | "stopped";
 
+export type GatewayAiChatParams = Omit<AiChatParams, "backendId"> & {
+  backendId?: string;
+};
+
 /**
  * GatewayChannel — main SDK class.
  */
@@ -93,6 +97,9 @@ export class GatewayChannel {
   private httpClient: HttpClient;
   private reconnectManager: ReconnectManager;
   private heartbeatManager: HeartbeatManager;
+  readonly ai: {
+    chat: (params: GatewayAiChatParams) => Promise<AiChatResponse>;
+  };
 
   private state: ConnectionState = "idle";
   private backendId: string | null = null;
@@ -118,6 +125,18 @@ export class GatewayChannel {
       token: this.config.token,
     };
     this.httpClient = new HttpClient(httpConfig);
+    this.ai = {
+      chat: async (params) => {
+        const backendId = params.backendId ?? this.backendId;
+        if (!backendId) {
+          throw new Error("GatewayChannel is not registered; cannot call Router AI chat");
+        }
+        return await this.httpClient.chat({
+          ...params,
+          backendId,
+        });
+      },
+    };
 
     // Build WsClient deps
     const wsDeps = this.buildWsClientDeps();

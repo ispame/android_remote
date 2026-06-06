@@ -10,10 +10,12 @@ class SettingsManagerIOS : SettingsManager {
 
     private val _configFlow = MutableStateFlow(loadConfig())
     private val _profilesFlow = MutableStateFlow(makeState(loadConfig()))
+    private val _aiSettingsFlow = MutableStateFlow(loadAiSettings())
     private val _soundPlaybackEnabledFlow = MutableStateFlow(loadSoundPlaybackEnabled())
 
     override val configFlow: Flow<GatewayConfig> = _configFlow.asStateFlow()
     override val profilesFlow: Flow<AgentProfilesState> = _profilesFlow.asStateFlow()
+    override val aiSettingsFlow: Flow<AiServiceSettings> = _aiSettingsFlow.asStateFlow()
     override val soundPlaybackEnabledFlow: Flow<Boolean> = _soundPlaybackEnabledFlow.asStateFlow()
 
     private fun loadSoundPlaybackEnabled(): Boolean {
@@ -41,6 +43,9 @@ class SettingsManagerIOS : SettingsManager {
         )
     }
 
+    private fun loadAiSettings(): AiServiceSettings =
+        decodeAiServiceSettings(defaults.stringForKey("ai_service_settings_v1"))
+
     private fun saveConfig(config: GatewayConfig) {
         defaults.setObject(config.gatewayUrl, forKey = "gateway_url")
         defaults.setObject(config.accountId, forKey = "account_id")
@@ -52,6 +57,7 @@ class SettingsManagerIOS : SettingsManager {
         defaults.setObject(config.token, forKey = "token")
         defaults.setObject(config.asrMode, forKey = "asr_mode")
         defaults.setObject(config.asrProfileId, forKey = "asr_profile_id")
+        saveAiSettings(aiSettingsFromLegacyConfig(config), updateConfigFlow = false)
         if (config.pairedBackendId != null) {
             defaults.setObject(config.pairedBackendId, forKey = "paired_backend_id")
         } else {
@@ -64,6 +70,21 @@ class SettingsManagerIOS : SettingsManager {
         }
         _configFlow.value = config
         _profilesFlow.value = makeState(config)
+    }
+
+    private fun saveAiSettings(settings: AiServiceSettings, updateConfigFlow: Boolean = true) {
+        val normalized = settings.normalized()
+        defaults.setObject(encodeAiServiceSettings(normalized), forKey = "ai_service_settings_v1")
+        _aiSettingsFlow.value = normalized
+        if (updateConfigFlow) {
+            val current = _configFlow.value
+            _configFlow.value = current.copy(
+                asrMode = normalized.defaults.asr.mode,
+                asrProfileId = normalized.defaults.asr.profileId,
+                ttsEngine = normalized.defaults.tts.toLegacyTtsEngine(),
+                minimaxVoiceId = normalized.defaults.tts.voiceId,
+            )
+        }
     }
 
     private fun makeState(config: GatewayConfig): AgentProfilesState {
@@ -146,6 +167,14 @@ class SettingsManagerIOS : SettingsManager {
         clearConfig()
     }
 
+    override suspend fun updateAiSettings(settings: AiServiceSettings) {
+        saveAiSettings(settings)
+    }
+
+    override suspend fun updateLocalTtsCredential(providerId: String, apiKey: String) = Unit
+
+    override suspend fun localTtsCredential(providerId: String): String? = null
+
     override suspend fun updateGlobalAsr(mode: String, profileId: String) {
         val normalizedMode = if (mode == "backend") "backend" else "router"
         val current = _configFlow.value
@@ -174,9 +203,11 @@ class SettingsManagerIOS : SettingsManager {
         defaults.removeObjectForKey("paired_backend_label")
         defaults.removeObjectForKey("asr_mode")
         defaults.removeObjectForKey("asr_profile_id")
+        defaults.removeObjectForKey("ai_service_settings_v1")
         defaults.removeObjectForKey("sound_playback_enabled_v1")
         _configFlow.value = GatewayConfig()
         _profilesFlow.value = makeState(_configFlow.value)
+        _aiSettingsFlow.value = AiServiceSettings()
         _soundPlaybackEnabledFlow.value = true
     }
 }

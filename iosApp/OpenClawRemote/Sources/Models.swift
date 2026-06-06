@@ -595,6 +595,54 @@ struct GatewayConfig {
     }
 }
 
+struct AiServiceChoice: Codable, Equatable {
+    var mode: String
+    var profileId: String
+    var providerId: String
+    var voiceId: String
+
+    init(
+        mode: String,
+        profileId: String = "",
+        providerId: String = "",
+        voiceId: String = ""
+    ) {
+        self.mode = mode
+        self.profileId = profileId
+        self.providerId = providerId
+        self.voiceId = voiceId
+    }
+}
+
+struct AiServiceDefaults: Codable, Equatable {
+    var llm = AiServiceChoice(mode: "router", profileId: "default")
+    var asr = AiServiceChoice(mode: "router")
+    var tts = AiServiceChoice(mode: "system", providerId: "system", voiceId: "male-qn-qingse")
+}
+
+struct AiAgentOverride: Codable, Equatable {
+    var inherit = true
+    var llm: AiServiceChoice?
+    var asr: AiServiceChoice?
+    var tts: AiServiceChoice?
+}
+
+struct AiServiceSettings: Codable, Equatable {
+    var defaults = AiServiceDefaults()
+    var agentOverrides: [String: AiAgentOverride] = [:]
+
+    func resolved(for profileId: String) -> AiServiceDefaults {
+        guard let override = agentOverrides[profileId], !override.inherit else {
+            return defaults
+        }
+        return AiServiceDefaults(
+            llm: override.llm ?? defaults.llm,
+            asr: override.asr ?? defaults.asr,
+            tts: override.tts ?? defaults.tts
+        )
+    }
+}
+
 enum RecordingType: String, Codable, CaseIterable, Identifiable {
     case audioOnly = "audio_only"
     case meeting

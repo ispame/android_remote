@@ -26,6 +26,34 @@ export interface EventPushParams {
   data: unknown;
 }
 
+export interface AiChatMessage {
+  role: "system" | "user" | "assistant";
+  content: string;
+}
+
+export interface AiChatParams {
+  backendId: string;
+  accountId: string;
+  modelProfileId?: string;
+  agentProfileId?: string;
+  messages: AiChatMessage[];
+}
+
+export interface AiChatResponse {
+  id: string;
+  model_profile_id: string;
+  message: { role: "assistant"; content: string };
+  usage: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    total_tokens?: number;
+  };
+  billing: {
+    charged_cents: number;
+    usage_event_id: string | null;
+  };
+}
+
 export interface HttpClientError extends Error {
   statusCode?: number;
   code?: string;
@@ -79,7 +107,27 @@ export class HttpClient {
     await this.post(url, body);
   }
 
-  private async post(url: string, body: unknown): Promise<void> {
+  /**
+   * Call Router LLM from a paired backend.
+   *
+   * POST /api/v2/backend/ai/chat
+   */
+  async chat(params: AiChatParams): Promise<AiChatResponse> {
+    const url = `${this.baseUrl}/api/v2/backend/ai/chat`;
+    const body = {
+      account_id: params.accountId,
+      ...(params.modelProfileId !== undefined && { model_profile_id: params.modelProfileId }),
+      ...(params.agentProfileId !== undefined && { agent_profile_id: params.agentProfileId }),
+      messages: params.messages,
+    };
+
+    const response = await this.post(url, body, {
+      "X-Boson-Backend-Id": params.backendId,
+    });
+    return await response.json() as AiChatResponse;
+  }
+
+  private async post(url: string, body: unknown, extraHeaders: Record<string, string> = {}): Promise<Response> {
     let response: Response;
 
     try {
@@ -88,6 +136,7 @@ export class HttpClient {
         headers: {
           "Content-Type": "application/json",
           "X-Plugin-Token": this.token,
+          ...extraHeaders,
         },
         body: JSON.stringify(body),
       });
@@ -99,11 +148,36 @@ export class HttpClient {
     }
 
     if (!response.ok) {
+      const responseError = await parseResponseError(response);
       const err = new Error(
-        `HTTP POST ${url} returned ${response.status}: ${response.statusText}`
+        responseError.message || `HTTP POST ${url} returned ${response.status}: ${response.statusText}`
       ) as HttpClientError;
       err.statusCode = response.status;
+      err.code = responseError.code;
       throw err;
     }
+
+    return response;
   }
+}
+
+async function parseResponseError(response: Response): Promise<{ code?: string; message?: string }> {
+  try {
+    const body = await response.json() as {
+      error?: { code?: unknown; message?: unknown };
+      code?: unknown;
+      message?: unknown;
+    };
+    const nested = body.error ?? {};
+    return {
+      code: stringOrUndefined(nested.code) ?? stringOrUndefined(body.code),
+      message: stringOrUndefined(nested.message) ?? stringOrUndefined(body.message),
+    };
+  } catch {
+    return {};
+  }
+}
+
+function stringOrUndefined(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }

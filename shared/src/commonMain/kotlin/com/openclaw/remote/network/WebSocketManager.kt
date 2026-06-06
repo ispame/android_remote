@@ -632,7 +632,7 @@ class WebSocketManager(
                             )
                         )
                     )
-                    if (isTerminalAuthError(code)) {
+                    if (isNotPairedRouterError(code) || isTerminalAuthError(code)) {
                         offerEvent(WsMessageEvent.Error(code, msg))
                     }
                 }
@@ -845,12 +845,18 @@ internal fun recoverPairingAfterRouterError(
 ): PairingErrorRecovery =
     if (
         (pairingState == PairingState.PENDING && !pendingPairBackendId.isNullOrBlank()) ||
-        isBackendUnavailableRouterError(code, message)
+        isPairingInvalidatedRouterError(code, message)
     ) {
         PairingErrorRecovery(PairingState.UNPAIRED, null)
     } else {
         PairingErrorRecovery(pairingState, pendingPairBackendId)
     }
+
+internal fun isPairingInvalidatedRouterError(code: String, message: String): Boolean =
+    isNotPairedRouterError(code) || isBackendUnavailableRouterError(code, message)
+
+internal fun isNotPairedRouterError(code: String): Boolean =
+    code.trim().uppercase() == "NOT_PAIRED"
 
 internal fun isBackendUnavailableRouterError(code: String, message: String): Boolean {
     val normalizedCode = code.trim().uppercase()

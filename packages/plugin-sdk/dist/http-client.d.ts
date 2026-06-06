@@ -22,6 +22,34 @@ export interface EventPushParams {
     event: string;
     data: unknown;
 }
+export interface AiChatMessage {
+    role: "system" | "user" | "assistant";
+    content: string;
+}
+export interface AiChatParams {
+    backendId: string;
+    accountId: string;
+    modelProfileId?: string;
+    agentProfileId?: string;
+    messages: AiChatMessage[];
+}
+export interface AiChatResponse {
+    id: string;
+    model_profile_id: string;
+    message: {
+        role: "assistant";
+        content: string;
+    };
+    usage: {
+        prompt_tokens?: number;
+        completion_tokens?: number;
+        total_tokens?: number;
+    };
+    billing: {
+        charged_cents: number;
+        usage_event_id: string | null;
+    };
+}
 export interface HttpClientError extends Error {
     statusCode?: number;
     code?: string;
@@ -47,6 +75,12 @@ export declare class HttpClient {
      * Body: { backend_id, event, data }
      */
     pushEvent(params: EventPushParams): Promise<void>;
+    /**
+     * Call Router LLM from a paired backend.
+     *
+     * POST /api/v2/backend/ai/chat
+     */
+    chat(params: AiChatParams): Promise<AiChatResponse>;
     private post;
 }
 //# sourceMappingURL=http-client.d.ts.map

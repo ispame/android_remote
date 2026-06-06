@@ -14,10 +14,13 @@ final class SettingsManager: ObservableObject {
     private let recordingDefaultTypeKey = "recording_default_type"
     private let recordingCustomPromptKey = "recording_custom_prompt"
     private let soundPlaybackEnabledKey = "sound_playback_enabled_v1"
+    private let aiServiceSettingsKey = "ai_service_settings_v1"
     private let agentTtsMigratedKey = "agent_tts_migrated_v1"
+    private let credentialVault: CredentialVault
 
     @Published private(set) var profiles: [AgentProfile]
     @Published private(set) var selectedProfileId: String
+    @Published private(set) var aiSettings: AiServiceSettings
     @Published private(set) var recordingSettings = RecordingSettings()
     @Published private(set) var soundPlaybackEnabled: Bool
     @Published var configPublished: GatewayConfig
@@ -66,10 +69,12 @@ final class SettingsManager: ObservableObject {
         defaults.string(forKey: "asr_profile_id") ?? selectedProfile.asrProfileId
     }
 
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = .standard, credentialVault: CredentialVault = KeychainCredentialVault()) {
         self.defaults = defaults
+        self.credentialVault = credentialVault
         let legacyConfig = Self.loadLegacyConfig(from: defaults)
         let loadedProfiles = Self.loadProfiles(from: defaults, key: profilesKey)
+        let loadedAiSettings = Self.loadAiSettings(from: defaults, key: aiServiceSettingsKey, legacyConfig: legacyConfig)
         let shouldMigrateAgentTts = !defaults.bool(forKey: agentTtsMigratedKey)
         var initialProfiles: [AgentProfile]
         if loadedProfiles.isEmpty {
@@ -90,6 +95,8 @@ final class SettingsManager: ObservableObject {
             }
             defaults.set(true, forKey: agentTtsMigratedKey)
         }
+        Self.migrateLocalMiniMaxCredential(from: legacyConfig, profiles: initialProfiles, defaults: defaults, vault: credentialVault)
+        initialProfiles = Self.injectLocalMiniMaxCredential(into: initialProfiles, vault: credentialVault)
         let initialSelectedProfileId = defaults.string(forKey: selectedProfileIdKey)
             .flatMap { id in initialProfiles.contains(where: { $0.id == id }) ? id : nil }
             ?? initialProfiles[0].id
@@ -102,6 +109,7 @@ final class SettingsManager: ObservableObject {
         let sortedInitialProfiles = initialProfiles.sortedForAgentList()
         profiles = sortedInitialProfiles
         selectedProfileId = initialSelectedProfileId
+        aiSettings = loadedAiSettings
         recordingSettings = Self.loadRecordingSettings(from: defaults, profiles: sortedInitialProfiles)
         soundPlaybackEnabled = defaults.object(forKey: soundPlaybackEnabledKey) as? Bool ?? true
         recordingSettingsReady = true
@@ -111,6 +119,7 @@ final class SettingsManager: ObservableObject {
     }
 
     func updateConfig(_ config: GatewayConfig) {
+        storeLocalMiniMaxCredential(config.minimaxApiKey)
         let previousAccountId = defaults.string(forKey: "account_id") ?? ""
         let accountChanged = !previousAccountId.isEmpty && previousAccountId != config.accountId
         defaults.set(config.accountId, forKey: "account_id")
@@ -138,6 +147,7 @@ final class SettingsManager: ObservableObject {
             defaults.set(profile.id, forKey: selectedProfileIdKey)
             persistProfiles()
             updateGlobalAsr(mode: config.asrMode, profileId: config.asrProfileId)
+            updateAiSettings(Self.aiSettings(from: config), publish: false)
             mirrorLegacyKeys(from: selectedProfile)
             return
         }
@@ -150,11 +160,12 @@ final class SettingsManager: ObservableObject {
         profile.asrMode = config.asrMode == "backend" ? "backend" : "router"
         profile.asrProfileId = config.asrProfileId
         profile.ttsEngine = Self.normalizedTtsEngine(config.ttsEngine)
-        profile.minimaxApiKey = config.minimaxApiKey
+        profile.minimaxApiKey = localMiniMaxApiKey()
         profile.minimaxVoiceId = config.minimaxVoiceId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "male-qn-qingse" : config.minimaxVoiceId
         profile.updatedAt = Date()
         replaceProfile(profile, select: true)
         updateGlobalAsr(mode: config.asrMode, profileId: config.asrProfileId)
+        updateAiSettings(Self.aiSettings(from: config), publish: false)
         mirrorLegacyKeys(from: profile)
     }
 
@@ -284,12 +295,23 @@ final class SettingsManager: ObservableObject {
         normalizedProfile.asrMode = globalAsrMode
         normalizedProfile.asrProfileId = globalAsrProfileId
         normalizedProfile.updatedAt = Date()
+        applyLocalMiniMaxCredential(to: &normalizedProfile)
 
         if let index = profiles.firstIndex(where: { $0.id == normalizedProfile.id }) {
+            let previousProfile = profiles[index]
+            if Self.connectionIdentityChanged(from: previousProfile, to: normalizedProfile) {
+                normalizedProfile.isPaired = false
+                if Self.trimmed(previousProfile.backendId) != Self.trimmed(normalizedProfile.backendId) {
+                    normalizedProfile.backendLabel = Self.trimmed(normalizedProfile.backendId).isEmpty
+                        ? nil
+                        : Self.trimmed(normalizedProfile.backendId)
+                }
+            }
             profiles[index] = normalizedProfile
         } else {
             guard profiles.count < Self.maxAgentProfiles else { return false }
             guard isGatewayCompatible(normalizedProfile.gatewayUrl) else { return false }
+            normalizedProfile.isPaired = false
             normalizedProfile.sortIndex = nextSortIndex()
             profiles.append(normalizedProfile)
         }
@@ -335,6 +357,17 @@ final class SettingsManager: ObservableObject {
         let normalizedMode = mode == "backend" ? "backend" : "router"
         defaults.set(normalizedMode, forKey: "asr_mode")
         defaults.set(normalizedMode == "router" ? profileId : "", forKey: "asr_profile_id")
+        updateAiSettings(
+            AiServiceSettings(
+                defaults: AiServiceDefaults(
+                    llm: aiSettings.defaults.llm,
+                    asr: AiServiceChoice(mode: normalizedMode, profileId: normalizedMode == "router" ? profileId : ""),
+                    tts: aiSettings.defaults.tts
+                ),
+                agentOverrides: aiSettings.agentOverrides
+            ),
+            publish: false
+        )
         for index in profiles.indices {
             profiles[index].asrMode = normalizedMode
             profiles[index].asrProfileId = normalizedMode == "router" ? profileId : ""
@@ -343,6 +376,42 @@ final class SettingsManager: ObservableObject {
         profiles = profiles.sortedForAgentList()
         persistProfiles()
         publishActiveConfig()
+    }
+
+    func updateAiSettings(_ settings: AiServiceSettings, publish: Bool = true) {
+        aiSettings = settings
+        if let data = try? JSONEncoder().encode(settings) {
+            defaults.set(data, forKey: aiServiceSettingsKey)
+        }
+        defaults.set(settings.defaults.asr.mode == "backend" ? "backend" : "router", forKey: "asr_mode")
+        defaults.set(settings.defaults.asr.mode == "backend" ? "" : settings.defaults.asr.profileId, forKey: "asr_profile_id")
+        defaults.set(settings.defaults.tts.mode == "byok" && settings.defaults.tts.providerId == "minimax" ? "minimax" : "system", forKey: "tts_engine")
+        defaults.set(settings.defaults.tts.voiceId.isEmpty ? "male-qn-qingse" : settings.defaults.tts.voiceId, forKey: "minimax_voice_id")
+        defaults.removeObject(forKey: "minimax_api_key")
+        applyAiSettingsToProfiles(settings)
+        if publish {
+            publishActiveConfig()
+        }
+    }
+
+    func updateLocalTtsCredential(providerId: String, apiKey: String) {
+        guard providerId == "minimax" else { return }
+        let trimmed = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            credentialVault.removeSecret(for: localMiniMaxCredentialId)
+        } else {
+            credentialVault.setSecret(trimmed, for: localMiniMaxCredentialId)
+        }
+        defaults.removeObject(forKey: "minimax_api_key")
+        profiles = Self.injectLocalMiniMaxCredential(into: profiles, vault: credentialVault)
+        persistProfiles()
+        publishActiveConfig()
+    }
+
+    func localTtsCredential(providerId: String) -> String? {
+        guard providerId == "minimax" else { return nil }
+        let secret = localMiniMaxApiKey().trimmingCharacters(in: .whitespacesAndNewlines)
+        return secret.isEmpty ? nil : secret
     }
 
     func setProfilePinned(_ profileId: String, isPinned: Bool) {
@@ -393,12 +462,16 @@ final class SettingsManager: ObservableObject {
         let normalizedKey = "\(AgentProfile.normalizedGatewayKey(gatewayUrl))|\(backendId)"
 
         if let index = profiles.firstIndex(where: { $0.uniqueBackendKey == normalizedKey }) {
+            let previousProfile = profiles[index]
             profiles[index].platform = platform
             profiles[index].displayName = displayName
             profiles[index].gatewayUrl = gatewayUrl
             profiles[index].backendId = backendId
             profiles[index].backendLabel = label ?? backendId
             profiles[index].token = token
+            if Self.connectionIdentityChanged(from: previousProfile, to: profiles[index]) {
+                profiles[index].isPaired = false
+            }
             profiles[index].updatedAt = Date()
             selectedProfileId = profiles[index].id
             profiles = profiles.sortedForAgentList()
@@ -452,7 +525,8 @@ final class SettingsManager: ObservableObject {
 
     private func replaceProfile(_ profile: AgentProfile, select: Bool) {
         guard let index = profiles.firstIndex(where: { $0.id == profile.id }) else { return }
-        let normalizedProfile = profile
+        var normalizedProfile = profile
+        applyLocalMiniMaxCredential(to: &normalizedProfile)
         profiles[index] = normalizedProfile
         profiles = profiles.sortedForAgentList()
         if select {
@@ -481,13 +555,57 @@ final class SettingsManager: ObservableObject {
     }
 
     private func persistProfiles() {
-        if let data = try? JSONEncoder().encode(profiles) {
+        let profilesForStorage = profiles.map { profile in
+            var copy = profile
+            copy.minimaxApiKey = ""
+            return copy
+        }
+        if let data = try? JSONEncoder().encode(profilesForStorage) {
             defaults.set(data, forKey: profilesKey)
         }
         defaults.set(selectedProfileId, forKey: selectedProfileIdKey)
         if recordingSettingsReady {
             reconcileRecordingPrimaryAgent()
         }
+    }
+
+    private func localMiniMaxApiKey() -> String {
+        credentialVault.secret(for: localMiniMaxCredentialId) ?? ""
+    }
+
+    private func storeLocalMiniMaxCredential(_ apiKey: String) {
+        let trimmed = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        credentialVault.setSecret(trimmed, for: localMiniMaxCredentialId)
+        defaults.removeObject(forKey: "minimax_api_key")
+    }
+
+    private func applyLocalMiniMaxCredential(to profile: inout AgentProfile) {
+        profile.ttsEngine = Self.normalizedTtsEngine(profile.ttsEngine)
+        profile.minimaxVoiceId = profile.minimaxVoiceId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "male-qn-qingse"
+            : profile.minimaxVoiceId
+        if profile.ttsEngine == "minimax" {
+            storeLocalMiniMaxCredential(profile.minimaxApiKey)
+        }
+        profile.minimaxApiKey = localMiniMaxApiKey()
+    }
+
+    private func applyAiSettingsToProfiles(_ settings: AiServiceSettings) {
+        for index in profiles.indices {
+            let resolved = settings.resolved(for: profiles[index].id)
+            let resolvedAsrMode = resolved.asr.mode == "backend" ? "backend" : "router"
+            let resolvedTtsEngine = resolved.tts.mode == "byok" && resolved.tts.providerId == "minimax" ? "minimax" : "system"
+            profiles[index].asrMode = resolvedAsrMode
+            profiles[index].asrProfileId = resolvedAsrMode == "router" ? resolved.asr.profileId : ""
+            profiles[index].ttsEngine = resolvedTtsEngine
+            profiles[index].minimaxVoiceId = resolved.tts.voiceId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? "male-qn-qingse"
+                : resolved.tts.voiceId
+            profiles[index].minimaxApiKey = resolvedTtsEngine == "minimax" ? localMiniMaxApiKey() : ""
+            profiles[index].updatedAt = Date()
+        }
+        persistProfiles()
     }
 
     private func publishActiveConfig() {
@@ -537,12 +655,15 @@ final class SettingsManager: ObservableObject {
         defaults.set(profile.token, forKey: "token")
         defaults.set(profile.asrMode, forKey: "asr_mode")
         defaults.set(profile.asrProfileId, forKey: "asr_profile_id")
+        defaults.set(Self.normalizedTtsEngine(profile.ttsEngine), forKey: "tts_engine")
+        defaults.set(profile.minimaxVoiceId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "male-qn-qingse" : profile.minimaxVoiceId, forKey: "minimax_voice_id")
+        defaults.removeObject(forKey: "minimax_api_key")
         if profile.isPaired, !profile.backendId.isEmpty {
             defaults.set(profile.backendId, forKey: "paired_backend_id")
         } else {
             defaults.removeObject(forKey: "paired_backend_id")
         }
-        if let backendLabel = profile.backendLabel {
+        if profile.isPaired, let backendLabel = profile.backendLabel {
             defaults.set(backendLabel, forKey: "paired_backend_label")
         } else {
             defaults.removeObject(forKey: "paired_backend_label")
@@ -566,6 +687,55 @@ final class SettingsManager: ObservableObject {
             return []
         }
         return profiles
+    }
+
+    private static func loadAiSettings(from defaults: UserDefaults, key: String, legacyConfig: GatewayConfig) -> AiServiceSettings {
+        guard let data = defaults.data(forKey: key),
+              let settings = try? JSONDecoder().decode(AiServiceSettings.self, from: data) else {
+            return aiSettings(from: legacyConfig)
+        }
+        return settings
+    }
+
+    private static func aiSettings(from config: GatewayConfig) -> AiServiceSettings {
+        AiServiceSettings(
+            defaults: AiServiceDefaults(
+                llm: AiServiceChoice(mode: "router", profileId: "default"),
+                asr: AiServiceChoice(
+                    mode: config.asrMode == "backend" ? "backend" : "router",
+                    profileId: config.asrMode == "backend" ? "" : config.asrProfileId
+                ),
+                tts: config.ttsEngine == "minimax"
+                    ? AiServiceChoice(mode: "byok", providerId: "minimax", voiceId: config.minimaxVoiceId.isEmpty ? "male-qn-qingse" : config.minimaxVoiceId)
+                    : AiServiceChoice(mode: "system", providerId: "system", voiceId: "male-qn-qingse")
+            )
+        )
+    }
+
+    private static func migrateLocalMiniMaxCredential(
+        from legacyConfig: GatewayConfig,
+        profiles: [AgentProfile],
+        defaults: UserDefaults,
+        vault: CredentialVault
+    ) {
+        let legacyKey = legacyConfig.minimaxApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let profileKey = profiles
+            .map { $0.minimaxApiKey.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { !$0.isEmpty } ?? ""
+        let key = legacyKey.isEmpty ? profileKey : legacyKey
+        if !key.isEmpty {
+            vault.setSecret(key, for: localMiniMaxCredentialId)
+        }
+        defaults.removeObject(forKey: "minimax_api_key")
+    }
+
+    private static func injectLocalMiniMaxCredential(into profiles: [AgentProfile], vault: CredentialVault) -> [AgentProfile] {
+        let localKey = vault.secret(for: localMiniMaxCredentialId) ?? ""
+        return profiles.map { profile in
+            var copy = profile
+            copy.minimaxApiKey = copy.ttsEngine == "minimax" ? localKey : ""
+            return copy
+        }
     }
 
     private static func loadLegacyConfig(from defaults: UserDefaults) -> GatewayConfig {
@@ -598,6 +768,16 @@ final class SettingsManager: ObservableObject {
 
     private static func normalizedTtsEngine(_ value: String) -> String {
         value == "minimax" ? "minimax" : "system"
+    }
+
+    private static func trimmed(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func connectionIdentityChanged(from previous: AgentProfile, to next: AgentProfile) -> Bool {
+        AgentProfile.normalizedGatewayKey(previous.gatewayUrl) != AgentProfile.normalizedGatewayKey(next.gatewayUrl)
+            || trimmed(previous.backendId) != trimmed(next.backendId)
+            || trimmed(previous.token) != trimmed(next.token)
     }
 
     private static func makeLegacyProfile(from config: GatewayConfig) -> AgentProfile {
@@ -650,7 +830,8 @@ final class SettingsManager: ObservableObject {
     }
 
     private static func makeConfig(from profile: AgentProfile, deviceLabel: String, defaults: UserDefaults) -> GatewayConfig {
-        GatewayConfig(
+        let pairedBackendId = profile.isPaired && !profile.backendId.isEmpty ? profile.backendId : nil
+        return GatewayConfig(
             gatewayUrl: profile.gatewayUrl,
             accountId: defaults.string(forKey: "account_id") ?? "",
             accessToken: defaults.string(forKey: "access_token") ?? "",
@@ -659,8 +840,8 @@ final class SettingsManager: ObservableObject {
             refreshExpiresAt: defaults.string(forKey: "refresh_expires_at") ?? "",
             deviceLabel: deviceLabel.isEmpty ? "我的设备" : deviceLabel,
             token: profile.token,
-            pairedBackendId: profile.backendId.isEmpty ? nil : profile.backendId,
-            pairedBackendLabel: profile.backendLabel ?? profile.resolvedDisplayName,
+            pairedBackendId: pairedBackendId,
+            pairedBackendLabel: pairedBackendId == nil ? nil : (profile.backendLabel ?? profile.resolvedDisplayName),
             asrMode: profile.asrMode,
             asrProfileId: profile.asrProfileId,
             ttsEngine: normalizedTtsEngine(profile.ttsEngine),

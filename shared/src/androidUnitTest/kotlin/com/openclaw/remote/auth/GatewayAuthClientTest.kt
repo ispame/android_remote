@@ -38,6 +38,31 @@ class GatewayAuthClientTest {
     }
 
     @Test
+    fun parsesAccountDisplayNameWithMaskedPhoneFallback() {
+        val json = Json.parseToJsonElement(
+            """
+            {
+              "account_id": "acct_1",
+              "display_name": null,
+              "account_display_name": "138****8066",
+              "phone_number_masked": "138****8066",
+              "active_terminal": {"terminal_label": "Pixel", "connected_at": "2026-06-05T00:00:00.000Z"},
+              "paired_backends_count": 2
+            }
+            """.trimIndent()
+        ).jsonObject
+
+        val me = parseAuthMe(json)
+
+        assertEquals("acct_1", me.accountId)
+        assertNull(me.displayName)
+        assertEquals("138****8066", me.accountDisplayName)
+        assertEquals("138****8066", me.phoneNumberMasked)
+        assertEquals("Pixel", me.activeTerminalLabel)
+        assertEquals(2, me.pairedBackendsCount)
+    }
+
+    @Test
     fun parsesBillingSummaryWithDynamicPlanProductsAndOrders() {
         val json = Json.parseToJsonElement(
             """
@@ -101,5 +126,25 @@ class GatewayAuthClientTest {
     fun formatsBillingAmountsForWalletDisplay() {
         assertEquals("¥19.00", formatBillingAmountCents(1900, "CNY"))
         assertEquals("USD 12.34", formatBillingAmountCents(1234, "USD"))
+    }
+
+    @Test
+    fun paymentClipboardTextPrefersPlainPaymentUrlOverMultilineCopyText() {
+        val order = BillingOrderResult(
+            orderId = "ord_1",
+            productId = "plan_starter_monthly",
+            productKind = "plan",
+            provider = "manual_qr",
+            status = "pending",
+            amountCents = 1900,
+            currency = "CNY",
+            expiresAt = "2026-06-01T00:15:00.000Z",
+            paymentUrl = "https://pay.example.com/billing/pay?order_id=ord_1",
+            copyText = "BosonRelay 订单 ord_1\n¥19.00\nhttps://pay.example.com/billing/pay?order_id=ord_1",
+            qrImageUrl = "/api/v2/billing/orders/ord_1/qr.png",
+            pollAfterMs = 3000,
+        )
+
+        assertEquals(order.paymentUrl, billingPaymentClipboardText(order))
     }
 }

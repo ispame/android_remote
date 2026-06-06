@@ -210,8 +210,14 @@ struct OpenClawRemoteApp: App {
                 .flatMap { $0.isEmpty ? nil : "：\($0)" } ?? ""
             clearAuthSession(message: "账号已在另一台设备登录\(suffix)")
         case .error(let code, let message):
-            if code.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() == "PAYMENT_REQUIRED" {
+            let normalizedCode = code.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+            if normalizedCode == "PAYMENT_REQUIRED" {
                 walletNotice = message.isEmpty ? "余额不足，请开通套餐或充值余额" : message
+                return
+            }
+            if normalizedCode == "NOT_PAIRED" {
+                settingsManager.updatePairedBackend(nil, nil, profileId: settingsManager.selectedProfile.id)
+                applySelectedProfile()
                 return
             }
             switch authRecoveryAction(forWebSocketErrorCode: code) {

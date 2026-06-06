@@ -233,7 +233,8 @@ private struct AgentChatScreen: View {
                 AgentConfigView(
                     profile: profile,
                     colors: colors,
-                    onSave: saveProfile
+                    onSave: saveProfile,
+                    onTtsAutoSave: saveTtsProfile
                 )
             }
         }
@@ -262,12 +263,18 @@ private struct AgentChatScreen: View {
             accessToken: settingsManager.config.accessToken
         )
     }
+
+    private func saveTtsProfile(_ profile: AgentProfile) {
+        settingsManager.updateProfile(profile)
+        wsManager.syncProfiles(settingsManager.profiles)
+    }
 }
 
 private struct AgentConfigView: View {
     let profile: AgentProfile
     let colors: MochiColors
     let onSave: (AgentProfile) -> Void
+    let onTtsAutoSave: (AgentProfile) -> Void
 
     @Environment(\.dismiss) private var dismiss
     @State private var displayName: String
@@ -280,12 +287,22 @@ private struct AgentConfigView: View {
     @State private var fetchedMiniMaxVoices: [MiniMaxVoiceOption] = []
     @State private var isRefreshingMiniMaxVoices = false
     @State private var ttsStatusMessage: String?
+    @State private var lastPersistedTtsEngine: String
+    @State private var lastPersistedMiniMaxApiKey: String
+    @State private var lastPersistedMiniMaxVoiceId: String
+    @State private var didCommitFullSave = false
     @State private var showsToken = false
 
-    init(profile: AgentProfile, colors: MochiColors, onSave: @escaping (AgentProfile) -> Void) {
+    init(
+        profile: AgentProfile,
+        colors: MochiColors,
+        onSave: @escaping (AgentProfile) -> Void,
+        onTtsAutoSave: @escaping (AgentProfile) -> Void
+    ) {
         self.profile = profile
         self.colors = colors
         self.onSave = onSave
+        self.onTtsAutoSave = onTtsAutoSave
         _displayName = State(initialValue: profile.resolvedDisplayName)
         _gatewayUrl = State(initialValue: profile.gatewayUrl)
         _backendId = State(initialValue: profile.backendId)
@@ -293,6 +310,9 @@ private struct AgentConfigView: View {
         _ttsEngine = State(initialValue: profile.ttsEngine.isEmpty ? "system" : profile.ttsEngine)
         _minimaxApiKey = State(initialValue: profile.minimaxApiKey)
         _minimaxVoiceId = State(initialValue: profile.minimaxVoiceId.isEmpty ? MiniMaxVoiceCatalog.defaultVoiceId : profile.minimaxVoiceId)
+        _lastPersistedTtsEngine = State(initialValue: Self.normalizedTtsEngine(profile.ttsEngine))
+        _lastPersistedMiniMaxApiKey = State(initialValue: profile.minimaxApiKey.trimmingCharacters(in: .whitespacesAndNewlines))
+        _lastPersistedMiniMaxVoiceId = State(initialValue: Self.normalizedMiniMaxVoiceId(profile.minimaxVoiceId))
     }
 
     var body: some View {
@@ -338,7 +358,10 @@ private struct AgentConfigView: View {
                 }
             }
 
-            Section("语音合成 (TTS)") {
+            Section("AI 服务") {
+                AiServiceInfoRow(label: "Router LLM", value: "会员模型 · default")
+                AiServiceInfoRow(label: "ASR", value: profile.asrMode == "backend" ? "Agent 后端识别" : "Router 识别")
+
                 Picker("TTS 引擎", selection: $ttsEngine) {
                     Text("系统 TTS").tag("system")
                     Text("MiniMax").tag("minimax")
@@ -346,6 +369,7 @@ private struct AgentConfigView: View {
                 .pickerStyle(.segmented)
 
                 if ttsEngine == "minimax" {
+                    AiServiceInfoRow(label: "本机 Key", value: minimaxApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "未保存" : "已保存")
                     SecureField("MiniMax API Key", text: $minimaxApiKey)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
@@ -373,23 +397,17 @@ private struct AgentConfigView: View {
         }
         .navigationTitle("Agent 配置")
         .navigationBarTitleDisplayMode(.inline)
+        .onChange(of: ttsEngine) { _ in persistTtsConfigurationIfChanged() }
+        .onChange(of: minimaxApiKey) { _ in persistTtsConfigurationIfChanged() }
+        .onChange(of: minimaxVoiceId) { _ in persistTtsConfigurationIfChanged() }
+        .onDisappear { persistTtsConfigurationIfChanged() }
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
                 Button("取消") { dismiss() }
             }
             ToolbarItem(placement: .confirmationAction) {
                 Button("保存") {
-                    var updated = profile
-                    updated.displayName = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
-                    updated.gatewayUrl = gatewayUrl.trimmingCharacters(in: .whitespacesAndNewlines)
-                    updated.backendId = backendId.trimmingCharacters(in: .whitespacesAndNewlines)
-                    updated.token = token.trimmingCharacters(in: .whitespacesAndNewlines)
-                    updated.ttsEngine = ttsEngine == "minimax" ? "minimax" : "system"
-                    updated.minimaxApiKey = minimaxApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-                    updated.minimaxVoiceId = minimaxVoiceId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? MiniMaxVoiceCatalog.defaultVoiceId : minimaxVoiceId
-                    updated.updatedAt = Date()
-                    onSave(updated)
-                    dismiss()
+                    saveAllConfigurationAndDismiss()
                 }
             }
         }
@@ -406,6 +424,69 @@ private struct AgentConfigView: View {
         voice.name == voice.id ? voice.id : "\(voice.name) · \(voice.id)"
     }
 
+    private func saveAllConfigurationAndDismiss() {
+        var updated = profile
+        updated.displayName = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        updated.gatewayUrl = gatewayUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+        updated.backendId = backendId.trimmingCharacters(in: .whitespacesAndNewlines)
+        updated.token = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        applyCurrentTtsConfiguration(to: &updated)
+        updated.updatedAt = Date()
+        didCommitFullSave = true
+        markTtsConfigurationPersisted(
+            engine: updated.ttsEngine,
+            apiKey: updated.minimaxApiKey,
+            voiceId: updated.minimaxVoiceId
+        )
+        onSave(updated)
+        dismiss()
+    }
+
+    private func persistTtsConfigurationIfChanged() {
+        guard !didCommitFullSave else { return }
+        let normalizedEngine = Self.normalizedTtsEngine(ttsEngine)
+        let normalizedApiKey = minimaxApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedVoiceId = Self.normalizedMiniMaxVoiceId(minimaxVoiceId)
+        guard normalizedEngine != lastPersistedTtsEngine ||
+                normalizedApiKey != lastPersistedMiniMaxApiKey ||
+                normalizedVoiceId != lastPersistedMiniMaxVoiceId else {
+            return
+        }
+
+        var updated = profile
+        updated.ttsEngine = normalizedEngine
+        updated.minimaxApiKey = normalizedApiKey
+        updated.minimaxVoiceId = normalizedVoiceId
+        updated.updatedAt = Date()
+        onTtsAutoSave(updated)
+        markTtsConfigurationPersisted(
+            engine: normalizedEngine,
+            apiKey: normalizedApiKey,
+            voiceId: normalizedVoiceId
+        )
+    }
+
+    private func applyCurrentTtsConfiguration(to profile: inout AgentProfile) {
+        profile.ttsEngine = Self.normalizedTtsEngine(ttsEngine)
+        profile.minimaxApiKey = minimaxApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        profile.minimaxVoiceId = Self.normalizedMiniMaxVoiceId(minimaxVoiceId)
+    }
+
+    private func markTtsConfigurationPersisted(engine: String, apiKey: String, voiceId: String) {
+        lastPersistedTtsEngine = engine
+        lastPersistedMiniMaxApiKey = apiKey
+        lastPersistedMiniMaxVoiceId = voiceId
+    }
+
+    private static func normalizedTtsEngine(_ value: String) -> String {
+        value == "minimax" ? "minimax" : "system"
+    }
+
+    private static func normalizedMiniMaxVoiceId(_ value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? MiniMaxVoiceCatalog.defaultVoiceId : trimmed
+    }
+
     @MainActor
     private func refreshMiniMaxVoices() async {
         guard !minimaxApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -419,6 +500,21 @@ private struct AgentConfigView: View {
             ttsStatusMessage = "已刷新 \(fetchedMiniMaxVoices.count) 个 MiniMax 音色"
         } catch {
             ttsStatusMessage = "刷新音色失败：\(error.localizedDescription)"
+        }
+    }
+}
+
+private struct AiServiceInfoRow: View {
+    let label: String
+    let value: String
+
+    var body: some View {
+        HStack {
+            Text(label)
+            Spacer()
+            Text(value)
+                .foregroundColor(.secondary)
+                .lineLimit(1)
         }
     }
 }

@@ -7,7 +7,9 @@ struct AdvancedSettingsPageTests {
         try testAdvancedSettingsSavePathDoesNotMutateAgentProfilesOrAuthSession()
         try testAdvancedSettingsShowsAsrLoadingFailureAndManualFallback()
         try testPasswordChangeMovedToAccountSecurity()
+        try testChangePasswordConfirmButtonStaysTappableForValidationFeedback()
         try testSettingsHomeExposesWalletAndPlanBilling()
+        try testWalletCopiesPlainPaymentUrlForShareAndScan()
         print("AdvancedSettingsPageTests passed")
     }
 
@@ -67,8 +69,24 @@ struct AdvancedSettingsPageTests {
         let source = try readSource("iosApp/OpenClawRemote/Sources/Views/SimpleSettingsTabView.swift")
 
         try expect(source.contains("账号与安全"), "settings home should expose an account security destination")
+        try expect(source.contains("EditAccountDisplayNameView"), "account security should expose username editing as a child page")
+        try expect(source.contains("GatewayAuthClient.updateAccountDisplayName"), "username edits should call the server account profile API")
+        try expect(source.contains("ChangePasswordView"), "password changes should live in a child page")
         try expect(source.contains("GatewayAuthClient.changePassword"), "account security should own password changes")
         try expect(source.contains("wsManager.applyProfile"), "password changes should refresh the active WebSocket credentials")
+        let accountSecurityView = try extractStruct(named: "AccountSecurityView", from: source)
+        try expect(accountSecurityView.contains("NavigationLink"), "account security home should navigate to child pages")
+        try expect(!accountSecurityView.contains("SecureField("), "account security home should not inline password inputs")
+    }
+
+    private static func testChangePasswordConfirmButtonStaysTappableForValidationFeedback() throws {
+        let source = try readSource("iosApp/OpenClawRemote/Sources/Views/SimpleSettingsTabView.swift")
+        let changePasswordView = try extractStruct(named: "ChangePasswordView", from: source)
+
+        try expect(changePasswordView.contains("确认修改密码"), "password screen should expose a clear confirm action")
+        try expect(changePasswordView.contains("guard canSubmit else"), "password validation should happen inside the submit action")
+        try expect(changePasswordView.contains(".disabled(isLoading)"), "confirm action should only be disabled while the request is running")
+        try expect(!changePasswordView.contains(".disabled(isLoading || !canSubmit)"), "confirm action should remain tappable so validation can show feedback")
     }
 
     private static func testSettingsHomeExposesWalletAndPlanBilling() throws {
@@ -83,6 +101,14 @@ struct AdvancedSettingsPageTests {
         try expect(source.contains("GatewayAuthClient.billingOrderQrData"), "wallet UI should display server-generated QR images")
         try expect(appSource.contains("PAYMENT_REQUIRED"), "app should route PAYMENT_REQUIRED errors to wallet")
         try expect(authSource.contains("GatewayBillingSummaryResponse"), "GatewayAuthClient should decode billing summary responses")
+    }
+
+    private static func testWalletCopiesPlainPaymentUrlForShareAndScan() throws {
+        let source = try readSource("iosApp/OpenClawRemote/Sources/Views/SimpleSettingsTabView.swift")
+
+        try expect(source.contains("private func billingPaymentClipboardText(for order: GatewayBillingOrderResponse) -> String"), "wallet copy behavior should be isolated for payment links")
+        try expect(source.contains("UIPasteboard.general.string = billingPaymentClipboardText(for: activeOrder)"), "wallet copy button should copy the plain payment URL")
+        try expect(!source.contains("UIPasteboard.general.string = activeOrder.copyText.isEmpty ? activeOrder.paymentUrl : activeOrder.copyText"), "wallet copy button should not prefer multiline copy_text over payment_url")
     }
 
     private static func extractSettingsScreenView(from source: String) throws -> String {
@@ -101,6 +127,16 @@ struct AdvancedSettingsPageTests {
             return String(source[start.lowerBound..<source.endIndex])
         }
         return String(source[start.lowerBound..<nextFunction.lowerBound])
+    }
+
+    private static func extractStruct(named name: String, from source: String) throws -> String {
+        guard let start = source.range(of: "private struct \(name): View") else {
+            throw TestFailure("Could not find \(name)")
+        }
+        guard let nextStruct = source.range(of: "\nprivate struct ", range: start.upperBound..<source.endIndex) else {
+            return String(source[start.lowerBound..<source.endIndex])
+        }
+        return String(source[start.lowerBound..<nextStruct.lowerBound])
     }
 
     private static func readSource(_ relativePath: String) throws -> String {

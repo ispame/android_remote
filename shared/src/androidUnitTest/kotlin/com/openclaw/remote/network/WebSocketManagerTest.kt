@@ -199,6 +199,19 @@ class WebSocketManagerTest {
     }
 
     @Test
+    fun notPairedErrorClearsStalePairedState() {
+        val recovery = recoverPairingAfterRouterError(
+            pairingState = PairingState.PAIRED,
+            pendingPairBackendId = null,
+            code = "NOT_PAIRED",
+            message = "not paired",
+        )
+
+        assertEquals(PairingState.UNPAIRED, recovery.pairingState)
+        assertNull(recovery.pendingPairBackendId)
+    }
+
+    @Test
     fun staleSocketGenerationFramesAreIgnored() {
         assertEquals(
             true,

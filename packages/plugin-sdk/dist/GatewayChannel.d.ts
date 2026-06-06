@@ -25,6 +25,7 @@
  * await channel.stop();
  * ```
  */
+import { type AiChatParams, type AiChatResponse } from "./http-client.js";
 import type { Logger } from "./logger.js";
 import type { MessageFrame, PairRequestFrame, ErrorFrame, PairedDevice } from "./protocol/types.js";
 export interface GatewayChannelConfig {
@@ -61,6 +62,9 @@ export type GatewayChannelEventMap = {
 };
 type EventKey = keyof GatewayChannelEventMap;
 export type ConnectionState = "idle" | "connecting" | "connected" | "reconnecting" | "stopped";
+export type GatewayAiChatParams = Omit<AiChatParams, "backendId"> & {
+    backendId?: string;
+};
 /**
  * GatewayChannel — main SDK class.
  */
@@ -71,6 +75,9 @@ export declare class GatewayChannel {
     private httpClient;
     private reconnectManager;
     private heartbeatManager;
+    readonly ai: {
+        chat: (params: GatewayAiChatParams) => Promise<AiChatResponse>;
+    };
     private state;
     private backendId;
     private handlers;

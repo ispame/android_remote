@@ -27,7 +27,7 @@
  * await channel.start();
  * ```
  */
-export { GatewayChannel, type GatewayChannelConfig, type GatewayChannelEventMap } from "./GatewayChannel.js";
+export { GatewayChannel, type GatewayAiChatParams, type GatewayChannelConfig, type GatewayChannelEventMap } from "./GatewayChannel.js";
 export type { ConnectionState } from "./GatewayChannel.js";
 export { WsClient, type WsClientConfig, type WsClientDeps } from "./WsClient.js";
 export { HttpClient } from "./http-client.js";
@@ -36,7 +36,7 @@ export { HeartbeatManager } from "./heartbeat.js";
 export type { Logger } from "./logger.js";
 export { createPrefixedLogger, noopLogger } from "./logger.js";
 export type { RegisterFrame, RegisteredFrame, RegisterErrorFrame, MessageFrame, MessageContentType, AckFrame, DeliveryFailedFrame, PingFrame, PongFrame, ListPairsFrame, PairsListFrame, PairedDevice, PairRequestFrame, PairResponseFrame, UnpairedFrame, AccountSessionActiveFrame, AccountSessionInactiveFrame, SessionPreemptedFrame, HistoryRequestFrame, HistoryResponseFrame, HistoryItem, ErrorFrame, IncomingFrame, OutgoingFrame, WsConnectResponse, WsEndpointParams, } from "./protocol/types.js";
-export type { CommandResultParams as CommandResultPayload, EventPushParams as EventPushPayload } from "./http-client.js";
+export type { AiChatMessage, AiChatParams, AiChatResponse, CommandResultParams as CommandResultPayload, EventPushParams as EventPushPayload, HttpClientConfig, HttpClientError, } from "./http-client.js";
 export { serializeFrame, serializeMessage, serializeAck } from "./protocol/serialize.js";
 export { parseFrame, parseFrameSafe, FrameParseError } from "./protocol/parse.js";
 //# sourceMappingURL=index.d.ts.map

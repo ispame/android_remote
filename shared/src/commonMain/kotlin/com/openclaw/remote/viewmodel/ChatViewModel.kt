@@ -13,6 +13,7 @@ import com.openclaw.remote.network.AuthRecoveryAction
 import com.openclaw.remote.network.WebSocketManager
 import com.openclaw.remote.network.WsMessageEvent
 import com.openclaw.remote.network.authRecoveryActionForWsError
+import com.openclaw.remote.network.isNotPairedRouterError
 import com.openclaw.remote.network.isTerminalAuthError
 import com.openclaw.remote.network.shouldRefreshAccessToken
 import kotlinx.coroutines.*
@@ -370,6 +371,14 @@ class ChatViewModel(
                                 }
                                 AuthRecoveryAction.NONE -> Unit
                             }
+                            if (isNotPairedRouterError(event.code)) {
+                                val profileId = managerProfileId.takeIf { it.isNotBlank() } ?: _selectedProfileId.value
+                                clearProfilePairing(profileId)
+                                viewModelScope.launch {
+                                    settingsManager.updatePairedBackend(null, null, profileId)
+                                }
+                                return@collect
+                            }
                             appendMessageToProfile(
                                 managerProfileId,
                                 ChatMessage(
@@ -573,6 +582,23 @@ class ChatViewModel(
         profileStates[profileId] = updated
         if (profileId == _selectedProfileId.value) {
             loadRuntimeState(profileId)
+        }
+    }
+
+    private fun clearProfilePairing(profileId: String) {
+        updateProfileState(profileId) { state ->
+            val nextConnectionState = if (state.connectionState == ConnectionState.DISCONNECTED) {
+                ConnectionState.DISCONNECTED
+            } else {
+                ConnectionState.REGISTERED
+            }
+            state.copy(
+                registeredBackendId = null,
+                pairedBackendLabel = null,
+                pairingState = PairingState.UNPAIRED,
+                connectionState = nextConnectionState,
+                loadedHistoryKeys = emptySet(),
+            )
         }
     }
 
