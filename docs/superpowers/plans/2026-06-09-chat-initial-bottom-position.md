@@ -42,7 +42,7 @@ try expect(
 Run:
 
 ```bash
-swiftc iosApp/OpenClawRemote/Tests/AgentNavigationLayoutTests.swift \
+swiftc -parse-as-library iosApp/OpenClawRemote/Tests/AgentNavigationLayoutTests.swift \
   -o /tmp/AgentNavigationLayoutTests &&
 /tmp/AgentNavigationLayoutTests
 ```
@@ -250,8 +250,10 @@ LaunchedEffect(selectedProfileId, lastMessageKey) {
         return@LaunchedEffect
     }
     withFrameNanos { }
-    val messageOffset = if (hasMoreHistory) 1 else 0
-    listState.scrollToItem(messages.lastIndex + messageOffset)
+    while (listState.layoutInfo.totalItemsCount == 0) {
+        withFrameNanos { }
+    }
+    listState.scrollToItem(listState.layoutInfo.totalItemsCount - 1)
     initialScrollTracker.markPositioned(selectedProfileId)
 }
 ```
@@ -303,7 +305,7 @@ change so the user can review the complete cross-platform patch together.
 - [ ] **Step 1: Run focused iOS tests**
 
 ```bash
-swiftc iosApp/OpenClawRemote/Tests/AgentNavigationLayoutTests.swift \
+swiftc -parse-as-library iosApp/OpenClawRemote/Tests/AgentNavigationLayoutTests.swift \
   -o /tmp/AgentNavigationLayoutTests &&
 /tmp/AgentNavigationLayoutTests
 ```
