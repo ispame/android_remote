@@ -15,10 +15,14 @@ data class AiServiceChoice(
     val profileId: String = "",
     val providerId: String = "",
     val voiceId: String = "",
+    val baseUrl: String = "",
+    val model: String = "",
+    val credentialId: String = "",
+    val displayName: String = "",
 )
 
 data class AiServiceDefaults(
-    val llm: AiServiceChoice = AiServiceChoice(mode = "router", profileId = "default"),
+    val llm: AiServiceChoice = AiServiceChoice(mode = "router", profileId = "default", providerId = "router", displayName = "Boson Router"),
     val asr: AiServiceChoice = AiServiceChoice(mode = "router", profileId = ""),
     val tts: AiServiceChoice = AiServiceChoice(mode = "system", providerId = "system", voiceId = "male-qn-qingse"),
 )
@@ -52,6 +56,91 @@ interface CredentialVault {
 }
 
 const val LOCAL_TTS_MINIMAX_CREDENTIAL_ID = "tts:minimax"
+
+data class AiProviderDescriptor(
+    val id: String,
+    val displayName: String,
+    val mode: String,
+    val baseUrl: String = "",
+    val defaultModel: String = "",
+    val credentialId: String = "",
+)
+
+object AiProviderCatalog {
+    val llmProviders: List<AiProviderDescriptor> = listOf(
+        AiProviderDescriptor(
+            id = "router",
+            displayName = "Boson Router",
+            mode = "router",
+            defaultModel = "router-default",
+        ),
+        AiProviderDescriptor(
+            id = "openai-compatible",
+            displayName = "OpenAI Compatible",
+            mode = "byok",
+            baseUrl = "https://api.openai.com/v1",
+            defaultModel = "gpt-4o-mini",
+            credentialId = "llm:openai-compatible",
+        ),
+        AiProviderDescriptor(
+            id = "minimax",
+            displayName = "MiniMax",
+            mode = "byok",
+            baseUrl = "https://api.minimax.chat/v1",
+            defaultModel = "MiniMax-Text-01",
+            credentialId = "llm:minimax",
+        ),
+        AiProviderDescriptor(
+            id = "kimi",
+            displayName = "Kimi",
+            mode = "byok",
+            baseUrl = "https://api.moonshot.cn/v1",
+            defaultModel = "kimi-k2-0711-preview",
+            credentialId = "llm:kimi",
+        ),
+        AiProviderDescriptor(
+            id = "claude",
+            displayName = "Claude",
+            mode = "byok",
+            baseUrl = "https://api.anthropic.com/v1",
+            defaultModel = "claude-sonnet-4-20250514",
+            credentialId = "llm:claude",
+        ),
+        AiProviderDescriptor(
+            id = "doubao",
+            displayName = "Doubao",
+            mode = "byok",
+            baseUrl = "https://ark.cn-beijing.volces.com/api/v3",
+            defaultModel = "doubao-seed-1-6-250615",
+            credentialId = "llm:doubao",
+        ),
+    )
+
+    val asrProviders: List<AiProviderDescriptor> = listOf(
+        AiProviderDescriptor(id = "router", displayName = "Boson Router ASR", mode = "router"),
+        AiProviderDescriptor(id = "backend", displayName = "Agent Backend ASR", mode = "backend"),
+        AiProviderDescriptor(
+            id = "openai-compatible-asr",
+            displayName = "OpenAI Compatible ASR",
+            mode = "byok",
+            baseUrl = "https://api.openai.com/v1",
+            defaultModel = "whisper-1",
+            credentialId = "asr:openai-compatible",
+        ),
+    )
+
+    val ttsProviders: List<AiProviderDescriptor> = listOf(
+        AiProviderDescriptor(id = "system", displayName = "System TTS", mode = "system"),
+        AiProviderDescriptor(
+            id = "minimax",
+            displayName = "MiniMax",
+            mode = "byok",
+            baseUrl = "https://api.minimax.chat/v1",
+            defaultModel = "speech-02-hd",
+            credentialId = LOCAL_TTS_MINIMAX_CREDENTIAL_ID,
+        ),
+    )
+}
 
 private val aiSettingsJson = Json {
     ignoreUnknownKeys = true
@@ -105,9 +194,11 @@ fun legacyTtsChoice(engine: String, voiceId: String): AiServiceChoice =
             mode = "byok",
             providerId = "minimax",
             voiceId = voiceId.ifBlank { "male-qn-qingse" },
+            credentialId = LOCAL_TTS_MINIMAX_CREDENTIAL_ID,
+            displayName = "MiniMax",
         )
     } else {
-        AiServiceChoice(mode = "system", providerId = "system", voiceId = "male-qn-qingse")
+        AiServiceChoice(mode = "system", providerId = "system", voiceId = "male-qn-qingse", displayName = "System TTS")
     }
 
 fun AiServiceChoice.toLegacyTtsEngine(): String =
@@ -119,6 +210,10 @@ private fun AiServiceChoice.normalized(fallback: AiServiceChoice): AiServiceChoi
         profileId = profileId,
         providerId = providerId.ifBlank { fallback.providerId },
         voiceId = voiceId.ifBlank { fallback.voiceId },
+        baseUrl = baseUrl.ifBlank { fallback.baseUrl },
+        model = model.ifBlank { fallback.model },
+        credentialId = credentialId.ifBlank { fallback.credentialId },
+        displayName = displayName.ifBlank { fallback.displayName },
     )
 
 private fun encodeSettings(settings: AiServiceSettings): JsonObject =
@@ -155,6 +250,10 @@ private fun encodeChoice(choice: AiServiceChoice): JsonObject =
         put("profileId", choice.profileId)
         put("providerId", choice.providerId)
         put("voiceId", choice.voiceId)
+        put("baseUrl", choice.baseUrl)
+        put("model", choice.model)
+        put("credentialId", choice.credentialId)
+        put("displayName", choice.displayName)
     }
 
 private fun decodeSettings(obj: JsonObject): AiServiceSettings =
@@ -187,6 +286,10 @@ private fun decodeChoice(obj: JsonObject?, fallback: AiServiceChoice): AiService
         profileId = obj.stringValueOrFallback("profileId", fallback.profileId),
         providerId = obj.stringValueOrFallback("providerId", fallback.providerId),
         voiceId = obj.stringValueOrFallback("voiceId", fallback.voiceId),
+        baseUrl = obj.stringValueOrFallback("baseUrl", fallback.baseUrl),
+        model = obj.stringValueOrFallback("model", fallback.model),
+        credentialId = obj.stringValueOrFallback("credentialId", fallback.credentialId),
+        displayName = obj.stringValueOrFallback("displayName", fallback.displayName),
     )
 
 private fun JsonObject?.stringValue(name: String): String =

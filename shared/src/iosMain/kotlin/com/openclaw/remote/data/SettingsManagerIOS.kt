@@ -167,13 +167,27 @@ class SettingsManagerIOS : SettingsManager {
         clearConfig()
     }
 
+    override suspend fun setProfilePinned(profileId: String, pinned: Boolean) {
+        _profilesFlow.value = _profilesFlow.value.copy(
+            profiles = _profilesFlow.value.profiles.map { profile ->
+                if (profile.id == profileId) profile.copy(isPinned = pinned) else profile
+            }
+        )
+    }
+
     override suspend fun updateAiSettings(settings: AiServiceSettings) {
         saveAiSettings(settings)
     }
 
-    override suspend fun updateLocalTtsCredential(providerId: String, apiKey: String) = Unit
+    override suspend fun updateLocalCredential(id: String, apiKey: String) = Unit
 
-    override suspend fun localTtsCredential(providerId: String): String? = null
+    override suspend fun localCredential(id: String): String? = null
+
+    override suspend fun updateLocalTtsCredential(providerId: String, apiKey: String) =
+        updateLocalCredential(if (providerId == "minimax") LOCAL_TTS_MINIMAX_CREDENTIAL_ID else providerId, apiKey)
+
+    override suspend fun localTtsCredential(providerId: String): String? =
+        localCredential(if (providerId == "minimax") LOCAL_TTS_MINIMAX_CREDENTIAL_ID else providerId)
 
     override suspend fun updateGlobalAsr(mode: String, profileId: String) {
         val normalizedMode = if (mode == "backend") "backend" else "router"

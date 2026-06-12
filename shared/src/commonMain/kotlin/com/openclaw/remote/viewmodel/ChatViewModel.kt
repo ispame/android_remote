@@ -61,6 +61,13 @@ class ChatViewModel(
     private val _latestRecordingWorkflow = MutableStateFlow<RecordingWorkflow?>(null)
     val latestRecordingWorkflow: StateFlow<RecordingWorkflow?> = _latestRecordingWorkflow.asStateFlow()
 
+    private val _recordingEvents = MutableSharedFlow<WsMessageEvent.RecordingEventReceived>(extraBufferCapacity = 16)
+    val recordingEvents: SharedFlow<WsMessageEvent.RecordingEventReceived> = _recordingEvents.asSharedFlow()
+
+    private val _longRecordingAsrStatuses = MutableSharedFlow<WsMessageEvent.LongRecordingAsrStatusReceived>(extraBufferCapacity = 16)
+    val longRecordingAsrStatuses: SharedFlow<WsMessageEvent.LongRecordingAsrStatusReceived> =
+        _longRecordingAsrStatuses.asSharedFlow()
+
     private val _authRecoveryRequests = MutableSharedFlow<AuthRecoveryRequest>(extraBufferCapacity = 1)
     val authRecoveryRequests: SharedFlow<AuthRecoveryRequest> = _authRecoveryRequests.asSharedFlow()
 
@@ -306,6 +313,12 @@ class ChatViewModel(
                         }
                         is WsMessageEvent.RecordingWorkflowUpdate -> {
                             _latestRecordingWorkflow.value = event.workflow
+                        }
+                        is WsMessageEvent.RecordingEventReceived -> {
+                            _recordingEvents.emit(event)
+                        }
+                        is WsMessageEvent.LongRecordingAsrStatusReceived -> {
+                            _longRecordingAsrStatuses.emit(event)
                         }
                         is WsMessageEvent.Unpaired -> {
                             val profileId = resolveProfileIdForBackendId(

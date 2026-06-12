@@ -1,6 +1,7 @@
 package com.openclaw.remote.auth
 
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.jsonObject
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -146,5 +147,47 @@ class GatewayAuthClientTest {
         )
 
         assertEquals(order.paymentUrl, billingPaymentClipboardText(order))
+    }
+
+    @Test
+    fun buildsLongRecordingAsrJobPayload() {
+        val payload = buildLongRecordingAsrJobPayload(
+            recordingId = "recording-1",
+            filename = "meeting.wav",
+            mimeType = "audio/wav",
+            sizeBytes = 1024,
+            recordingType = "meeting",
+            asrProfileId = "volcengine-bigmodel",
+        )
+
+        assertEquals("recording-1", payload["recording_id"]?.jsonPrimitive?.content)
+        assertEquals("meeting.wav", payload["filename"]?.jsonPrimitive?.content)
+        assertEquals("audio/wav", payload["mime_type"]?.jsonPrimitive?.content)
+        assertEquals("1024", payload["size_bytes"]?.jsonPrimitive?.content)
+        assertEquals("meeting", payload["recording_type"]?.jsonPrimitive?.content)
+        assertEquals("volcengine-bigmodel", payload["asr_profile_id"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun parsesLongRecordingAsrJobResponse() {
+        val json = Json.parseToJsonElement(
+            """
+            {
+              "job_id": "job-1",
+              "status": "processing",
+              "progress": 0.25,
+              "upload_url": "/api/recordings/asr-jobs/job-1/chunks",
+              "poll_after_ms": 1000
+            }
+            """.trimIndent()
+        ).jsonObject
+
+        val response = parseLongRecordingAsrJob(json)
+
+        assertEquals("job-1", response.jobId)
+        assertEquals("processing", response.status)
+        assertEquals(0.25, response.progress)
+        assertEquals("/api/recordings/asr-jobs/job-1/chunks", response.uploadUrl)
+        assertEquals(1000, response.pollAfterMs)
     }
 }

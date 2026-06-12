@@ -50,6 +50,8 @@ data class AgentProfile(
     val isPaired: Boolean = false,
     val asrMode: String = "router",
     val asrProfileId: String = "",
+    val isPinned: Boolean = false,
+    val sortIndex: Int = 0,
     val createdAt: Long = currentTimestampMillis(),
     val updatedAt: Long = currentTimestampMillis(),
 ) {
@@ -68,6 +70,11 @@ data class AgentProfile(
             gatewayUrl.trim().lowercase()
     }
 }
+
+data class AgentListActivity(
+    val lastMessageText: String? = null,
+    val lastMessageAt: Long? = null,
+)
 
 data class AgentProfilesState(
     val profiles: List<AgentProfile>,
@@ -101,6 +108,18 @@ expect fun randomUuid(): String
 
 expect fun currentTimestampMillis(): Long
 
+fun List<AgentProfile>.sortedForAgentList(
+    unreadCounts: Map<String, Int> = emptyMap(),
+    activities: Map<String, AgentListActivity> = emptyMap(),
+): List<AgentProfile> =
+    sortedWith(
+        compareByDescending<AgentProfile> { it.isPinned }
+            .thenByDescending { (unreadCounts[it.id] ?: 0) > 0 }
+            .thenByDescending { activities[it.id]?.lastMessageAt ?: it.updatedAt }
+            .thenBy { it.sortIndex }
+            .thenBy { it.resolvedDisplayName.lowercase() }
+    )
+
 internal fun encodeProfiles(profiles: List<AgentProfile>): String =
     buildJsonArray {
         profiles.forEach { profile ->
@@ -116,6 +135,8 @@ internal fun encodeProfiles(profiles: List<AgentProfile>): String =
                     put("isPaired", profile.isPaired)
                     put("asrMode", profile.asrMode)
                     put("asrProfileId", profile.asrProfileId)
+                    put("isPinned", profile.isPinned)
+                    put("sortIndex", profile.sortIndex)
                     put("createdAt", profile.createdAt)
                     put("updatedAt", profile.updatedAt)
                 }
@@ -145,6 +166,8 @@ private fun decodeProfile(element: JsonElement): AgentProfile? {
         isPaired = obj.booleanValue("isPaired"),
         asrMode = obj.stringValue("asrMode").ifBlank { "router" },
         asrProfileId = obj.stringValue("asrProfileId"),
+        isPinned = obj.booleanValue("isPinned"),
+        sortIndex = obj.intValue("sortIndex"),
         createdAt = obj.longValue("createdAt"),
         updatedAt = obj.longValue("updatedAt"),
     )
@@ -161,3 +184,6 @@ private fun JsonObject.booleanValue(name: String): Boolean =
 
 private fun JsonObject.longValue(name: String): Long =
     get(name)?.jsonPrimitive?.longOrNull ?: currentTimestampMillis()
+
+private fun JsonObject.intValue(name: String): Int =
+    get(name)?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 0

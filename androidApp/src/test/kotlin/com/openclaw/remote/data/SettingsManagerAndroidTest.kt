@@ -53,6 +53,20 @@ class SettingsManagerAndroidTest {
     }
 
     @Test
+    fun persistsGenericLocalCredentials() = runTest {
+        manager.updateLocalCredential("llm:openai-compatible", "sk-openai")
+        manager.updateLocalCredential("tts:minimax", "sk-minimax")
+
+        assertEquals("sk-openai", manager.localCredential("llm:openai-compatible"))
+        assertEquals("sk-minimax", manager.localCredential("tts:minimax"))
+
+        manager.updateLocalCredential("llm:openai-compatible", "")
+
+        assertEquals(null, manager.localCredential("llm:openai-compatible"))
+        assertEquals("sk-minimax", manager.localCredential("tts:minimax"))
+    }
+
+    @Test
     fun minimaxApiKeyIsNotRestoredFromPlaintextDataStoreWhenVaultIsMissing() = runTest {
         manager.updateConfig(
             GatewayConfig(

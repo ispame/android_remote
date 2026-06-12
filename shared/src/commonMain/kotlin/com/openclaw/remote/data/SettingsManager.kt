@@ -30,7 +30,10 @@ interface SettingsManager {
     ): AgentProfile?
     suspend fun deleteProfile(profileId: String)
     suspend fun clearProfile(profileId: String)
+    suspend fun setProfilePinned(profileId: String, pinned: Boolean)
     suspend fun updateAiSettings(settings: AiServiceSettings)
+    suspend fun updateLocalCredential(id: String, apiKey: String)
+    suspend fun localCredential(id: String): String?
     suspend fun updateLocalTtsCredential(providerId: String, apiKey: String)
     suspend fun localTtsCredential(providerId: String): String?
     suspend fun updateGlobalAsr(mode: String, profileId: String)

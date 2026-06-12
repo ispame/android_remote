@@ -296,6 +296,20 @@ class SettingsManagerAndroid(
         }
     }
 
+    override suspend fun setProfilePinned(profileId: String, pinned: Boolean) {
+        context.dataStore.edit { prefs ->
+            val state = prefs.toProfilesState()
+            val profiles = state.profiles.map { profile ->
+                if (profile.id == profileId) {
+                    profile.copy(isPinned = pinned, updatedAt = currentTimestampMillis())
+                } else {
+                    profile
+                }
+            }
+            persistProfiles(prefs, profiles, state.selectedProfileId)
+        }
+    }
+
     override suspend fun updateAiSettings(settings: AiServiceSettings) {
         val normalized = settings.normalized()
         context.dataStore.edit { prefs ->
@@ -308,19 +322,30 @@ class SettingsManagerAndroid(
         }
     }
 
-    override suspend fun updateLocalTtsCredential(providerId: String, apiKey: String) {
-        if (providerId != "minimax") return
+    override suspend fun updateLocalCredential(id: String, apiKey: String) {
+        val normalizedId = id.trim()
+        if (normalizedId.isBlank()) return
         val trimmed = apiKey.trim()
         if (trimmed.isEmpty()) {
-            credentialVault.remove(LOCAL_TTS_MINIMAX_CREDENTIAL_ID)
+            credentialVault.remove(normalizedId)
         } else {
-            credentialVault.set(LOCAL_TTS_MINIMAX_CREDENTIAL_ID, trimmed)
+            credentialVault.set(normalizedId, trimmed)
         }
-        context.dataStore.edit { prefs -> prefs.remove(MINIMAX_API_KEY) }
+        if (normalizedId == LOCAL_TTS_MINIMAX_CREDENTIAL_ID) {
+            context.dataStore.edit { prefs -> prefs.remove(MINIMAX_API_KEY) }
+        }
+    }
+
+    override suspend fun localCredential(id: String): String? =
+        id.trim().takeIf { it.isNotBlank() }?.let { credentialVault.get(it) }
+
+    override suspend fun updateLocalTtsCredential(providerId: String, apiKey: String) {
+        if (providerId != "minimax") return
+        updateLocalCredential(LOCAL_TTS_MINIMAX_CREDENTIAL_ID, apiKey)
     }
 
     override suspend fun localTtsCredential(providerId: String): String? =
-        if (providerId == "minimax") credentialVault.get(LOCAL_TTS_MINIMAX_CREDENTIAL_ID) else null
+        if (providerId == "minimax") localCredential(LOCAL_TTS_MINIMAX_CREDENTIAL_ID) else null
 
     override suspend fun updateGlobalAsr(mode: String, profileId: String) {
         context.dataStore.edit { prefs ->

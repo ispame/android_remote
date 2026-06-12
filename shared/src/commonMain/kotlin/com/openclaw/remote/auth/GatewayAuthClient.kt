@@ -2,6 +2,7 @@ package com.openclaw.remote.auth
 
 import com.openclaw.remote.data.RecordingWorkflow
 import com.openclaw.remote.data.parseRecordingWorkflow
+import com.openclaw.remote.network.Base64
 import io.ktor.client.call.body
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
@@ -22,8 +23,12 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.doubleOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 
@@ -128,6 +133,16 @@ data class BillingSummaryResult(
     val recentUsageEvents: List<BillingUsageEventResult>,
 )
 
+data class LongRecordingAsrJobResult(
+    val jobId: String,
+    val status: String,
+    val progress: Double,
+    val uploadUrl: String?,
+    val pollAfterMs: Int,
+    val text: String?,
+    val error: String?,
+)
+
 class GatewayAuthClient(
     private val client: HttpClient = HttpClient {
         install(ContentNegotiation) {
@@ -135,6 +150,44 @@ class GatewayAuthClient(
         }
     }
 ) {
+    suspend fun aiChat(
+        gatewayUrl: String,
+        accessToken: String,
+        choice: com.openclaw.remote.data.AiServiceChoice,
+        messages: List<AiChatMessage>,
+    ): String {
+        val response = client.post("${requireAuthBaseUrl(gatewayUrl)}/api/v2/ai/chat") {
+            header(HttpHeaders.Authorization, "Bearer ${accessToken.trim()}")
+            contentType(ContentType.Application.Json)
+            setBody(
+                buildJsonObject {
+                    put("mode", choice.mode)
+                    put("profile_id", choice.profileId)
+                    put("provider_id", choice.providerId)
+                    put("model", choice.model)
+                    put("messages", buildJsonArray {
+                        messages.forEach { message ->
+                            add(
+                                buildJsonObject {
+                                    put("role", message.role)
+                                    put("content", message.content)
+                                }
+                            )
+                        }
+                    })
+                }.toString()
+            )
+        }
+        val obj = requireJson(response)
+        return obj.string("text").ifBlank {
+            obj["message"]?.jsonObject?.get("content")?.jsonPrimitive?.contentOrNull
+                ?: obj["choices"]?.jsonArray?.firstOrNull()
+                    ?.jsonObject?.get("message")?.jsonObject?.get("content")
+                    ?.jsonPrimitive?.contentOrNull
+                ?: obj.string("content")
+        }
+    }
+
     suspend fun requestSms(
         gatewayUrl: String,
         phoneNumber: String,
@@ -457,6 +510,79 @@ class GatewayAuthClient(
         return response.body()
     }
 
+    suspend fun createLongRecordingAsrJob(
+        gatewayUrl: String,
+        accessToken: String,
+        recordingId: String,
+        filename: String,
+        mimeType: String,
+        sizeBytes: Long,
+        recordingType: String,
+        asrProfileId: String?,
+    ): LongRecordingAsrJobResult {
+        val response = client.post("${requireAuthBaseUrl(gatewayUrl)}/api/recordings/asr-jobs") {
+            header(HttpHeaders.Authorization, "Bearer ${accessToken.trim()}")
+            contentType(ContentType.Application.Json)
+            setBody(
+                buildLongRecordingAsrJobPayload(
+                    recordingId = recordingId,
+                    filename = filename,
+                    mimeType = mimeType,
+                    sizeBytes = sizeBytes,
+                    recordingType = recordingType,
+                    asrProfileId = asrProfileId,
+                ).toString()
+            )
+        }
+        return parseLongRecordingAsrJob(requireJson(response))
+    }
+
+    suspend fun uploadLongRecordingAsrChunk(
+        gatewayUrl: String,
+        accessToken: String,
+        jobId: String,
+        chunkIndex: Int,
+        totalChunks: Int,
+        bytes: ByteArray,
+    ): LongRecordingAsrJobResult {
+        val response = client.post("${requireAuthBaseUrl(gatewayUrl)}/api/recordings/asr-jobs/${jobId.trim()}/chunks") {
+            header(HttpHeaders.Authorization, "Bearer ${accessToken.trim()}")
+            contentType(ContentType.Application.Json)
+            setBody(
+                buildJsonObject {
+                    put("chunk_index", chunkIndex)
+                    put("total_chunks", totalChunks)
+                    put("content_base64", Base64.encode(bytes))
+                }.toString()
+            )
+        }
+        return parseLongRecordingAsrJob(requireJson(response))
+    }
+
+    suspend fun completeLongRecordingAsrJob(
+        gatewayUrl: String,
+        accessToken: String,
+        jobId: String,
+    ): LongRecordingAsrJobResult {
+        val response = client.post("${requireAuthBaseUrl(gatewayUrl)}/api/recordings/asr-jobs/${jobId.trim()}/complete") {
+            header(HttpHeaders.Authorization, "Bearer ${accessToken.trim()}")
+            contentType(ContentType.Application.Json)
+            setBody(buildJsonObject {}.toString())
+        }
+        return parseLongRecordingAsrJob(requireJson(response))
+    }
+
+    suspend fun longRecordingAsrJobStatus(
+        gatewayUrl: String,
+        accessToken: String,
+        jobId: String,
+    ): LongRecordingAsrJobResult {
+        val response = client.get("${requireAuthBaseUrl(gatewayUrl)}/api/recordings/asr-jobs/${jobId.trim()}") {
+            header(HttpHeaders.Authorization, "Bearer ${accessToken.trim()}")
+        }
+        return parseLongRecordingAsrJob(requireJson(response))
+    }
+
     suspend fun recordingWorkflowTaskAction(
         gatewayUrl: String,
         accessToken: String,
@@ -646,6 +772,36 @@ fun formatBillingAmountCents(amountCents: Int, currency: String): String {
 fun billingPaymentClipboardText(order: BillingOrderResult): String =
     order.paymentUrl.trim().ifBlank { order.copyText }
 
+internal fun buildLongRecordingAsrJobPayload(
+    recordingId: String,
+    filename: String,
+    mimeType: String,
+    sizeBytes: Long,
+    recordingType: String,
+    asrProfileId: String?,
+): JsonObject =
+    buildJsonObject {
+        put("recording_id", recordingId.trim())
+        put("filename", filename.trim())
+        put("mime_type", mimeType.trim().ifBlank { "audio/wav" })
+        put("size_bytes", sizeBytes)
+        put("recording_type", recordingType.trim().ifBlank { "meeting" })
+        asrProfileId?.trim()?.takeIf { it.isNotEmpty() }?.let { put("asr_profile_id", it) }
+    }
+
+internal fun parseLongRecordingAsrJob(body: JsonObject): LongRecordingAsrJobResult {
+    val job = body["job"] as? JsonObject ?: body
+    return LongRecordingAsrJobResult(
+        jobId = job.string("job_id"),
+        status = job.string("status").ifBlank { "processing" },
+        progress = job.double("progress"),
+        uploadUrl = job.stringOrNull("upload_url"),
+        pollAfterMs = job.int("poll_after_ms").takeIf { it > 0 } ?: 1000,
+        text = job.stringOrNull("text"),
+        error = job.stringOrNull("error"),
+    )
+}
+
 private fun parseBillingWallet(body: JsonObject): BillingWalletResult =
     BillingWalletResult(
         balanceCents = body.int("balance_cents"),
@@ -708,6 +864,9 @@ private fun JsonObject.stringOrNull(name: String): String? =
 
 private fun JsonObject.int(name: String): Int =
     this[name]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 0
+
+private fun JsonObject.double(name: String): Double =
+    this[name]?.jsonPrimitive?.doubleOrNull ?: 0.0
 
 private fun JsonObject.boolean(name: String): Boolean =
     this[name]?.jsonPrimitive?.booleanOrNull ?: false

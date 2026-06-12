@@ -191,6 +191,23 @@ class SettingsManagerAndroidProfilesTest {
     }
 
     @Test
+    fun setProfilePinnedPersistsPinStateWithoutChangingSelection() = runTest {
+        val openclaw = manager.upsertScannedProfile("wss://boson-tech.top/ws", "bk_openclaw", "t1", AgentPlatform.OPENCLAW, "OpenClaw")!!
+        val hermes = manager.upsertScannedProfile("wss://boson-tech.top/ws", "bk_hermes", "t2", AgentPlatform.HERMES, "Hermes")!!
+        manager.selectProfile(openclaw.id)
+
+        manager.setProfilePinned(hermes.id, true)
+
+        val state = manager.profilesFlow.first()
+        assertEquals(openclaw.id, state.selectedProfileId)
+        assertEquals(true, state.profiles.first { it.id == hermes.id }.isPinned)
+
+        manager.setProfilePinned(hermes.id, false)
+
+        assertEquals(false, manager.profilesFlow.first().profiles.first { it.id == hermes.id }.isPinned)
+    }
+
+    @Test
     fun accountChangeClearsAccountScopedAgentProfiles() = runTest {
         manager.updateConfig(
             GatewayConfig(
