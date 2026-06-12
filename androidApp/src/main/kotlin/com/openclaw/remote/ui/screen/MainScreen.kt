@@ -26,6 +26,7 @@ import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.automirrored.filled.VolumeOff
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Assignment
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.Keyboard
@@ -62,10 +63,13 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
 import com.openclaw.remote.audio.AudioRecorder
 import com.openclaw.remote.data.AgentAvailabilityStatus
 import com.openclaw.remote.data.AgentProfile
 import com.openclaw.remote.data.ChatMessage
+import com.openclaw.remote.data.RecordingWorkflow
+import com.openclaw.remote.data.RecordingWorkflowTask
 import com.openclaw.remote.domain.ConnectionState
 import com.openclaw.remote.domain.PairingState
 import com.openclaw.remote.headset.A9UltraStandbyMode
@@ -78,6 +82,22 @@ import com.openclaw.remote.viewmodel.ChatViewModel
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+
+internal class ChatInitialScrollTracker {
+    private var positionedConversationId: String? = null
+
+    fun shouldPosition(conversationId: String, hasMessages: Boolean): Boolean {
+        return hasMessages && positionedConversationId != conversationId
+    }
+
+    fun markPositioned(conversationId: String) {
+        positionedConversationId = conversationId
+    }
+
+    fun isPositioned(conversationId: String): Boolean {
+        return positionedConversationId == conversationId
+    }
+}
 
 @Composable
 fun MainScreen(
@@ -99,6 +119,9 @@ fun MainScreen(
     showHeadsetLedLightControl: Boolean = false,
     soundPlaybackEnabled: Boolean = true,
     isPlaybackSpeaking: Boolean = false,
+    recordingWorkflow: RecordingWorkflow? = null,
+    workflowActionInProgress: Boolean = false,
+    workflowActionError: String? = null,
     viewModel: ChatViewModel,
     audioRecorder: AudioRecorder,
     onToggleTheme: () -> Unit,
@@ -109,11 +132,16 @@ fun MainScreen(
     onSpeakMessage: (String) -> Unit = {},
     onNavigateToSettings: () -> Unit = {},
     onSelectProfile: (String) -> Unit = {},
+    onWorkflowAction: (String) -> Unit = {},
+    onWorkflowTaskAction: (String, String) -> Unit = { _, _ -> },
+    onWorkflowTaskUpdate: (String, String, String?, String?, List<String>, Int) -> Unit =
+        { _, _, _, _, _, _ -> },
 ) {
     val colors = MochiTheme.colors
     val context = LocalContext.current
     val clipboardManager = LocalClipboardManager.current
     val listState = rememberLazyListState()
+    val initialScrollTracker = remember { ChatInitialScrollTracker() }
     var isNearBottom by remember { mutableStateOf(true) }
     var isSelectingMessages by remember { mutableStateOf(false) }
     var selectedMessageKeys by remember { mutableStateOf<Set<String>>(emptySet()) }
@@ -121,6 +149,7 @@ fun MainScreen(
     var inspectedApprovalRequest by remember { mutableStateOf<RichApprovalRequest?>(null) }
     var handledApprovalMessageKeys by remember { mutableStateOf<Set<String>>(emptySet()) }
     var fullscreenTable by remember { mutableStateOf<RichMarkdownTable?>(null) }
+    var showRecordingWorkflow by remember { mutableStateOf(false) }
     val configuration = LocalConfiguration.current
     val density = LocalDensity.current
     val screenHeightPx = with(density) { configuration.screenHeightDp.dp.toPx() }
@@ -154,7 +183,28 @@ fun MainScreen(
         }
     }
 
-    LaunchedEffect(lastMessageKey) {
+    LaunchedEffect(selectedProfileId, lastMessageKey) {
+        if (!initialScrollTracker.shouldPosition(
+                conversationId = selectedProfileId,
+                hasMessages = messages.isNotEmpty(),
+            )
+        ) {
+            return@LaunchedEffect
+        }
+
+        withFrameNanos { }
+        while (listState.layoutInfo.totalItemsCount == 0) {
+            withFrameNanos { }
+        }
+        val targetIndex = listState.layoutInfo.totalItemsCount - 1
+        listState.scrollToItem(targetIndex)
+        initialScrollTracker.markPositioned(selectedProfileId)
+    }
+
+    LaunchedEffect(selectedProfileId, lastMessageKey) {
+        if (!initialScrollTracker.isPositioned(selectedProfileId)) {
+            return@LaunchedEffect
+        }
         val lastMessage = messages.lastOrNull() ?: return@LaunchedEffect
         if (isNearBottom || lastMessage.senderId == "user") {
             val messageOffset = if (hasMoreHistory) 1 else 0
@@ -202,6 +252,8 @@ fun MainScreen(
                 onToggleHeadsetLedLight = onToggleHeadsetLedLight,
                 onNavigateToSettings = onNavigateToSettings,
                 onSelectProfile = onSelectProfile,
+                hasRecordingWorkflow = recordingWorkflow != null,
+                onOpenRecordingWorkflow = { showRecordingWorkflow = true },
                 colors = colors,
             )
 
@@ -414,6 +466,19 @@ fun MainScreen(
                 },
             )
         }
+
+        if (showRecordingWorkflow && recordingWorkflow != null) {
+            RecordingWorkflowDialog(
+                workflow = recordingWorkflow,
+                actionInProgress = workflowActionInProgress,
+                actionError = workflowActionError,
+                colors = colors,
+                onDismiss = { showRecordingWorkflow = false },
+                onWorkflowAction = onWorkflowAction,
+                onTaskAction = onWorkflowTaskAction,
+                onTaskUpdate = onWorkflowTaskUpdate,
+            )
+        }
     }
 }
 
@@ -501,6 +566,8 @@ private fun TopBar(
     onToggleHeadsetLedLight: (Boolean) -> Unit,
     onNavigateToSettings: () -> Unit,
     onSelectProfile: (String) -> Unit,
+    hasRecordingWorkflow: Boolean,
+    onOpenRecordingWorkflow: () -> Unit,
     colors: MochiColors,
 ) {
     val selectedProfile = profiles.firstOrNull { it.id == selectedProfileId } ?: profiles.firstOrNull()
@@ -608,6 +675,16 @@ private fun TopBar(
                     onClick = onToggleTheme,
                 )
 
+                if (hasRecordingWorkflow) {
+                    MochiIconButton(
+                        imageVector = Icons.Filled.Assignment,
+                        contentDescription = "录音执行工作流",
+                        tint = colors.primary,
+                        background = colors.primary.copy(alpha = 0.12f),
+                        onClick = onOpenRecordingWorkflow,
+                    )
+                }
+
                 MochiIconButton(
                     imageVector = Icons.Filled.Settings,
                     contentDescription = "设置",
@@ -656,6 +733,348 @@ private fun TopBar(
             }
         }
     }
+}
+
+@Composable
+private fun RecordingWorkflowDialog(
+    workflow: RecordingWorkflow,
+    actionInProgress: Boolean,
+    actionError: String?,
+    colors: MochiColors,
+    onDismiss: () -> Unit,
+    onWorkflowAction: (String) -> Unit,
+    onTaskAction: (String, String) -> Unit,
+    onTaskUpdate: (String, String, String?, String?, List<String>, Int) -> Unit,
+) {
+    var editingTask by remember(workflow.revision) { mutableStateOf<RecordingWorkflowTask?>(null) }
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .fillMaxHeight(0.88f),
+            shape = RoundedCornerShape(18.dp),
+            color = colors.surface,
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(workflow.title, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            "${workflowStatusLabel(workflow.status)} · revision ${workflow.revision}",
+                            fontSize = 11.sp,
+                            color = colors.textSecondary,
+                        )
+                    }
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Filled.Close, contentDescription = "关闭")
+                    }
+                }
+
+                LinearProgressIndicator(
+                    progress = workflow.progress.toFloat(),
+                    modifier = Modifier.fillMaxWidth(),
+                    color = colors.primary,
+                )
+                Text(
+                    "成功 ${workflow.successfulTaskCount} · 降级 ${workflow.degradedTaskCount} · " +
+                        "失败 ${workflow.failedTaskCount} · 阻塞 ${workflow.blockedTaskCount}",
+                    fontSize = 12.sp,
+                    color = colors.textSecondary,
+                    modifier = Modifier.padding(top = 6.dp),
+                )
+
+                workflow.warnings.forEach { warning ->
+                    Text(
+                        "警告：$warning",
+                        fontSize = 12.sp,
+                        color = colors.recordingRed,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                }
+
+                if (!workflow.isTerminal) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        TextButton(
+                            onClick = { onWorkflowAction(if (workflow.status == "paused") "resume" else "pause") },
+                            enabled = !actionInProgress,
+                        ) {
+                            Text(if (workflow.status == "paused") "恢复" else "暂停")
+                        }
+                        TextButton(
+                            onClick = { onWorkflowAction("finalize") },
+                            enabled = !actionInProgress,
+                        ) {
+                            Text("立即生成报告")
+                        }
+                        TextButton(
+                            onClick = { onWorkflowAction("cancel") },
+                            enabled = !actionInProgress,
+                            colors = ButtonDefaults.textButtonColors(contentColor = colors.recordingRed),
+                        ) {
+                            Text("终止")
+                        }
+                    }
+                }
+
+                actionError?.let {
+                    Text(it, color = colors.recordingRed, fontSize = 12.sp)
+                }
+                if (actionInProgress) {
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                }
+
+                LazyColumn(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(top = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    items(workflow.tasks.size) { index ->
+                        RecordingWorkflowTaskCard(
+                            task = workflow.tasks[index],
+                            enabled = !actionInProgress,
+                            colors = colors,
+                            onAction = { action -> onTaskAction(workflow.tasks[index].taskId, action) },
+                            onEdit = { editingTask = workflow.tasks[index] },
+                        )
+                    }
+                }
+
+                workflow.finalArtifact?.let { artifact ->
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+                    Text(
+                        "最终报告：${artifact.filename}",
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    (artifact.downloadUrl ?: artifact.retrievalRef)?.let { reference ->
+                        Text(
+                            reference,
+                            fontSize = 10.sp,
+                            color = colors.textSecondary,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+            }
+        }
+    }
+    editingTask?.let { task ->
+        RecordingWorkflowTaskEditorDialog(
+            task = task,
+            onDismiss = { editingTask = null },
+            onSave = { prompt, executor, model, sources, maxAttempts ->
+                onTaskUpdate(task.taskId, prompt, executor, model, sources, maxAttempts)
+                editingTask = null
+            },
+        )
+    }
+}
+
+@Composable
+private fun RecordingWorkflowTaskCard(
+    task: RecordingWorkflowTask,
+    enabled: Boolean,
+    colors: MochiColors,
+    onAction: (String) -> Unit,
+    onEdit: () -> Unit,
+) {
+    Card(colors = CardDefaults.cardColors(containerColor = colors.inputBg)) {
+        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(task.title, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                Text(
+                    taskStatusLabel(task.status),
+                    fontSize = 11.sp,
+                    color = taskStatusColor(task.status, colors),
+                )
+            }
+            if (task.prompt.isNotBlank()) {
+                Text(task.prompt, fontSize = 12.sp, color = colors.textSecondary, maxLines = 3)
+            }
+            task.resultSummary?.let { Text(it, fontSize = 12.sp) }
+            task.lastError?.let { Text(it, fontSize = 12.sp, color = colors.recordingRed) }
+            task.warnings.forEach { Text("警告：$it", fontSize = 11.sp, color = colors.accent) }
+            if (task.blockingTaskIds.isNotEmpty()) {
+                Text(
+                    "阻塞来源：${task.blockingTaskIds.joinToString()}",
+                    fontSize = 11.sp,
+                    color = colors.recordingRed,
+                )
+            }
+            task.confidence?.let {
+                Text("置信度 ${(it * 100).toInt()}%", fontSize = 10.sp, color = colors.textSecondary)
+            }
+            task.executorHint?.let {
+                Text("执行器：$it", fontSize = 10.sp, color = colors.textSecondary)
+            }
+            task.modelHint?.let {
+                Text("模型：$it", fontSize = 10.sp, color = colors.textSecondary)
+            }
+            if (task.sourceConstraints.isNotEmpty()) {
+                Text(
+                    "来源约束：${task.sourceConstraints.joinToString("、")}",
+                    fontSize = 10.sp,
+                    color = colors.textSecondary,
+                )
+            }
+            if (task.systemKind != "summary" && task.status !in setOf("running", "succeeded", "degraded")) {
+                TextButton(onClick = onEdit, enabled = enabled) {
+                    Text("编辑任务")
+                }
+            }
+            task.availableActions
+                .filterNot { it == "pause_workflow" }
+                .forEach { action ->
+                    TextButton(onClick = { onAction(action) }, enabled = enabled) {
+                        Text(taskActionLabel(action))
+                    }
+                }
+        }
+    }
+}
+
+@Composable
+private fun RecordingWorkflowTaskEditorDialog(
+    task: RecordingWorkflowTask,
+    onDismiss: () -> Unit,
+    onSave: (String, String?, String?, List<String>, Int) -> Unit,
+) {
+    var prompt by remember(task.taskId) { mutableStateOf(task.prompt) }
+    var executorHint by remember(task.taskId) { mutableStateOf(task.executorHint.orEmpty()) }
+    var modelHint by remember(task.taskId) { mutableStateOf(task.modelHint.orEmpty()) }
+    var sourceConstraints by remember(task.taskId) {
+        mutableStateOf(task.sourceConstraints.joinToString(", "))
+    }
+    var maxAttempts by remember(task.taskId) { mutableIntStateOf(task.maxAttempts.coerceIn(1, 2)) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("编辑任务") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(task.title, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                OutlinedTextField(
+                    value = prompt,
+                    onValueChange = { prompt = it },
+                    label = { Text("任务提示词") },
+                    minLines = 4,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(
+                    value = executorHint,
+                    onValueChange = { executorHint = it },
+                    label = { Text("执行器") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(
+                    value = modelHint,
+                    onValueChange = { modelHint = it },
+                    label = { Text("模型") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(
+                    value = sourceConstraints,
+                    onValueChange = { sourceConstraints = it },
+                    label = { Text("来源约束，逗号分隔") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("最多执行次数", modifier = Modifier.align(Alignment.CenterVertically))
+                    FilterChip(
+                        selected = maxAttempts == 1,
+                        onClick = { maxAttempts = 1 },
+                        label = { Text("1 次") },
+                    )
+                    FilterChip(
+                        selected = maxAttempts == 2,
+                        onClick = { maxAttempts = 2 },
+                        label = { Text("2 次") },
+                    )
+                }
+                Text(
+                    "已完成任务不可修改；保存后会创建新的 workflow revision。",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    onSave(
+                        prompt.trim(),
+                        executorHint.trim().ifBlank { null },
+                        modelHint.trim().ifBlank { null },
+                        sourceConstraints.split(",").map(String::trim).filter(String::isNotBlank),
+                        maxAttempts,
+                    )
+                },
+                enabled = prompt.isNotBlank(),
+            ) {
+                Text("保存")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("取消")
+            }
+        },
+    )
+}
+
+private fun workflowStatusLabel(status: String): String = when (status) {
+    "planning" -> "规划中"
+    "running" -> "执行中"
+    "paused" -> "已暂停"
+    "waiting_approval" -> "等待审批"
+    "succeeded" -> "已完成"
+    "partial" -> "完成但有缺口"
+    "failed" -> "失败"
+    "cancelled" -> "已终止"
+    else -> status
+}
+
+private fun taskStatusLabel(status: String): String = when (status) {
+    "planned" -> "已规划"
+    "queued" -> "排队中"
+    "running" -> "执行中"
+    "paused" -> "已暂停"
+    "waiting_approval" -> "等待审批"
+    "succeeded" -> "成功"
+    "degraded" -> "降级完成"
+    "failed" -> "失败"
+    "blocked" -> "阻塞"
+    "cancelled" -> "已取消"
+    else -> status
+}
+
+private fun taskStatusColor(status: String, colors: MochiColors): Color = when (status) {
+    "succeeded" -> colors.onlineGreen
+    "degraded" -> colors.accent
+    "failed", "blocked" -> colors.recordingRed
+    "cancelled", "paused" -> colors.textSecondary
+    else -> colors.primary
+}
+
+private fun taskActionLabel(action: String): String = when (action) {
+    "approve" -> "批准"
+    "reject" -> "拒绝"
+    "retry" -> "重试任务"
+    "cancel" -> "取消本次执行"
+    "reopen" -> "重新打开"
+    "skip" -> "跳过并带缺口继续"
+    "retry_blockers", "retry-blockers" -> "修复并重试阻塞链"
+    else -> action
 }
 
 @Composable

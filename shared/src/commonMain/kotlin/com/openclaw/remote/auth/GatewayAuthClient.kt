@@ -1,5 +1,7 @@
 package com.openclaw.remote.auth
 
+import com.openclaw.remote.data.RecordingWorkflow
+import com.openclaw.remote.data.parseRecordingWorkflow
 import io.ktor.client.call.body
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
@@ -18,6 +20,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
@@ -454,6 +457,89 @@ class GatewayAuthClient(
         return response.body()
     }
 
+    suspend fun recordingWorkflowTaskAction(
+        gatewayUrl: String,
+        accessToken: String,
+        workflowId: String,
+        taskId: String,
+        action: String,
+        expectedRevision: Int,
+        idempotencyKey: String,
+    ): RecordingWorkflow {
+        val response = client.post(
+            "${requireAuthBaseUrl(gatewayUrl)}/api/recording-workflows/" +
+                "${workflowId.trim()}/tasks/${taskId.trim()}/${action.trim()}"
+        ) {
+            header(HttpHeaders.Authorization, "Bearer ${accessToken.trim()}")
+            contentType(ContentType.Application.Json)
+            setBody(
+                buildJsonObject {
+                    put("expected_revision", expectedRevision)
+                    put("idempotency_key", idempotencyKey)
+                }.toString()
+            )
+        }
+        return requireJson(response).recordingWorkflow()
+    }
+
+    suspend fun recordingWorkflowAction(
+        gatewayUrl: String,
+        accessToken: String,
+        workflowId: String,
+        action: String,
+        expectedRevision: Int,
+        idempotencyKey: String,
+    ): RecordingWorkflow {
+        val response = client.post(
+            "${requireAuthBaseUrl(gatewayUrl)}/api/recording-workflows/" +
+                "${workflowId.trim()}/${action.trim()}"
+        ) {
+            header(HttpHeaders.Authorization, "Bearer ${accessToken.trim()}")
+            contentType(ContentType.Application.Json)
+            setBody(
+                buildJsonObject {
+                    put("expected_revision", expectedRevision)
+                    put("idempotency_key", idempotencyKey)
+                }.toString()
+            )
+        }
+        return requireJson(response).recordingWorkflow()
+    }
+
+    suspend fun updateRecordingWorkflowTask(
+        gatewayUrl: String,
+        accessToken: String,
+        workflowId: String,
+        taskId: String,
+        expectedRevision: Int,
+        idempotencyKey: String,
+        prompt: String,
+        executorHint: String?,
+        modelHint: String?,
+        sourceConstraints: List<String>,
+        maxAttempts: Int,
+    ): RecordingWorkflow {
+        val response = client.put(
+            "${requireAuthBaseUrl(gatewayUrl)}/api/recording-workflows/" +
+                "${workflowId.trim()}/tasks/${taskId.trim()}"
+        ) {
+            header(HttpHeaders.Authorization, "Bearer ${accessToken.trim()}")
+            contentType(ContentType.Application.Json)
+            setBody(
+                buildJsonObject {
+                    put("expected_revision", expectedRevision)
+                    put("idempotency_key", idempotencyKey)
+                    put("prompt", prompt)
+                    put("executor_hint", JsonPrimitive(executorHint))
+                    put("model_hint", JsonPrimitive(modelHint))
+                    put("source_constraints", JsonArray(sourceConstraints.map(::JsonPrimitive)))
+                    put("max_attempts", maxAttempts)
+                }.toString()
+            )
+        }
+        return requireJson(response).recordingWorkflow()
+    }
+
     fun close() {
         client.close()
     }
@@ -477,6 +563,12 @@ class GatewayAuthClient(
         }
         return json ?: throw IllegalStateException("Invalid JSON response")
     }
+}
+
+private fun JsonObject.recordingWorkflow(): RecordingWorkflow {
+    val workflow = this["workflow"] as? JsonObject
+        ?: throw IllegalStateException("Recording workflow response is missing workflow")
+    return parseRecordingWorkflow(workflow)
 }
 
 internal fun parseAuthMe(body: JsonObject): AuthMeResult {

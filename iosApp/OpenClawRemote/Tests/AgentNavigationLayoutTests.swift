@@ -5,6 +5,7 @@ struct AgentNavigationLayoutTests {
     static func main() throws {
         try testAgentRowsRelyOnNavigationLinkDisclosureIndicator()
         try testPushedScreensHideTabBarWithoutLeavingReservedSpace()
+        try testChatsPositionAtNewestMessageOnInitialAppearance()
         print("AgentNavigationLayoutTests passed")
     }
 
@@ -27,6 +28,26 @@ struct AgentNavigationLayoutTests {
         try expect(
             source.contains("collapsedTabBarSafeAreaInset"),
             "iOS 15 fallback should collapse the hidden tab bar's reserved bottom safe area"
+        )
+    }
+
+    private static func testChatsPositionAtNewestMessageOnInitialAppearance() throws {
+        let mainScreen = try readSource("iosApp/OpenClawRemote/Sources/MainScreenView.swift")
+        let agentsTab = try readSource("iosApp/OpenClawRemote/Sources/Views/AgentsTabView.swift")
+
+        try expect(
+            mainScreen.contains("initiallyPositionedProfileId") &&
+                mainScreen.contains("positionAtChatBottomIfNeeded"),
+            "Agent chat should track and perform initial bottom positioning"
+        )
+        try expect(
+            mainScreen.contains(".onChange(of: settingsManager.selectedProfileId)"),
+            "Agent chat should reposition when the selected Agent changes"
+        )
+        try expect(
+            agentsTab.contains("hasPositionedInitialRecords") &&
+                agentsTab.contains("positionProviderChatAtBottom"),
+            "Provider chat should position at the newest local record once on initial appearance"
         )
     }
 

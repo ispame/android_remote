@@ -785,16 +785,28 @@ final class SettingsManager: ObservableObject {
     private static func normalizedLlmChoice(_ choice: AiServiceChoice) -> AiServiceChoice {
         let mode = choice.mode == "byok" || choice.mode == "agent" ? choice.mode : "router"
         let provider = AiProviderCatalog.llmProvider(id: choice.providerId) ?? AiProviderCatalog.llmByokProviders[0]
+        let baseUrl = normalizedLlmBaseUrl(choice.baseUrl, provider: provider)
         return AiServiceChoice(
             mode: mode,
             profileId: mode == "router" ? (choice.profileId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "default" : choice.profileId) : choice.profileId,
             providerId: provider.id,
             voiceId: choice.voiceId,
-            baseUrl: choice.baseUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? provider.baseUrlDefault : choice.baseUrl,
+            baseUrl: baseUrl,
             model: choice.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? provider.modelDefault : choice.model,
             credentialId: provider.credentialId,
             displayName: choice.displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? provider.label : choice.displayName
         )
+    }
+
+    private static func normalizedLlmBaseUrl(_ baseUrl: String, provider: AiByokProviderTemplate) -> String {
+        let trimmed = baseUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            return provider.baseUrlDefault
+        }
+        if provider.id == "minimax" && trimmed.trimmingCharacters(in: CharacterSet(charactersIn: "/")) == "https://api.minimax.com/v1" {
+            return provider.baseUrlDefault
+        }
+        return trimmed
     }
 
     private static func normalizedAsrChoice(_ choice: AiServiceChoice) -> AiServiceChoice {

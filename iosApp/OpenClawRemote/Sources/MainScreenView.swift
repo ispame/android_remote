@@ -326,6 +326,7 @@ struct MainScreenView: View {
 
     @State private var inputMode: InputMode = .voice
     @State private var isNearChatBottom = true
+    @State private var initiallyPositionedProfileId: String?
     @State private var isSelectingMessages = false
     @State private var selectedMessageIds = Set<UUID>()
     @State private var quotedMessageSummary: String?
@@ -457,16 +458,24 @@ struct MainScreenView: View {
                             .padding(.vertical, 16)
                         }
                         .coordinateSpace(name: "chatScroll")
+                        .onAppear {
+                            positionAtChatBottomIfNeeded(proxy: proxy)
+                        }
                         .onPreferenceChange(ChatBottomPositionPreferenceKey.self) { bottomY in
                             isNearChatBottom = bottomY - geometry.size.height <= 120
                         }
                         .onChange(of: wsManager.messages.last?.id) { _ in
                             guard let lastMessage = wsManager.messages.last else { return }
-                            if isNearChatBottom || lastMessage.isUser {
+                            if initiallyPositionedProfileId != settingsManager.selectedProfileId {
+                                positionAtChatBottomIfNeeded(proxy: proxy)
+                            } else if isNearChatBottom || lastMessage.isUser {
                                 withAnimation(.easeOut(duration: 0.2)) {
                                     proxy.scrollTo(bottomAnchorId, anchor: .bottom)
                                 }
                             }
+                        }
+                        .onChange(of: settingsManager.selectedProfileId) { _ in
+                            positionAtChatBottomIfNeeded(proxy: proxy)
                         }
                         .refreshable {
                             wsManager.requestRecentHistory()
@@ -561,6 +570,29 @@ struct MainScreenView: View {
             if !settingsManager.selectedProfile.platform.supportsAudio {
                 inputMode = .text
             }
+        }
+    }
+
+    private func positionAtChatBottomIfNeeded(proxy: ScrollViewProxy) {
+        let profileId = settingsManager.selectedProfileId
+        guard initiallyPositionedProfileId != profileId,
+              !wsManager.messages.isEmpty else {
+            return
+        }
+
+        DispatchQueue.main.async {
+            guard settingsManager.selectedProfileId == profileId,
+                  initiallyPositionedProfileId != profileId,
+                  !wsManager.messages.isEmpty else {
+                return
+            }
+
+            var transaction = Transaction()
+            transaction.animation = nil
+            withTransaction(transaction) {
+                proxy.scrollTo(bottomAnchorId, anchor: .bottom)
+            }
+            initiallyPositionedProfileId = profileId
         }
     }
 

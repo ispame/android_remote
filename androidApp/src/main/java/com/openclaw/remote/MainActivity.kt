@@ -46,6 +46,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import java.util.UUID
 
 class MainActivity : ComponentActivity() {
 
@@ -110,6 +111,8 @@ class MainActivity : ComponentActivity() {
             var showWallet by remember { mutableStateOf(false) }
             var walletNotice by remember { mutableStateOf<String?>(null) }
             var authGateNotice by remember { mutableStateOf<String?>(null) }
+            var workflowActionInProgress by remember { mutableStateOf(false) }
+            var workflowActionError by remember { mutableStateOf<String?>(null) }
             val assistantSpeechTrigger = remember { AssistantSpeechTrigger() }
             val authClient = remember { GatewayAuthClient() }
 
@@ -130,6 +133,7 @@ class MainActivity : ComponentActivity() {
                 val authNotice by viewModel.authNotice.collectAsState()
                 val soundPlaybackEnabled by settingsManager.soundPlaybackEnabledFlow.collectAsState(initial = true)
                 val playbackState by soundPlaybackController.state.collectAsState()
+                val recordingWorkflow by viewModel.latestRecordingWorkflow.collectAsState()
                 val showHeadsetStandbyControl = headsetState.supportsStandbyControl()
                 val showHeadsetLedLightControl = headsetState.supportsLedLightControl()
                 val authenticated = config.accessToken.isNotBlank()
@@ -302,6 +306,9 @@ class MainActivity : ComponentActivity() {
                         showHeadsetLedLightControl = showHeadsetLedLightControl,
                         soundPlaybackEnabled = playbackState.soundPlaybackEnabled,
                         isPlaybackSpeaking = playbackState.isSpeaking,
+                        recordingWorkflow = recordingWorkflow,
+                        workflowActionInProgress = workflowActionInProgress,
+                        workflowActionError = workflowActionError,
                         viewModel = viewModel,
                         audioRecorder = audioRecorder,
                         onToggleTheme = { isDark = !isDark },
@@ -324,6 +331,72 @@ class MainActivity : ComponentActivity() {
                         },
                         onNavigateToSettings = { showSettings = true },
                         onSelectProfile = { profileId -> viewModel.selectProfile(profileId) },
+                        onWorkflowAction = { action ->
+                            recordingWorkflow?.let { workflow ->
+                                scope.launch {
+                                    workflowActionInProgress = true
+                                    workflowActionError = null
+                                    runCatching {
+                                        authClient.recordingWorkflowAction(
+                                            gatewayUrl = config.gatewayUrl,
+                                            accessToken = config.accessToken,
+                                            workflowId = workflow.workflowId,
+                                            action = action,
+                                            expectedRevision = workflow.revision,
+                                            idempotencyKey = UUID.randomUUID().toString(),
+                                        )
+                                    }.onSuccess(viewModel::applyRecordingWorkflow)
+                                        .onFailure { workflowActionError = it.message ?: "工作流操作失败" }
+                                    workflowActionInProgress = false
+                                }
+                            }
+                        },
+                        onWorkflowTaskAction = { taskId, action ->
+                            recordingWorkflow?.let { workflow ->
+                                scope.launch {
+                                    workflowActionInProgress = true
+                                    workflowActionError = null
+                                    runCatching {
+                                        authClient.recordingWorkflowTaskAction(
+                                            gatewayUrl = config.gatewayUrl,
+                                            accessToken = config.accessToken,
+                                            workflowId = workflow.workflowId,
+                                            taskId = taskId,
+                                            action = if (action == "retry_blockers") "retry-blockers" else action,
+                                            expectedRevision = workflow.revision,
+                                            idempotencyKey = UUID.randomUUID().toString(),
+                                        )
+                                    }.onSuccess(viewModel::applyRecordingWorkflow)
+                                        .onFailure { workflowActionError = it.message ?: "任务操作失败" }
+                                    workflowActionInProgress = false
+                                }
+                            }
+                        },
+                        onWorkflowTaskUpdate = { taskId, prompt, executor, model, sources, maxAttempts ->
+                            recordingWorkflow?.let { workflow ->
+                                scope.launch {
+                                    workflowActionInProgress = true
+                                    workflowActionError = null
+                                    runCatching {
+                                        authClient.updateRecordingWorkflowTask(
+                                            gatewayUrl = config.gatewayUrl,
+                                            accessToken = config.accessToken,
+                                            workflowId = workflow.workflowId,
+                                            taskId = taskId,
+                                            expectedRevision = workflow.revision,
+                                            idempotencyKey = UUID.randomUUID().toString(),
+                                            prompt = prompt,
+                                            executorHint = executor,
+                                            modelHint = model,
+                                            sourceConstraints = sources,
+                                            maxAttempts = maxAttempts,
+                                        )
+                                    }.onSuccess(viewModel::applyRecordingWorkflow)
+                                        .onFailure { workflowActionError = it.message ?: "任务编辑失败" }
+                                    workflowActionInProgress = false
+                                }
+                            }
+                        },
                     )
                 }
             }

@@ -272,6 +272,291 @@ struct RecordingReminderItem: Identifiable, Codable, Equatable {
     }
 }
 
+enum RecordingWorkflowStatus: String, Codable {
+    case planning
+    case running
+    case paused
+    case waitingApproval = "waiting_approval"
+    case succeeded
+    case partial
+    case failed
+    case cancelled
+
+    var label: String {
+        switch self {
+        case .planning: return "规划中"
+        case .running: return "执行中"
+        case .paused: return "已暂停"
+        case .waitingApproval: return "等待审批"
+        case .succeeded: return "已完成"
+        case .partial: return "部分完成"
+        case .failed: return "失败"
+        case .cancelled: return "已取消"
+        }
+    }
+
+    var isTerminal: Bool {
+        [.succeeded, .partial, .failed, .cancelled].contains(self)
+    }
+}
+
+enum RecordingExecutionTaskStatus: String, Codable {
+    case planned
+    case queued
+    case running
+    case paused
+    case waitingApproval = "waiting_approval"
+    case succeeded
+    case degraded
+    case failed
+    case blocked
+    case cancelled
+
+    var label: String {
+        switch self {
+        case .planned: return "已规划"
+        case .queued: return "排队中"
+        case .running: return "执行中"
+        case .paused: return "已暂停"
+        case .waitingApproval: return "等待审批"
+        case .succeeded: return "已完成"
+        case .degraded: return "降级完成"
+        case .failed: return "失败"
+        case .blocked: return "已阻塞"
+        case .cancelled: return "已取消"
+        }
+    }
+
+    var isTerminal: Bool {
+        [.succeeded, .degraded, .failed, .blocked, .cancelled].contains(self)
+    }
+
+    var isDelivered: Bool {
+        self == .succeeded || self == .degraded
+    }
+}
+
+struct RecordingTaskEvidence: Codable, Equatable, Identifiable {
+    var type: String
+    var description: String
+    var path: String?
+    var sha256: String?
+    var exitCode: Int?
+    var passed: Bool?
+    var receiptId: String?
+    var url: String?
+    var toolReceiptId: String?
+    var verified: Bool?
+
+    var id: String {
+        [type, description, path ?? "", url ?? "", sha256 ?? "", receiptId ?? "", toolReceiptId ?? ""]
+            .joined(separator: "|")
+    }
+
+    init?(json: [String: Any]) {
+        guard let type = json["type"] as? String,
+              let description = json["description"] as? String else { return nil }
+        self.type = type
+        self.description = description
+        path = json["path"] as? String
+        sha256 = json["sha256"] as? String
+        exitCode = (json["exit_code"] as? NSNumber)?.intValue
+        passed = json["passed"] as? Bool
+        receiptId = json["receipt_id"] as? String
+        url = json["url"] as? String
+        toolReceiptId = json["tool_receipt_id"] as? String
+        verified = json["verified"] as? Bool
+    }
+}
+
+struct RecordingArtifactReference: Codable, Equatable, Identifiable {
+    var artifactId: String?
+    var filename: String
+    var mimeType: String?
+    var backendPath: String?
+    var sha256: String?
+    var sizeBytes: Int?
+    var retrievalRef: String?
+    var downloadUrl: String?
+    var expiresAt: Date?
+    var content: String?
+
+    var id: String { artifactId ?? [filename, backendPath ?? "", sha256 ?? ""].joined(separator: "|") }
+
+    init?(json: [String: Any]) {
+        guard let filename = json["filename"] as? String else { return nil }
+        artifactId = json["artifact_id"] as? String
+        self.filename = filename
+        mimeType = json["mime_type"] as? String
+        backendPath = json["backend_path"] as? String
+        sha256 = json["sha256"] as? String
+        sizeBytes = (json["size_bytes"] as? NSNumber)?.intValue
+        retrievalRef = json["retrieval_ref"] as? String
+        downloadUrl = json["download_url"] as? String
+        expiresAt = Self.date(json["expires_at"])
+        content = json["content"] as? String
+    }
+
+    private static func date(_ value: Any?) -> Date? {
+        guard let text = value as? String else { return nil }
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return fractional.date(from: text) ?? ISO8601DateFormatter().date(from: text)
+    }
+}
+
+struct RecordingExecutionTaskSnapshot: Codable, Equatable, Identifiable {
+    var taskId: String
+    var workflowId: String
+    var systemKind: String?
+    var title: String
+    var prompt: String
+    var dependsOn: [String]
+    var completionCriteria: [String]
+    var risk: String
+    var riskReason: String?
+    var replaySafety: String
+    var criticality: String?
+    var dependencyPolicy: String?
+    var failurePolicy: String?
+    var deadlineAt: Date?
+    var status: RecordingExecutionTaskStatus
+    var attempt: Int
+    var maxAttempts: Int
+    var leaseExpiresAt: Date?
+    var executorRef: String?
+    var executorHint: String?
+    var modelHint: String?
+    var sourceConstraints: [String]?
+    var resultSummary: String?
+    var lastError: String?
+    var confidence: Double?
+    var warnings: [String]?
+    var blockingTaskIds: [String]?
+    var availableActions: [String]?
+    var rawOutputRef: String?
+    var evidence: [RecordingTaskEvidence]
+    var artifacts: [RecordingArtifactReference]
+    var createdAt: Date
+    var updatedAt: Date
+
+    var id: String { taskId }
+
+    init?(json: [String: Any]) {
+        guard let taskId = json["task_id"] as? String,
+              let workflowId = json["workflow_id"] as? String,
+              let title = json["title"] as? String,
+              let prompt = json["prompt"] as? String,
+              let statusValue = json["status"] as? String,
+              let status = RecordingExecutionTaskStatus(rawValue: statusValue) else { return nil }
+        self.taskId = taskId
+        self.workflowId = workflowId
+        systemKind = json["system_kind"] as? String
+        self.title = title
+        self.prompt = prompt
+        dependsOn = json["depends_on"] as? [String] ?? []
+        completionCriteria = json["completion_criteria"] as? [String] ?? []
+        risk = json["risk"] as? String ?? "normal"
+        riskReason = json["risk_reason"] as? String
+        replaySafety = json["replay_safety"] as? String ?? "safe"
+        criticality = json["criticality"] as? String
+        dependencyPolicy = json["dependency_policy"] as? String
+        failurePolicy = json["failure_policy"] as? String
+        deadlineAt = Self.date(json["deadline_at"])
+        self.status = status
+        attempt = (json["attempt"] as? NSNumber)?.intValue ?? 0
+        maxAttempts = (json["max_attempts"] as? NSNumber)?.intValue ?? 3
+        leaseExpiresAt = Self.date(json["lease_expires_at"])
+        executorRef = json["executor_ref"] as? String
+        executorHint = json["executor_hint"] as? String
+        modelHint = json["model_hint"] as? String
+        sourceConstraints = json["source_constraints"] as? [String]
+        resultSummary = json["result_summary"] as? String
+        lastError = json["last_error"] as? String
+        confidence = (json["confidence"] as? NSNumber)?.doubleValue
+        warnings = json["warnings"] as? [String]
+        blockingTaskIds = json["blocking_task_ids"] as? [String]
+        availableActions = json["available_actions"] as? [String]
+        rawOutputRef = json["raw_output_ref"] as? String
+        evidence = (json["evidence"] as? [[String: Any]] ?? []).compactMap(RecordingTaskEvidence.init)
+        artifacts = (json["artifacts"] as? [[String: Any]] ?? []).compactMap(RecordingArtifactReference.init)
+        createdAt = Self.date(json["created_at"]) ?? Date()
+        updatedAt = Self.date(json["updated_at"]) ?? createdAt
+    }
+
+    private static func date(_ value: Any?) -> Date? {
+        guard let text = value as? String else { return nil }
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return fractional.date(from: text) ?? ISO8601DateFormatter().date(from: text)
+    }
+}
+
+struct RecordingWorkflowSnapshot: Codable, Equatable, Identifiable {
+    var workflowId: String
+    var accountId: String
+    var backendId: String
+    var recordingId: String
+    var title: String
+    var status: RecordingWorkflowStatus
+    var summary: String?
+    var revision: Int?
+    var deadlineAt: Date?
+    var qualityState: String?
+    var warnings: [String]?
+    var finalArtifact: RecordingArtifactReference?
+    var createdAt: Date
+    var updatedAt: Date
+    var tasks: [RecordingExecutionTaskSnapshot]
+
+    var id: String { workflowId }
+    var effectiveRevision: Int { revision ?? 1 }
+    var businessTasks: [RecordingExecutionTaskSnapshot] { tasks.filter { $0.systemKind != "summary" } }
+    var businessTaskCount: Int { businessTasks.count }
+    var successfulTaskCount: Int { businessTasks.filter { $0.status == .succeeded }.count }
+    var degradedTaskCount: Int { businessTasks.filter { $0.status == .degraded }.count }
+    var failedTaskCount: Int { businessTasks.filter { $0.status == .failed }.count }
+    var blockedTaskCount: Int { businessTasks.filter { $0.status == .blocked }.count }
+    var cancelledTaskCount: Int { businessTasks.filter { $0.status == .cancelled }.count }
+    var completedTaskCount: Int { businessTasks.filter(\.status.isDelivered).count }
+    var progress: Double {
+        guard businessTaskCount > 0 else { return status.isTerminal ? 1 : 0 }
+        return Double(completedTaskCount) / Double(businessTaskCount)
+    }
+
+    init?(json: [String: Any]) {
+        guard let workflowId = json["workflow_id"] as? String,
+              let accountId = json["account_id"] as? String,
+              let backendId = json["backend_id"] as? String,
+              let recordingId = json["recording_id"] as? String,
+              let title = json["title"] as? String,
+              let statusValue = json["status"] as? String,
+              let status = RecordingWorkflowStatus(rawValue: statusValue) else { return nil }
+        self.workflowId = workflowId
+        self.accountId = accountId
+        self.backendId = backendId
+        self.recordingId = recordingId
+        self.title = title
+        self.status = status
+        summary = json["summary"] as? String
+        revision = (json["revision"] as? NSNumber)?.intValue
+        deadlineAt = Self.date(json["deadline_at"])
+        qualityState = json["quality_state"] as? String
+        warnings = json["warnings"] as? [String]
+        finalArtifact = (json["final_artifact"] as? [String: Any]).flatMap(RecordingArtifactReference.init)
+        createdAt = Self.date(json["created_at"]) ?? Date()
+        updatedAt = Self.date(json["updated_at"]) ?? createdAt
+        tasks = (json["tasks"] as? [[String: Any]] ?? []).compactMap(RecordingExecutionTaskSnapshot.init)
+    }
+
+    private static func date(_ value: Any?) -> Date? {
+        guard let text = value as? String else { return nil }
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return fractional.date(from: text) ?? ISO8601DateFormatter().date(from: text)
+    }
+}
+
 struct RecordingItem: Identifiable, Codable, Equatable {
     var id: String
     var agentId: String
@@ -289,9 +574,15 @@ struct RecordingItem: Identifiable, Codable, Equatable {
     var uploadProgress: Double
     var asrProgress: Double
     var asrError: String?
+    var agentDeliveryStatus: RecordingAgentDeliveryStatus?
+    var agentDeliveryAttempts: Int
+    var agentDeliveryError: String?
+    var agentDeliveryRetryable: Bool
+    var agentDeliveredAt: String?
     var events: [RecordingEventItem]
     var reminders: [RecordingReminderItem]
     var artifacts: [RecordingArtifactItem]
+    var workflow: RecordingWorkflowSnapshot?
 
     init(
         id: String,
@@ -310,9 +601,15 @@ struct RecordingItem: Identifiable, Codable, Equatable {
         uploadProgress: Double = 0,
         asrProgress: Double = 0,
         asrError: String? = nil,
+        agentDeliveryStatus: RecordingAgentDeliveryStatus? = nil,
+        agentDeliveryAttempts: Int = 0,
+        agentDeliveryError: String? = nil,
+        agentDeliveryRetryable: Bool = false,
+        agentDeliveredAt: String? = nil,
         events: [RecordingEventItem] = [],
         reminders: [RecordingReminderItem] = [],
-        artifacts: [RecordingArtifactItem] = []
+        artifacts: [RecordingArtifactItem] = [],
+        workflow: RecordingWorkflowSnapshot? = nil
     ) {
         self.id = id
         self.agentId = agentId
@@ -330,9 +627,15 @@ struct RecordingItem: Identifiable, Codable, Equatable {
         self.uploadProgress = uploadProgress
         self.asrProgress = asrProgress
         self.asrError = asrError
+        self.agentDeliveryStatus = agentDeliveryStatus
+        self.agentDeliveryAttempts = agentDeliveryAttempts
+        self.agentDeliveryError = agentDeliveryError
+        self.agentDeliveryRetryable = agentDeliveryRetryable
+        self.agentDeliveredAt = agentDeliveredAt
         self.events = events
         self.reminders = reminders
         self.artifacts = artifacts
+        self.workflow = workflow
     }
 
     enum CodingKeys: String, CodingKey {
@@ -352,9 +655,15 @@ struct RecordingItem: Identifiable, Codable, Equatable {
         case uploadProgress
         case asrProgress
         case asrError
+        case agentDeliveryStatus
+        case agentDeliveryAttempts
+        case agentDeliveryError
+        case agentDeliveryRetryable
+        case agentDeliveredAt
         case events
         case reminders
         case artifacts
+        case workflow
     }
 
     init(from decoder: Decoder) throws {
@@ -381,9 +690,37 @@ struct RecordingItem: Identifiable, Codable, Equatable {
         uploadProgress = try container.decodeIfPresent(Double.self, forKey: .uploadProgress) ?? 0
         asrProgress = try container.decodeIfPresent(Double.self, forKey: .asrProgress) ?? 0
         asrError = try container.decodeIfPresent(String.self, forKey: .asrError)
+        agentDeliveryStatus = try container.decodeIfPresent(RecordingAgentDeliveryStatus.self, forKey: .agentDeliveryStatus)
+        agentDeliveryAttempts = try container.decodeIfPresent(Int.self, forKey: .agentDeliveryAttempts) ?? 0
+        agentDeliveryError = try container.decodeIfPresent(String.self, forKey: .agentDeliveryError)
+        agentDeliveryRetryable = try container.decodeIfPresent(Bool.self, forKey: .agentDeliveryRetryable) ?? false
+        agentDeliveredAt = try container.decodeIfPresent(String.self, forKey: .agentDeliveredAt)
         events = try container.decodeIfPresent([RecordingEventItem].self, forKey: .events) ?? []
         reminders = try container.decodeIfPresent([RecordingReminderItem].self, forKey: .reminders) ?? []
         artifacts = try container.decodeIfPresent([RecordingArtifactItem].self, forKey: .artifacts) ?? []
+        workflow = try container.decodeIfPresent(RecordingWorkflowSnapshot.self, forKey: .workflow)
+    }
+}
+
+enum RecordingAgentDeliveryStatus: String, Codable, Equatable {
+    case notRequired = "not_required"
+    case pending
+    case delivering
+    case delivered
+    case failed
+
+    var label: String {
+        switch self {
+        case .notRequired: return "无需发送"
+        case .pending: return "等待 Agent 上线"
+        case .delivering: return "正在发送给 Agent"
+        case .delivered: return "Agent 已接收"
+        case .failed: return "发送失败"
+        }
+    }
+
+    var canRetry: Bool {
+        self == .pending || self == .failed
     }
 }
 

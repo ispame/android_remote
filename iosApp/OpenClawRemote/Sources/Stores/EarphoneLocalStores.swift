@@ -129,6 +129,11 @@ final class RecordingStore: ObservableObject {
         items[index].prompt = prompt
         items[index].selectedPrompt = prompt
         items[index].clientMessageId = clientMessageId
+        items[index].agentDeliveryStatus = type.sendsToAgent ? .pending : .notRequired
+        items[index].agentDeliveryAttempts = 0
+        items[index].agentDeliveryError = nil
+        items[index].agentDeliveryRetryable = false
+        items[index].agentDeliveredAt = nil
         appendEvent(
             RecordingEventItem(
                 kind: .status,
@@ -150,6 +155,15 @@ final class RecordingStore: ObservableObject {
 
     func updateAsrText(clientMessageId: String, text: String) {
         guard let index = items.firstIndex(where: { $0.clientMessageId == clientMessageId }) else { return }
+        applyAsrText(text, index: index)
+    }
+
+    func updateAsrText(recordingId: String, text: String) {
+        guard let index = items.firstIndex(where: { $0.id == recordingId }) else { return }
+        applyAsrText(text, index: index)
+    }
+
+    private func applyAsrText(_ text: String, index: Int) {
         items[index].asrText = text
         items[index].asrProgress = 1
         items[index].asrError = nil
@@ -180,19 +194,111 @@ final class RecordingStore: ObservableObject {
         persist()
     }
 
+    func applyLongRecordingAsrJob(_ payload: LongRecordingAsrJobStatusPayload, fallbackRecordingId: String) {
+        let recordingId = payload.recordingId ?? fallbackRecordingId
+        updateAsrJob(
+            recordingId: recordingId,
+            jobId: payload.jobId,
+            uploadProgress: payload.uploadProgress,
+            asrProgress: payload.asrProgress
+        )
+        switch payload.status {
+        case "completed":
+            if let transcript = payload.transcript?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !transcript.isEmpty {
+                updateAsrText(recordingId: recordingId, text: transcript)
+            } else {
+                updateAsrFailure(recordingId: recordingId, error: "ASR 已完成，但未返回转写文本")
+            }
+        case "failed":
+            updateAsrFailure(
+                recordingId: recordingId,
+                error: payload.errorMessage ?? payload.error ?? "ASR 转写失败"
+            )
+        default:
+            break
+        }
+        applyAgentDelivery(payload, recordingId: recordingId)
+    }
+
+    private func applyAgentDelivery(_ payload: LongRecordingAsrJobStatusPayload, recordingId: String) {
+        guard let index = items.firstIndex(where: { $0.id == recordingId }),
+              let rawStatus = payload.deliveryStatus,
+              let status = RecordingAgentDeliveryStatus(rawValue: rawStatus) else {
+            return
+        }
+        let previousStatus = items[index].agentDeliveryStatus
+        let previousError = items[index].agentDeliveryError
+        items[index].agentDeliveryStatus = status
+        items[index].agentDeliveryAttempts = payload.deliveryAttempts
+        items[index].agentDeliveryError = payload.deliveryError
+        items[index].agentDeliveryRetryable = payload.deliveryRetryable
+        items[index].agentDeliveredAt = payload.deliveredAt
+
+        switch status {
+        case .notRequired:
+            if payload.status == "completed" {
+                items[index].processingStatus = .completed
+            }
+        case .pending, .delivering:
+            if payload.status == "completed" {
+                items[index].processingStatus = .processing
+            }
+        case .delivered:
+            items[index].processingStatus = .completed
+            if previousStatus != .delivered {
+                appendEvent(
+                    RecordingEventItem(
+                        kind: .delivered,
+                        title: "已发送给 Agent",
+                        content: "Agent 已确认接收录音转写",
+                        status: .completed
+                    ),
+                    index: index
+                )
+            }
+        case .failed:
+            items[index].processingStatus = .failed
+            if previousStatus != .failed || previousError != payload.deliveryError {
+                appendEvent(
+                    RecordingEventItem(
+                        kind: .error,
+                        title: "发送给 Agent 失败",
+                        content: payload.deliveryError ?? "Agent 未确认接收",
+                        status: .failed
+                    ),
+                    index: index
+                )
+            }
+        }
+        persist()
+    }
+
     func updateAsrFailure(clientMessageId: String, error: String) {
         guard let index = items.firstIndex(where: { $0.clientMessageId == clientMessageId }) else { return }
+        applyAsrFailure(error, index: index)
+    }
+
+    func updateAsrFailure(recordingId: String, error: String) {
+        guard let index = items.firstIndex(where: { $0.id == recordingId }) else { return }
+        applyAsrFailure(error, index: index)
+    }
+
+    private func applyAsrFailure(_ error: String, index: Int) {
+        let alreadyRecorded = items[index].processingStatus == .failed && items[index].asrError == error
         items[index].asrError = error
         items[index].processingStatus = .failed
-        appendEvent(
-            RecordingEventItem(
-                kind: .error,
-                title: "ASR 转写失败",
-                content: error,
-                status: .failed
-            ),
-            index: index
-        )
+        if !alreadyRecorded {
+            appendEvent(
+                RecordingEventItem(
+                    kind: .error,
+                    title: "ASR 转写失败",
+                    content: error,
+                    status: .failed
+                ),
+                index: index
+            )
+        }
         persist()
     }
 
@@ -235,9 +341,30 @@ final class RecordingStore: ObservableObject {
             items[index].asrProgress = clampedProgress(Double(completed) / Double(total))
         }
         appendEvent(payload.event, index: index)
+        if payload.event.kind == .delivered {
+            items[index].agentDeliveryStatus = .delivered
+            items[index].agentDeliveryError = nil
+            items[index].agentDeliveryRetryable = false
+        }
         updateProcessingStatus(for: payload.event, index: index)
         if let artifact = payload.artifact {
             writeArtifact(artifact, recordingId: items[index].id, sourceEventId: payload.event.id, index: index)
+        }
+        persist()
+    }
+
+    func upsertWorkflow(_ workflow: RecordingWorkflowSnapshot) {
+        guard let index = items.firstIndex(where: { $0.id == workflow.recordingId }) else { return }
+        items[index].workflow = workflow
+        switch workflow.status {
+        case .planning, .running, .paused, .waitingApproval:
+            items[index].processingStatus = .processing
+        case .succeeded, .partial:
+            items[index].processingStatus = .completed
+        case .failed:
+            items[index].processingStatus = .failed
+        case .cancelled:
+            items[index].processingStatus = .completed
         }
         persist()
     }
@@ -316,9 +443,9 @@ final class RecordingStore: ObservableObject {
         switch event.kind {
         case .error:
             items[index].processingStatus = .failed
-        case .agentReply:
+        case .agentReply, .delivered:
             items[index].processingStatus = .completed
-        case .asr, .delivered, .subtask, .scheduledTask, .reminder, .artifact, .status, .created, .other:
+        case .asr, .subtask, .scheduledTask, .reminder, .artifact, .status, .created, .other:
             if items[index].processingStatus != .failed {
                 items[index].processingStatus = .processing
             }

@@ -32,6 +32,8 @@ struct AgentsTabView: View {
                 NavigationLink {
                     ProviderChatScreen(
                         settingsManager: settingsManager,
+                        audioRecorder: audioRecorder,
+                        messageSpeechController: messageSpeechController,
                         colors: colors
                     )
                 } label: {
@@ -297,12 +299,15 @@ private enum ProviderChatHistoryStore {
 
 private struct ProviderChatScreen: View {
     @ObservedObject var settingsManager: SettingsManager
+    @ObservedObject var audioRecorder: AudioRecorder
+    @ObservedObject var messageSpeechController: MessageSpeechController
     let colors: MochiColors
 
     @State private var records: [ProviderChatRecord] = ProviderChatHistoryStore.load()
-    @State private var draftText = ""
+    @State private var inputMode: InputMode = .voice
     @State private var isSending = false
     @State private var statusMessage: String?
+    @State private var hasPositionedInitialRecords = false
     private let bottomAnchorId = "provider-chat-bottom"
 
     private var choice: AiServiceChoice {
@@ -350,7 +355,13 @@ private struct ProviderChatScreen: View {
                         }
 
                         ForEach(records) { record in
-                            ProviderChatBubble(record: record, colors: colors)
+                            ProviderChatBubble(
+                                record: record,
+                                colors: colors,
+                                onSpeak: {
+                                    messageSpeechController.speakManualText(record.content, config: settingsManager.config)
+                                }
+                            )
                                 .id(record.id)
                         }
 
@@ -375,17 +386,38 @@ private struct ProviderChatScreen: View {
                         proxy.scrollTo(bottomAnchorId, anchor: .bottom)
                     }
                 }
+                .onAppear {
+                    positionProviderChatAtBottom(proxy: proxy)
+                }
             }
 
             Divider().background(colors.divider)
-            TextInputRowView(
-                textFieldValue: $draftText,
+            InputAreaView(
+                inputMode: $inputMode,
+                isRecording: audioRecorder.isRecording,
+                isPaired: choice.mode != "agent",
+                isAudioEnabled: true,
                 colors: colors,
-                onSend: { text in
+                quotedMessageSummary: nil,
+                onSendText: { text in
                     Task { await send(text) }
                 },
-                onSwitchToVoice: {},
-                canSwitchToVoice: false
+                onCancelQuote: {},
+                onMicPress: {
+                    if !audioRecorder.isRecording {
+                        audioRecorder.startRecording()
+                    }
+                },
+                onMicRelease: { cancelled in
+                    if audioRecorder.isRecording {
+                        audioRecorder.stopRecording { data in
+                            if !cancelled {
+                                Task { await sendAudioUsingSelectedAsr(data) }
+                            }
+                        }
+                    }
+                },
+                audioRecorder: audioRecorder
             )
             .disabled(isSending || choice.mode == "agent")
         }
@@ -394,15 +426,28 @@ private struct ProviderChatScreen: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
-                Button(role: .destructive) {
-                    records = []
-                    ProviderChatHistoryStore.clear()
-                    statusMessage = nil
-                } label: {
-                    Image(systemName: "trash")
+                HStack(spacing: 8) {
+                    PlaybackControlsView(
+                        soundPlaybackEnabled: messageSpeechController.soundPlaybackEnabled,
+                        isPlaybackSpeaking: messageSpeechController.isSpeaking,
+                        colors: colors,
+                        onToggleSoundPlayback: {
+                            messageSpeechController.setSoundPlaybackEnabled(!messageSpeechController.soundPlaybackEnabled)
+                        },
+                        onInterruptPlayback: {
+                            messageSpeechController.interruptCurrentPlayback()
+                        }
+                    )
+                    Button(role: .destructive) {
+                        records = []
+                        ProviderChatHistoryStore.clear()
+                        statusMessage = nil
+                    } label: {
+                        Image(systemName: "trash")
+                    }
+                    .disabled(records.isEmpty)
+                    .accessibilityLabel("清空 Provider 对话")
                 }
-                .disabled(records.isEmpty)
-                .accessibilityLabel("清空 Provider 对话")
             }
         }
         .hideTabBarWhileVisible()
@@ -410,6 +455,21 @@ private struct ProviderChatScreen: View {
             if choice.mode == "agent" {
                 statusMessage = "当前 LLM 选择 Agent 模式，请到 AI 服务中切换 Router 或 BYOK 后直聊。"
             }
+        }
+    }
+
+    private func positionProviderChatAtBottom(proxy: ScrollViewProxy) {
+        guard !hasPositionedInitialRecords, !records.isEmpty else { return }
+
+        DispatchQueue.main.async {
+            guard !hasPositionedInitialRecords, !records.isEmpty else { return }
+
+            var transaction = Transaction()
+            transaction.animation = nil
+            withTransaction(transaction) {
+                proxy.scrollTo(bottomAnchorId, anchor: .bottom)
+            }
+            hasPositionedInitialRecords = true
         }
     }
 
@@ -432,9 +492,46 @@ private struct ProviderChatScreen: View {
             let reply = try await requestReply()
             records.append(ProviderChatRecord(role: "assistant", content: reply))
             persistHistory()
+            messageSpeechController.enqueueAssistantReplies(texts: [reply], config: settingsManager.config)
         } catch {
             statusMessage = "Provider 请求失败：\(error.localizedDescription)"
             persistHistory()
+        }
+    }
+
+    @MainActor
+    private func sendAudioUsingSelectedAsr(_ data: Data) async {
+        let asr = settingsManager.aiSettings.defaults.asr
+        guard asr.mode == "byok" else {
+            statusMessage = "Provider 对话语音输入需要在 AI 服务中选择 BYOK ASR"
+            inputMode = .text
+            return
+        }
+        let credentialId = asr.credentialId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? localAsrOpenAICompatibleCredentialId
+            : asr.credentialId
+        guard let apiKey = settingsManager.localCredential(id: credentialId),
+              !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            statusMessage = "请先在 AI 服务中保存 ASR API Key"
+            return
+        }
+        statusMessage = "正在使用本机 ASR 识别..."
+        do {
+            let transcript = try await OpenAICompatibleAsrClient().transcribe(
+                baseUrl: asr.baseUrl,
+                apiKey: apiKey,
+                model: asr.model,
+                audioData: data
+            )
+            let text = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else {
+                statusMessage = "本机 ASR 没有识别到文本"
+                return
+            }
+            statusMessage = nil
+            await send(text)
+        } catch {
+            statusMessage = "本机 ASR 失败：\(error.localizedDescription)"
         }
     }
 
@@ -517,6 +614,7 @@ private struct ProviderChatHeader: View {
 private struct ProviderChatBubble: View {
     let record: ProviderChatRecord
     let colors: MochiColors
+    let onSpeak: () -> Void
 
     var body: some View {
         HStack(alignment: .top) {
@@ -544,6 +642,9 @@ private struct ProviderChatBubble: View {
                         UIPasteboard.general.string = record.content
                     } label: {
                         Label("复制", systemImage: "doc.on.doc")
+                    }
+                    Button(action: onSpeak) {
+                        Label("朗读", systemImage: "speaker.wave.2")
                     }
                 }
             if !record.isUser {

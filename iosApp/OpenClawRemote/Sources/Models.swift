@@ -722,7 +722,7 @@ enum AiProviderCatalog {
         AiByokProviderTemplate(
             id: "minimax",
             label: "MiniMax",
-            baseUrlDefault: "https://api.minimax.io/v1",
+            baseUrlDefault: "https://api.minimaxi.com/v1",
             modelDefault: "MiniMax-M2.7",
             credentialId: localLlmMiniMaxCredentialId,
             capabilities: ["llm"],
@@ -1102,9 +1102,21 @@ struct LongRecordingAsrJobStatusPayload: Equatable {
     var recordingId: String?
     var clientMessageId: String?
     var status: String
+    var phase: String?
     var uploadProgress: Double
     var asrProgress: Double
     var error: String?
+    var errorMessage: String?
+    var retryable: Bool
+    var transcript: String?
+    var providerStatusCode: String?
+    var providerLogId: String?
+    var deliveryStatus: String?
+    var deliveryAttempts: Int
+    var deliveryError: String?
+    var deliveryRetryable: Bool
+    var deliveryUpdatedAt: String?
+    var deliveredAt: String?
 
     init?(json: [String: Any]) {
         guard let jobId = json["job_id"] as? String else { return nil }
@@ -1112,6 +1124,7 @@ struct LongRecordingAsrJobStatusPayload: Equatable {
         recordingId = json["recording_id"] as? String
         clientMessageId = json["client_message_id"] as? String
         status = json["status"] as? String ?? ""
+        phase = json["phase"] as? String
         if let uploadPercent = Self.doubleValue(json["upload_percent"]) {
             uploadProgress = min(max(uploadPercent / 100, 0), 1)
         } else if let uploadedBytes = Self.doubleValue(json["uploaded_bytes"]),
@@ -1128,6 +1141,17 @@ struct LongRecordingAsrJobStatusPayload: Equatable {
             asrProgress = 0
         }
         error = json["error"] as? String
+        errorMessage = json["error_message"] as? String
+        retryable = json["retryable"] as? Bool ?? false
+        transcript = json["transcript"] as? String
+        providerStatusCode = json["provider_status_code"] as? String
+        providerLogId = json["provider_log_id"] as? String
+        deliveryStatus = json["delivery_status"] as? String
+        deliveryAttempts = Self.intValue(json["delivery_attempts"]) ?? 0
+        deliveryError = json["delivery_error"] as? String
+        deliveryRetryable = json["delivery_retryable"] as? Bool ?? false
+        deliveryUpdatedAt = json["delivery_updated_at"] as? String
+        deliveredAt = json["delivered_at"] as? String
     }
 
     private static func doubleValue(_ value: Any?) -> Double? {
@@ -1136,6 +1160,130 @@ struct LongRecordingAsrJobStatusPayload: Equatable {
         if let value = value as? NSNumber { return value.doubleValue }
         if let value = value as? String { return Double(value) }
         return nil
+    }
+
+    private static func intValue(_ value: Any?) -> Int? {
+        if let value = value as? Int { return value }
+        if let value = value as? NSNumber { return value.intValue }
+        return nil
+    }
+}
+
+struct LongRecordingAudioMetadata: Equatable {
+    let fileSize: Int
+    let durationSeconds: Double
+}
+
+enum LongRecordingAudioValidationError: Error, Equatable {
+    case tooLarge
+    case tooLong
+    case unsupportedFormat
+    case unreadable
+
+    var message: String {
+        switch self {
+        case .tooLarge:
+            return "录音文件超过 300 MB，无法转写"
+        case .tooLong:
+            return "录音时长超过 2 小时，无法转写"
+        case .unsupportedFormat:
+            return "录音格式不受支持，需要 16kHz、16-bit、单声道 PCM WAV"
+        case .unreadable:
+            return "无法读取录音文件"
+        }
+    }
+}
+
+enum LongRecordingAudioValidator {
+    static let maxAudioBytes = 300_000_000
+    static let maxDurationSeconds: Double = 7200
+
+    static func validate(fileURL: URL) throws -> LongRecordingAudioMetadata {
+        let attributes: [FileAttributeKey: Any]
+        do {
+            attributes = try FileManager.default.attributesOfItem(atPath: fileURL.path)
+        } catch {
+            throw LongRecordingAudioValidationError.unreadable
+        }
+        guard let size = attributes[.size] as? NSNumber else {
+            throw LongRecordingAudioValidationError.unreadable
+        }
+        guard size.intValue <= maxAudioBytes else {
+            throw LongRecordingAudioValidationError.tooLarge
+        }
+        let handle: FileHandle
+        do {
+            handle = try FileHandle(forReadingFrom: fileURL)
+        } catch {
+            throw LongRecordingAudioValidationError.unreadable
+        }
+        defer { try? handle.close() }
+        let header: Data
+        do {
+            header = try handle.read(upToCount: 1024 * 1024) ?? Data()
+        } catch {
+            throw LongRecordingAudioValidationError.unreadable
+        }
+        return try validate(fileSize: size.intValue, wavHeader: header)
+    }
+
+    static func validate(fileSize: Int, wavHeader: Data) throws -> LongRecordingAudioMetadata {
+        guard fileSize > 0 else { throw LongRecordingAudioValidationError.unreadable }
+        guard fileSize <= maxAudioBytes else { throw LongRecordingAudioValidationError.tooLarge }
+        guard wavHeader.count >= 44,
+              String(data: wavHeader.subdata(in: 0..<4), encoding: .ascii) == "RIFF",
+              String(data: wavHeader.subdata(in: 8..<12), encoding: .ascii) == "WAVE" else {
+            throw LongRecordingAudioValidationError.unsupportedFormat
+        }
+
+        var offset = 12
+        var audioFormat: UInt16?
+        var channels: UInt16?
+        var sampleRate: UInt32?
+        var bitsPerSample: UInt16?
+        var dataSize: UInt32?
+        var dataOffset: Int?
+        while offset + 8 <= wavHeader.count {
+            let chunkId = String(data: wavHeader.subdata(in: offset..<(offset + 4)), encoding: .ascii)
+            let chunkSize = Int(readUInt32LE(wavHeader, offset + 4))
+            let chunkStart = offset + 8
+            if chunkId == "fmt ", chunkSize >= 16, chunkStart + 16 <= wavHeader.count {
+                audioFormat = readUInt16LE(wavHeader, chunkStart)
+                channels = readUInt16LE(wavHeader, chunkStart + 2)
+                sampleRate = readUInt32LE(wavHeader, chunkStart + 4)
+                bitsPerSample = readUInt16LE(wavHeader, chunkStart + 14)
+            } else if chunkId == "data" {
+                dataSize = UInt32(chunkSize)
+                dataOffset = chunkStart
+                break
+            }
+            offset = chunkStart + chunkSize + (chunkSize % 2)
+        }
+        guard audioFormat == 1,
+              channels == 1,
+              sampleRate == 16000,
+              bitsPerSample == 16,
+              let dataSize,
+              dataSize > 0,
+              let dataOffset,
+              Int(dataSize) <= fileSize - dataOffset else {
+            throw LongRecordingAudioValidationError.unsupportedFormat
+        }
+        let bytesPerSecond = Double(sampleRate!) * Double(channels!) * (Double(bitsPerSample!) / 8)
+        let duration = Double(dataSize) / bytesPerSecond
+        guard duration <= maxDurationSeconds else { throw LongRecordingAudioValidationError.tooLong }
+        return LongRecordingAudioMetadata(fileSize: fileSize, durationSeconds: duration)
+    }
+
+    private static func readUInt16LE(_ data: Data, _ offset: Int) -> UInt16 {
+        UInt16(data[offset]) | (UInt16(data[offset + 1]) << 8)
+    }
+
+    private static func readUInt32LE(_ data: Data, _ offset: Int) -> UInt32 {
+        UInt32(data[offset])
+            | (UInt32(data[offset + 1]) << 8)
+            | (UInt32(data[offset + 2]) << 16)
+            | (UInt32(data[offset + 3]) << 24)
     }
 }
 

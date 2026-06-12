@@ -17,6 +17,7 @@ struct TtsBehaviorTests {
         try testMiniMaxVoiceCatalogBuildsSelectableVoices()
         try testSettingsManagerPersistsTtsDefaultsAndSoundPlaybackPreference()
         try testSettingsManagerPreservesRouterTtsModeForUnifiedSettings()
+        try testSettingsManagerMigratesOldMiniMaxLlmHost()
         try testAgentProfileTtsDefaultsAndLegacyDecode()
         try testSettingsManagerMigratesLegacyGlobalTtsToAgentProfilesOnce()
         try testSettingsManagerBuildsProfileSpecificTtsConfig()
@@ -293,6 +294,44 @@ struct TtsBehaviorTests {
         try expect(manager.aiSettings.defaults.tts.mode == "router", "unified AI settings should preserve Router TTS mode")
         try expect(manager.aiSettings.defaults.tts.providerId == "router", "Router TTS settings should keep router provider id")
         try expect(manager.config.ttsEngine == "system", "legacy playback projection should stay system until Router TTS playback is implemented")
+    }
+
+    private static func testSettingsManagerMigratesOldMiniMaxLlmHost() throws {
+        let suiteName = "TtsBehaviorTests-\(UUID().uuidString)"
+        let defaults = try expectNotNil(UserDefaults(suiteName: suiteName), "test defaults suite should be available")
+        let vault = FakeCredentialVault()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let manager = SettingsManager(defaults: defaults, credentialVault: vault)
+        manager.updateAiSettings(AiServiceSettings(
+            defaults: AiServiceDefaults(
+                llm: AiServiceChoice(
+                    mode: "byok",
+                    providerId: "minimax",
+                    baseUrl: "https://api.minimax.com/v1/",
+                    model: "MiniMax-M2.7",
+                    credentialId: localLlmMiniMaxCredentialId
+                ),
+                asr: AiServiceChoice(mode: "router", profileId: ""),
+                tts: AiServiceChoice(mode: "system", providerId: "system")
+            ),
+            agentOverrides: [
+                "agent-minimax": AiAgentOverride(
+                    inherit: false,
+                    llm: AiServiceChoice(
+                        mode: "byok",
+                        providerId: "minimax",
+                        baseUrl: "https://api.minimax.com/v1",
+                        model: "MiniMax-M2.7",
+                        credentialId: localLlmMiniMaxCredentialId
+                    )
+                )
+            ]
+        ))
+
+        let reloaded = SettingsManager(defaults: defaults, credentialVault: vault)
+        try expect(reloaded.aiSettings.defaults.llm.baseUrl == "https://api.minimaxi.com/v1", "saved MiniMax LLM defaults should migrate to the documented China endpoint")
+        try expect(reloaded.aiSettings.agentOverrides["agent-minimax"]?.llm?.baseUrl == "https://api.minimaxi.com/v1", "saved MiniMax LLM overrides should migrate to the documented China endpoint")
     }
 
     private static func testAgentProfileTtsDefaultsAndLegacyDecode() throws {

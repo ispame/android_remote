@@ -2,6 +2,7 @@ package com.openclaw.remote.network
 
 import com.openclaw.remote.data.ChatMessage
 import com.openclaw.remote.data.MessageStatus
+import com.openclaw.remote.data.parseRecordingWorkflow
 import com.openclaw.remote.domain.ConnectionState
 import com.openclaw.remote.domain.PairingState
 import com.openclaw.remote.viewmodel.chatMessageFromPayload
@@ -554,6 +555,10 @@ class WebSocketManager(
                         pendingAudioTimeouts.remove(clientMessageId)?.cancel()
                     }
                     offerEvent(WsMessageEvent.AsrResult(clientMessageId, success, transcript, error))
+                }
+                "recording_workflow_update" -> {
+                    val workflowJson = obj["workflow"] as? JsonObject ?: return
+                    offerEvent(WsMessageEvent.RecordingWorkflowUpdate(parseRecordingWorkflow(workflowJson)))
                 }
                 "message_ack", "ack" -> {
                     // Server acks our sent message — we don't need to act on it here

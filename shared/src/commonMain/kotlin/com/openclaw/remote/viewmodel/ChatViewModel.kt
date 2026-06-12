@@ -6,6 +6,7 @@ import com.openclaw.remote.data.AgentProfilesState
 import com.openclaw.remote.data.ChatMessage
 import com.openclaw.remote.data.GatewayConfig
 import com.openclaw.remote.data.MessageStatus
+import com.openclaw.remote.data.RecordingWorkflow
 import com.openclaw.remote.data.SettingsManager
 import com.openclaw.remote.domain.ConnectionState
 import com.openclaw.remote.domain.PairingState
@@ -56,6 +57,9 @@ class ChatViewModel(
 
     private val _authNotice = MutableStateFlow<String?>(null)
     val authNotice: StateFlow<String?> = _authNotice.asStateFlow()
+
+    private val _latestRecordingWorkflow = MutableStateFlow<RecordingWorkflow?>(null)
+    val latestRecordingWorkflow: StateFlow<RecordingWorkflow?> = _latestRecordingWorkflow.asStateFlow()
 
     private val _authRecoveryRequests = MutableSharedFlow<AuthRecoveryRequest>(extraBufferCapacity = 1)
     val authRecoveryRequests: SharedFlow<AuthRecoveryRequest> = _authRecoveryRequests.asSharedFlow()
@@ -300,6 +304,9 @@ class ChatViewModel(
                             }
                             updateProfileState(profileId) { currentState.copy(messages = updatedMessages) }
                         }
+                        is WsMessageEvent.RecordingWorkflowUpdate -> {
+                            _latestRecordingWorkflow.value = event.workflow
+                        }
                         is WsMessageEvent.Unpaired -> {
                             val profileId = resolveProfileIdForBackendId(
                                 profiles = _profiles.value,
@@ -411,6 +418,10 @@ class ChatViewModel(
                 reconnectIfNeeded(config)
             }
         }
+    }
+
+    fun applyRecordingWorkflow(workflow: RecordingWorkflow) {
+        _latestRecordingWorkflow.value = workflow
     }
 
     fun requestPair(backendId: String) {

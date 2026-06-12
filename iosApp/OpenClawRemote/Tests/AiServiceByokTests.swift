@@ -55,6 +55,9 @@ struct AiServiceByokTests {
         try expect(kimi.modelDefault == "moonshot-v1-8k", "Kimi should fill a default model")
         try expect(kimi.credentialId == "llm:kimi", "Kimi should use a provider-scoped credential id")
 
+        let minimaxLlm = try unwrap(AiProviderCatalog.llmProvider(id: "minimax"), "MiniMax LLM provider should exist")
+        try expect(minimaxLlm.baseUrlDefault == "https://api.minimaxi.com/v1", "MiniMax LLM should use the documented China API base URL")
+
         let minimaxTts = try unwrap(AiProviderCatalog.ttsProvider(id: "minimax"), "MiniMax TTS provider should exist")
         try expect(minimaxTts.baseUrlDefault == "https://api.minimaxi.com/v1", "MiniMax TTS should fill its API base URL")
         try expect(minimaxTts.credentialId == localMiniMaxCredentialId, "MiniMax TTS should keep the existing credential id")

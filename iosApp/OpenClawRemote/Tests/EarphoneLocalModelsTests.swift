@@ -17,6 +17,7 @@ struct EarphoneLocalModelsTests {
         try testRecordingStoreCreatesAndDeletesMetadata()
         try testRecordingStoreBackfillsAsrByClientMessageId()
         try testRecordingStoreTracksLongAsrJobProgressAndFailure()
+        try testRecordingStoreTracksAgentDeliveryAfterAsrCompletion()
         try testRecordingStoreTracksPromptEventsAndReminders()
         try testLegacyRecordingDecodesAsAudioOnly()
         try testRecordingStoreConfiguresProcessingTypePromptAndArtifacts()
@@ -26,6 +27,7 @@ struct EarphoneLocalModelsTests {
         try testRecordingDetailPresentationGroupsArtifactsByAgentTask()
         try testRecordingDetailPresentationKeepsUnboundArtifactsUnassignedForMultipleTasks()
         try testRecordingDetailPresentationHidesEmptyScheduledEvents()
+        try testRecordingWorkflowParsesAndUpsertsAuthoritativeSnapshot()
         try testMeetingRecordingPromptRequiresExecutableStructuredEvents()
         try testIdeaRecordingPromptRequiresResearchReport()
         try testRecordingChatContentFormatsPromptAndTranscript()
@@ -34,6 +36,8 @@ struct EarphoneLocalModelsTests {
         try testRecordingAsrPayloadIncludesRecordingContext()
         try testChatAsrPayloadOmitsRecordingContext()
         try testLongRecordingUploadRequestUsesHttpJobMetadata()
+        try testLongRecordingJobStatusIncludesTerminalFields()
+        try testLongRecordingAudioValidatorEnforcesLimits()
         try testHeadsetDefaultFakeData()
         try testHeadsetSettingsAddsDemoDevice()
         try testHeadsetSettingsStorePersistsEQAndShortcuts()
@@ -253,6 +257,136 @@ struct EarphoneLocalModelsTests {
         try expect(recording?.id == item.id, "recording should still be listed")
         try expect(recording?.asrText == "转写完成", "ASR result should backfill matching recording")
         try expect(hasAsrEvent, "ASR backfill should add a recording timeline event")
+    }
+
+    private static func testRecordingWorkflowParsesAndUpsertsAuthoritativeSnapshot() throws {
+        let defaults = try temporaryDefaults()
+        let directory = try temporaryDirectory()
+        let store = RecordingStore(defaults: defaults, documentsDirectory: directory)
+        let recording = try store.createRecording(
+            agentId: "agent-1",
+            audioData: Data([0x01]),
+            recordingType: .meeting
+        )
+        let tasks: [[String: Any]] = [
+            [
+                "task_id": "write-notes",
+                "workflow_id": "workflow-1",
+                "title": "Write notes",
+                "prompt": "Create meeting notes",
+                "depends_on": [],
+                "completion_criteria": ["Markdown exists"],
+                "risk": "normal",
+                "replay_safety": "safe",
+                "criticality": "critical",
+                "dependency_policy": "requires_terminal",
+                "failure_policy": "degrade",
+                "deadline_at": "2026-06-10T00:12:00Z",
+                "status": "degraded",
+                "attempt": 1,
+                "max_attempts": 2,
+                "confidence": 0.72,
+                "warnings": ["一条外部来源证据未验证"],
+                "blocking_task_ids": [],
+                "available_actions": ["retry"],
+                "raw_output_ref": "raw://write-notes/1",
+                "evidence": [[
+                    "type": "external_source",
+                    "description": "SEC filing",
+                    "url": "https://www.sec.gov/example",
+                    "sha256": "evidence-sha",
+                    "verified": false
+                ]],
+                "artifacts": [],
+                "created_at": "2026-06-10T00:00:00Z",
+                "updated_at": "2026-06-10T00:01:00Z"
+            ],
+            [
+                "task_id": "market-data",
+                "workflow_id": "workflow-1",
+                "title": "Market data",
+                "prompt": "Collect market data",
+                "depends_on": [],
+                "completion_criteria": [],
+                "risk": "normal",
+                "replay_safety": "safe",
+                "status": "failed",
+                "attempt": 2,
+                "max_attempts": 2,
+                "blocking_task_ids": [],
+                "available_actions": ["retry", "skip"],
+                "evidence": [],
+                "artifacts": [],
+                "created_at": "2026-06-10T00:00:00Z",
+                "updated_at": "2026-06-10T00:01:00Z"
+            ],
+            [
+                "task_id": "final-summary",
+                "workflow_id": "workflow-1",
+                "system_kind": "summary",
+                "title": "Final summary",
+                "prompt": "Summarize",
+                "depends_on": ["write-notes", "market-data"],
+                "completion_criteria": [],
+                "risk": "normal",
+                "replay_safety": "safe",
+                "status": "succeeded",
+                "attempt": 0,
+                "max_attempts": 1,
+                "evidence": [],
+                "artifacts": [],
+                "created_at": "2026-06-10T00:00:00Z",
+                "updated_at": "2026-06-10T00:01:00Z"
+            ]
+        ]
+        let workflowJson: [String: Any] = [
+            "workflow_id": "workflow-1",
+            "account_id": "account-1",
+            "backend_id": "backend-1",
+            "recording_id": recording.id,
+            "title": "Meeting execution",
+            "status": "running",
+            "revision": 4,
+            "deadline_at": "2026-06-10T00:45:00Z",
+            "quality_state": "completed_with_gaps",
+            "warnings": ["市场数据任务未完成"],
+            "final_artifact": [
+                "artifact_id": "final-report",
+                "filename": "meeting-report.md",
+                "mime_type": "text/markdown",
+                "sha256": "abc123",
+                "size_bytes": 1024,
+                "retrieval_ref": "/api/recording-workflows/workflow-1/artifacts/final",
+                "content": "# Meeting report"
+            ],
+            "created_at": "2026-06-10T00:00:00Z",
+            "updated_at": "2026-06-10T00:01:00Z",
+            "tasks": tasks
+        ]
+        let workflow = RecordingWorkflowSnapshot(json: workflowJson)
+        try expect(workflow != nil, "workflow snapshot should parse from Router JSON")
+        store.upsertWorkflow(workflow!)
+
+        let cached = store.items.first(where: { $0.id == recording.id })?.workflow
+        try expect(cached?.tasks.first?.taskId == "write-notes", "workflow task should be cached by recording id")
+        try expect(cached?.revision == 4, "workflow revision should parse")
+        try expect(cached?.qualityState == "completed_with_gaps", "workflow quality state should parse")
+        try expect(cached?.warnings == ["市场数据任务未完成"], "workflow warnings should parse")
+        try expect(cached?.finalArtifact?.filename == "meeting-report.md", "final artifact should parse")
+        try expect(cached?.businessTaskCount == 2, "summary task should not inflate business task progress")
+        try expect(cached?.successfulTaskCount == 0, "failed tasks should not count as successful")
+        try expect(cached?.degradedTaskCount == 1, "degraded tasks should be shown separately")
+        try expect(cached?.failedTaskCount == 1, "failed tasks should be shown separately")
+        try expect(cached?.progress == 0.5, "progress should count succeeded and degraded business tasks only")
+        try expect(cached?.tasks.first?.availableActions == ["retry"], "task actions should parse")
+        try expect(cached?.tasks.first?.evidence.first?.url == "https://www.sec.gov/example", "external source URL should parse")
+        try expect(cached?.tasks.first?.evidence.first?.verified == false, "unverified evidence should remain visible")
+
+        let reloaded = RecordingStore(defaults: defaults, documentsDirectory: directory)
+        try expect(
+            reloaded.items.first(where: { $0.id == recording.id })?.workflow?.workflowId == "workflow-1",
+            "workflow snapshot should survive app restart"
+        )
     }
 
     private static func testRecordingStoreTracksLongAsrJobProgressAndFailure() throws {
@@ -680,6 +814,148 @@ struct EarphoneLocalModelsTests {
         let asr = try unwrap(json["asr"] as? [String: Any], "job request should include ASR payload")
         try expect(asr["mode"] as? String == "router", "long recording ASR should use router mode")
         try expect(asr["profile_id"] as? String == "doubao", "long recording ASR should use selected ASR profile")
+    }
+
+    private static func testLongRecordingJobStatusIncludesTerminalFields() throws {
+        let payload = try unwrap(LongRecordingAsrJobStatusPayload(json: [
+            "job_id": "job-completed",
+            "recording_id": "recording-1",
+            "client_message_id": "client-1",
+            "status": "completed",
+            "phase": "completed",
+            "upload_percent": 100,
+            "asr_progress": ["percent": 100],
+            "transcript": "完整转写文本",
+            "error_message": NSNull(),
+            "retryable": false,
+            "provider_status_code": "20000000",
+            "provider_log_id": "provider-log",
+            "delivery_status": "delivering",
+            "delivery_attempts": 1,
+            "delivery_retryable": true,
+        ]), "completed job payload should parse")
+
+        try expect(payload.phase == "completed", "job payload should retain phase")
+        try expect(payload.transcript == "完整转写文本", "completed job payload should retain transcript")
+        try expect(payload.errorMessage == nil, "completed job payload should not expose an error")
+        try expect(!payload.retryable, "completed job should not be retryable")
+        try expect(payload.providerStatusCode == "20000000", "job payload should retain provider status")
+        try expect(payload.providerLogId == "provider-log", "job payload should retain provider log id")
+        try expect(payload.deliveryStatus == "delivering", "job payload should retain Agent delivery state")
+        try expect(payload.deliveryAttempts == 1, "job payload should retain delivery attempts")
+        try expect(payload.deliveryRetryable, "in-flight delivery should remain retryable")
+    }
+
+    private static func testRecordingStoreTracksAgentDeliveryAfterAsrCompletion() throws {
+        let defaults = try temporaryDefaults()
+        let directory = try temporaryDirectory()
+        let store = RecordingStore(defaults: defaults, documentsDirectory: directory)
+        let item = try store.createRecording(
+            agentId: "agent-1",
+            audioData: Data([0x01]),
+            recordingType: .meeting
+        )
+        store.configureRecordingForProcessing(
+            recordingId: item.id,
+            type: .meeting,
+            prompt: RecordingSettings.meetingPrompt,
+            clientMessageId: "client-delivery-1"
+        )
+
+        let pending = try unwrap(LongRecordingAsrJobStatusPayload(json: [
+            "job_id": "job-delivery-1",
+            "recording_id": item.id,
+            "status": "completed",
+            "phase": "completed",
+            "upload_percent": 100,
+            "asr_progress": ["percent": 100],
+            "transcript": "会议转写",
+            "delivery_status": "pending",
+            "delivery_attempts": 0,
+            "delivery_error": "Agent 当前离线",
+            "delivery_retryable": true,
+        ]), "pending delivery payload should parse")
+        store.applyLongRecordingAsrJob(pending, fallbackRecordingId: item.id)
+
+        var recording = try unwrap(store.items.first(where: { $0.id == item.id }), "recording should exist")
+        try expect(recording.asrText == "会议转写", "ASR text should be restored before Agent delivery")
+        try expect(recording.agentDeliveryStatus == .pending, "offline Agent delivery should stay pending")
+        try expect(recording.processingStatus == .processing, "pending Agent delivery should keep the recording processing")
+
+        let delivered = try unwrap(LongRecordingAsrJobStatusPayload(json: [
+            "job_id": "job-delivery-1",
+            "recording_id": item.id,
+            "status": "completed",
+            "phase": "completed",
+            "upload_percent": 100,
+            "asr_progress": ["percent": 100],
+            "transcript": "会议转写",
+            "delivery_status": "delivered",
+            "delivery_attempts": 1,
+            "delivery_retryable": false,
+            "delivered_at": "2026-06-11T05:00:00Z",
+        ]), "delivered payload should parse")
+        store.applyLongRecordingAsrJob(delivered, fallbackRecordingId: item.id)
+
+        recording = try unwrap(store.items.first(where: { $0.id == item.id }), "recording should still exist")
+        try expect(recording.agentDeliveryStatus == .delivered, "Agent acknowledgement should be persisted")
+        try expect(recording.processingStatus == .completed, "Agent acknowledgement should complete processing")
+        try expect(recording.events.contains { $0.kind == .delivered }, "Agent acknowledgement should add a delivery event")
+    }
+
+    private static func testLongRecordingAudioValidatorEnforcesLimits() throws {
+        let valid = pcmWavHeader(dataSize: 16000 * 2 * 60)
+        let metadata = try LongRecordingAudioValidator.validate(
+            fileSize: valid.count + 16000 * 2 * 60,
+            wavHeader: valid
+        )
+        try expect(metadata.durationSeconds == 60, "validator should calculate PCM WAV duration")
+
+        do {
+            _ = try LongRecordingAudioValidator.validate(
+                fileSize: LongRecordingAudioValidator.maxAudioBytes + 1,
+                wavHeader: valid
+            )
+            throw TestFailure("oversized recording should fail validation")
+        } catch let error as LongRecordingAudioValidationError {
+            try expect(error.message.contains("300 MB"), "oversized recording should explain the product limit")
+        }
+
+        let tooLong = pcmWavHeader(dataSize: 16000 * 2 * 7201)
+        do {
+            _ = try LongRecordingAudioValidator.validate(
+                fileSize: tooLong.count + 16000 * 2 * 7201,
+                wavHeader: tooLong
+            )
+            throw TestFailure("recording longer than two hours should fail validation")
+        } catch let error as LongRecordingAudioValidationError {
+            try expect(error.message.contains("2 小时"), "long recording should explain the duration limit")
+        }
+    }
+
+    private static func pcmWavHeader(dataSize: Int) -> Data {
+        var data = Data(count: 44)
+        data.replaceSubrange(0..<4, with: Data("RIFF".utf8))
+        data.replaceSubrange(8..<12, with: Data("WAVE".utf8))
+        data.replaceSubrange(12..<16, with: Data("fmt ".utf8))
+        data.replaceSubrange(36..<40, with: Data("data".utf8))
+        writeLittleEndian(UInt32(36 + dataSize), to: &data, at: 4)
+        writeLittleEndian(UInt32(16), to: &data, at: 16)
+        writeLittleEndian(UInt16(1), to: &data, at: 20)
+        writeLittleEndian(UInt16(1), to: &data, at: 22)
+        writeLittleEndian(UInt32(16000), to: &data, at: 24)
+        writeLittleEndian(UInt32(32000), to: &data, at: 28)
+        writeLittleEndian(UInt16(2), to: &data, at: 32)
+        writeLittleEndian(UInt16(16), to: &data, at: 34)
+        writeLittleEndian(UInt32(dataSize), to: &data, at: 40)
+        return data
+    }
+
+    private static func writeLittleEndian<T: FixedWidthInteger>(_ value: T, to data: inout Data, at offset: Int) {
+        var littleEndian = value.littleEndian
+        withUnsafeBytes(of: &littleEndian) { bytes in
+            data.replaceSubrange(offset..<(offset + bytes.count), with: bytes)
+        }
     }
 
     private static func testHeadsetDefaultFakeData() throws {

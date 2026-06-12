@@ -21,6 +21,13 @@ struct AgentConfigTtsAutosaveTests {
         try expect(providerChatScreen.contains("GatewayAuthClient.aiChat"), "Provider chat should call Router AI chat in router mode")
         try expect(providerChatScreen.contains("OpenAICompatibleChatClient().chat"), "Provider chat should call local BYOK chat in OpenAI-compatible mode")
         try expect(providerChatScreen.contains("AnthropicChatClient().chat"), "Provider chat should call local BYOK chat in Anthropic mode")
+        try expect(providerChatScreen.contains("InputAreaView("), "Provider chat should reuse the Agent chat input UI")
+        try expect(providerChatScreen.contains("inputMode: $inputMode"), "Provider chat should support switching between voice and text input")
+        try expect(providerChatScreen.contains("audioRecorder.startRecording()"), "Provider chat should support press-and-hold recording")
+        try expect(providerChatScreen.contains("sendAudioUsingSelectedAsr"), "Provider chat should run ASR before sending voice input to the Provider")
+        try expect(providerChatScreen.contains("OpenAICompatibleAsrClient().transcribe"), "Provider chat should support local BYOK ASR")
+        try expect(providerChatScreen.contains("messageSpeechController.speakManualText"), "Provider chat should support manual TTS playback")
+        try expect(providerChatScreen.contains("messageSpeechController.enqueueAssistantReplies"), "Provider chat should support automatic assistant reply TTS")
         try expect(!providerChatScreen.contains("wsManager.sendText"), "Provider chat must not send through the Agent WebSocket")
     }
 
