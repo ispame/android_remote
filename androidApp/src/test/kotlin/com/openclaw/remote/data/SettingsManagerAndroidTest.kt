@@ -92,6 +92,8 @@ class SettingsManagerAndroidTest {
                 accessToken = "access-token-123",
                 refreshToken = "refresh-token-123",
                 deviceLabel = "Pixel",
+                lastLoginMode = "验证码",
+                lastPhoneNumber = "+8613800138000",
             )
         )
 
@@ -100,6 +102,8 @@ class SettingsManagerAndroidTest {
         assertEquals("acct-123", restored.accountId)
         assertEquals("access-token-123", restored.accessToken)
         assertEquals("refresh-token-123", restored.refreshToken)
+        assertEquals("验证码", restored.lastLoginMode)
+        assertEquals("+8613800138000", restored.lastPhoneNumber)
     }
 
     @Test

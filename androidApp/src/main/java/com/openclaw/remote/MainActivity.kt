@@ -223,20 +223,23 @@ class MainActivity : ComponentActivity() {
                     AuthScreen(
                         config = config,
                         notice = authNotice ?: authGateNotice,
-                        onAuthenticated = { session, gatewayUrl ->
+                        onAuthenticated = { payload ->
                             scope.launch {
+                                val session = payload.session
                                 settingsManager.updateConfig(
                                     config.copy(
-                                        gatewayUrl = gatewayUrl,
+                                        gatewayUrl = payload.gatewayUrl,
                                         accountId = session.accountId,
                                         accessToken = session.accessToken,
                                         refreshToken = session.refreshToken,
                                         accessExpiresAt = session.accessExpiresAt,
                                         refreshExpiresAt = session.refreshExpiresAt,
-                                        deviceLabel = config.deviceLabel.ifBlank { "我的设备" },
+                                        deviceLabel = payload.terminalLabel,
+                                        lastLoginMode = payload.loginMode,
+                                        lastPhoneNumber = payload.phoneNumber,
                                     )
                                 )
-                                syncAccountAgentsFromServer(authClient, gatewayUrl, session.accessToken)
+                                syncAccountAgentsFromServer(authClient, payload.gatewayUrl, session.accessToken)
                                 authGateNotice = null
                                 viewModel.clearAuthNotice()
                                 viewModel.connect()

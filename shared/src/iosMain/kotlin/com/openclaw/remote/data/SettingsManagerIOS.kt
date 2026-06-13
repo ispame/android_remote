@@ -40,6 +40,8 @@ class SettingsManagerIOS : SettingsManager {
             pairedBackendLabel = defaults.stringForKey("paired_backend_label"),
             asrMode = defaults.stringForKey("asr_mode") ?: "router",
             asrProfileId = defaults.stringForKey("asr_profile_id") ?: "",
+            lastLoginMode = defaults.stringForKey("last_login_mode") ?: "",
+            lastPhoneNumber = defaults.stringForKey("last_phone_number") ?: "",
         )
     }
 
@@ -57,6 +59,8 @@ class SettingsManagerIOS : SettingsManager {
         defaults.setObject(config.token, forKey = "token")
         defaults.setObject(config.asrMode, forKey = "asr_mode")
         defaults.setObject(config.asrProfileId, forKey = "asr_profile_id")
+        defaults.setObject(config.lastLoginMode, forKey = "last_login_mode")
+        defaults.setObject(config.lastPhoneNumber, forKey = "last_phone_number")
         saveAiSettings(aiSettingsFromLegacyConfig(config), updateConfigFlow = false)
         if (config.pairedBackendId != null) {
             defaults.setObject(config.pairedBackendId, forKey = "paired_backend_id")
@@ -217,6 +221,8 @@ class SettingsManagerIOS : SettingsManager {
         defaults.removeObjectForKey("paired_backend_label")
         defaults.removeObjectForKey("asr_mode")
         defaults.removeObjectForKey("asr_profile_id")
+        defaults.removeObjectForKey("last_login_mode")
+        defaults.removeObjectForKey("last_phone_number")
         defaults.removeObjectForKey("ai_service_settings_v1")
         defaults.removeObjectForKey("sound_playback_enabled_v1")
         _configFlow.value = GatewayConfig()

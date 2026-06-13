@@ -2,6 +2,7 @@ package com.openclaw.remote.ui.screen
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -53,20 +54,16 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.openclaw.remote.auth.AuthSessionResult
 import com.openclaw.remote.auth.GatewayAuthClient
-import com.openclaw.remote.data.AgentProfile
 import com.openclaw.remote.data.GatewayConfig
 import com.openclaw.remote.ui.theme.MochiColors
 import com.openclaw.remote.ui.theme.MochiTheme
 import kotlinx.coroutines.launch
 
-private enum class AuthMode { Login, Register, ForgotPassword }
-private enum class LoginMode { Password, Sms }
-
 @Composable
 fun AuthScreen(
     config: GatewayConfig,
     notice: String?,
-    onAuthenticated: (AuthSessionResult, String) -> Unit,
+    onAuthenticated: (AuthSuccessPayload) -> Unit,
     onNoticeShown: () -> Unit = {},
 ) {
     val colors = MochiTheme.colors
@@ -74,20 +71,25 @@ fun AuthScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     val authClient = remember { GatewayAuthClient() }
 
-    var authMode by remember { mutableStateOf(AuthMode.Login) }
-    var loginMode by remember { mutableStateOf(LoginMode.Password) }
-    var gatewayUrl by remember(config.gatewayUrl) {
-        mutableStateOf(config.gatewayUrl.ifBlank { AgentProfile.DEFAULT_GATEWAY_URL })
+    val initialState = remember(config.gatewayUrl, config.deviceLabel, config.lastLoginMode, config.lastPhoneNumber) {
+        initialAuthUiState(
+            gatewayUrl = config.gatewayUrl,
+            deviceLabel = config.deviceLabel,
+            lastLoginMode = config.lastLoginMode,
+            lastPhoneNumber = config.lastPhoneNumber,
+        )
     }
-    var phoneNumber by remember { mutableStateOf("") }
+    var authMode by remember { mutableStateOf(initialState.mode) }
+    var loginMode by remember { mutableStateOf(initialState.loginMode) }
+    var gatewayUrl by remember(initialState.gatewayUrl) { mutableStateOf(initialState.gatewayUrl) }
+    var phoneNumber by remember(initialState.phoneNumber) { mutableStateOf(initialState.phoneNumber) }
     var smsCode by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var confirmPassword by remember { mutableStateOf("") }
-    var terminalLabel by remember(config.deviceLabel) {
-        mutableStateOf(config.deviceLabel.ifBlank { "我的设备" })
-    }
+    var terminalLabel by remember(initialState.terminalLabel) { mutableStateOf(initialState.terminalLabel) }
     var isBusy by remember { mutableStateOf(false) }
     var statusMessage by remember { mutableStateOf<String?>(null) }
+    var acceptedTerms by remember { mutableStateOf(false) }
 
     suspend fun showMessage(message: String) {
         statusMessage = message
@@ -95,13 +97,13 @@ fun AuthScreen(
     }
 
     fun normalizedGateway(): String =
-        gatewayUrl.trim().ifEmpty { AgentProfile.DEFAULT_GATEWAY_URL }
+        gatewayUrl.normalizedGatewayUrl()
 
     fun canSubmitPassword(): Boolean =
-        phoneNumber.isNotBlank() && password.length >= 8
+        phoneNumber.trim().isNotBlank() && password.length >= 8
 
     fun canSubmitWithCode(): Boolean =
-        phoneNumber.isNotBlank() && smsCode.isNotBlank()
+        phoneNumber.trim().isNotBlank() && smsCode.trim().isNotBlank()
 
     LaunchedEffect(notice) {
         val message = notice?.takeIf { it.isNotBlank() } ?: return@LaunchedEffect
@@ -126,7 +128,7 @@ fun AuthScreen(
                 .padding(horizontal = 20.dp, vertical = 28.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            AuthHeader(colors)
+            AuthHeader(colors, authMode)
 
             Column(
                 modifier = Modifier
@@ -136,31 +138,10 @@ fun AuthScreen(
                     .padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
-                if (authMode != AuthMode.ForgotPassword) {
-                    AuthSegmentedControl(
-                        leftText = "登录",
-                        rightText = "注册",
-                        leftSelected = authMode != AuthMode.Register,
-                        colors = colors,
-                        onSelectLeft = { authMode = AuthMode.Login },
-                        onSelectRight = { authMode = AuthMode.Register },
-                    )
-
-                    HorizontalDivider(color = colors.divider)
-                }
-
             when (authMode) {
-                AuthMode.Login -> {
-                    AuthSegmentedControl(
-                        leftText = "密码",
-                        rightText = "验证码",
-                        leftSelected = loginMode == LoginMode.Password,
-                        colors = colors,
-                        onSelectLeft = { loginMode = LoginMode.Password },
-                        onSelectRight = { loginMode = LoginMode.Sms },
-                    )
+                AuthModeSpec.LOGIN -> {
                     AuthPhoneField(phoneNumber, { phoneNumber = it }, colors)
-                    if (loginMode == LoginMode.Password) {
+                    if (loginMode == AuthLoginModeSpec.PASSWORD) {
                         AuthPasswordField("密码", password, { password = it }, colors)
                         Button(
                             onClick = {
@@ -175,10 +156,18 @@ fun AuthScreen(
                                             gatewayUrl = normalizedGateway(),
                                             phoneNumber = phoneNumber,
                                             password = password,
-                                            terminalLabel = terminalLabel.ifBlank { "我的设备" },
+                                            terminalLabel = terminalLabel.normalizedTerminalLabel(),
                                         )
                                     }.onSuccess {
-                                        onAuthenticated(it, normalizedGateway())
+                                        onAuthenticated(
+                                            buildAuthSuccessPayload(
+                                                session = it,
+                                                gatewayUrl = gatewayUrl,
+                                                terminalLabel = terminalLabel,
+                                                loginMode = AuthLoginModeSpec.PASSWORD,
+                                                phoneNumber = phoneNumber,
+                                            )
+                                        )
                                     }.onFailure {
                                         showMessage("登录失败：${it.message ?: "unknown"}")
                                     }
@@ -235,10 +224,18 @@ fun AuthScreen(
                                             gatewayUrl = normalizedGateway(),
                                             phoneNumber = phoneNumber,
                                             code = smsCode,
-                                            terminalLabel = terminalLabel.ifBlank { "我的设备" },
+                                            terminalLabel = terminalLabel.normalizedTerminalLabel(),
                                         )
                                     }.onSuccess {
-                                        onAuthenticated(it, normalizedGateway())
+                                        onAuthenticated(
+                                            buildAuthSuccessPayload(
+                                                session = it,
+                                                gatewayUrl = gatewayUrl,
+                                                terminalLabel = terminalLabel,
+                                                loginMode = AuthLoginModeSpec.SMS,
+                                                phoneNumber = phoneNumber,
+                                            )
+                                        )
                                     }.onFailure {
                                         showMessage("登录失败：${it.message ?: "unknown"}")
                                     }
@@ -256,21 +253,59 @@ fun AuthScreen(
                             Text("验证码登录", modifier = Modifier.padding(start = 8.dp))
                         }
                     }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        TextButton(
+                            onClick = {
+                                if (loginMode == AuthLoginModeSpec.PASSWORD) {
+                                    loginMode = AuthLoginModeSpec.SMS
+                                    password = ""
+                                } else {
+                                    loginMode = AuthLoginModeSpec.PASSWORD
+                                    smsCode = ""
+                                }
+                            },
+                        ) {
+                            Text(
+                                if (loginMode == AuthLoginModeSpec.PASSWORD) "验证码登录" else "密码登录",
+                                color = colors.primary,
+                            )
+                        }
+                        androidx.compose.foundation.layout.Spacer(Modifier.weight(1f))
+                        TextButton(
+                            onClick = {
+                                authMode = AuthModeSpec.FORGOT
+                                smsCode = ""
+                                password = ""
+                                confirmPassword = ""
+                                acceptedTerms = false
+                            },
+                        ) {
+                            Text("忘记密码", color = colors.textSecondary)
+                        }
+                    }
+                    HorizontalDivider(color = colors.divider)
                     TextButton(
                         onClick = {
-                            authMode = AuthMode.ForgotPassword
-                            smsCode = ""
+                            authMode = AuthModeSpec.REGISTER
+                            phoneNumber = ""
                             password = ""
+                            smsCode = ""
                             confirmPassword = ""
+                            acceptedTerms = false
                         },
-                        modifier = Modifier.align(Alignment.End),
+                        modifier = Modifier.align(Alignment.CenterHorizontally),
                     ) {
-                        Text("忘记密码", color = colors.primary)
+                        Text("还没有账号？立即注册", color = colors.primary)
                     }
                 }
 
-                AuthMode.Register -> {
+                AuthModeSpec.REGISTER -> {
+                    Text("填写以下信息完成注册", color = colors.textSecondary, fontSize = 14.sp)
                     AuthPhoneField(phoneNumber, { phoneNumber = it }, colors)
+                    AuthPasswordField("设置密码", password, { password = it }, colors)
                     SmsCodeRow(
                         smsCode = smsCode,
                         onSmsCodeChange = { smsCode = it },
@@ -298,13 +333,20 @@ fun AuthScreen(
                             }
                         },
                     )
-                    AuthPasswordField("设置密码", password, { password = it }, colors)
-                    AuthPasswordField("确认密码", confirmPassword, { confirmPassword = it }, colors)
+                    TermsAgreementRow(
+                        accepted = acceptedTerms,
+                        colors = colors,
+                        onToggle = { acceptedTerms = !acceptedTerms },
+                    )
                     Button(
                         onClick = {
                             scope.launch {
-                                if (!canSubmitWithCode() || password.length < 8 || password != confirmPassword) {
-                                    showMessage("请检查手机号、验证码和两次密码")
+                                if (!acceptedTerms) {
+                                    showMessage("请先阅读并同意用户协议和隐私政策")
+                                    return@launch
+                                }
+                                if (!canSubmitWithCode() || password.length < 8) {
+                                    showMessage("请检查手机号、验证码和密码（至少8位）")
                                     return@launch
                                 }
                                 isBusy = true
@@ -314,17 +356,25 @@ fun AuthScreen(
                                         phoneNumber = phoneNumber,
                                         code = smsCode,
                                         password = password,
-                                        terminalLabel = terminalLabel.ifBlank { "我的设备" },
+                                        terminalLabel = terminalLabel.normalizedTerminalLabel(),
                                     )
                                 }.onSuccess {
-                                    onAuthenticated(it, normalizedGateway())
+                                    onAuthenticated(
+                                        buildAuthSuccessPayload(
+                                            session = it,
+                                            gatewayUrl = gatewayUrl,
+                                            terminalLabel = terminalLabel,
+                                            loginMode = AuthLoginModeSpec.PASSWORD,
+                                            phoneNumber = phoneNumber,
+                                        )
+                                    )
                                 }.onFailure {
                                     showMessage("注册失败：${it.message ?: "unknown"}")
                                 }
                                 isBusy = false
                             }
                         },
-                        enabled = !isBusy,
+                        enabled = !isBusy && acceptedTerms,
                         modifier = Modifier
                             .fillMaxWidth()
                             .heightIn(min = 48.dp),
@@ -332,18 +382,30 @@ fun AuthScreen(
                         colors = ButtonDefaults.buttonColors(colors.primary, colors.onPrimary),
                     ) {
                         Icon(Icons.Default.Password, contentDescription = null)
-                        Text("注册并登录", modifier = Modifier.padding(start = 8.dp))
+                        Text("注册", modifier = Modifier.padding(start = 8.dp))
+                    }
+                    HorizontalDivider(color = colors.divider)
+                    TextButton(
+                        onClick = {
+                            authMode = AuthModeSpec.LOGIN
+                            smsCode = ""
+                            confirmPassword = ""
+                            acceptedTerms = false
+                        },
+                        modifier = Modifier.align(Alignment.CenterHorizontally),
+                    ) {
+                        Text("已有账号？直接登录", color = colors.primary)
                     }
                 }
 
-                AuthMode.ForgotPassword -> {
+                AuthModeSpec.FORGOT -> {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
                         IconButton(
-                            onClick = { authMode = AuthMode.Login },
+                            onClick = { authMode = AuthModeSpec.LOGIN },
                             modifier = Modifier
                                 .size(32.dp)
                                 .background(colors.inputBg, RoundedCornerShape(8.dp))
@@ -403,7 +465,15 @@ fun AuthScreen(
                                         password = password,
                                     )
                                 }.onSuccess {
-                                    onAuthenticated(it, normalizedGateway())
+                                    onAuthenticated(
+                                        buildAuthSuccessPayload(
+                                            session = it,
+                                            gatewayUrl = gatewayUrl,
+                                            terminalLabel = terminalLabel,
+                                            loginMode = AuthLoginModeSpec.PASSWORD,
+                                            phoneNumber = phoneNumber,
+                                        )
+                                    )
                                 }.onFailure {
                                     showMessage("重置失败：${it.message ?: "unknown"}")
                                 }
@@ -422,16 +492,6 @@ fun AuthScreen(
                     }
                 }
             }
-
-                HorizontalDivider(color = colors.divider)
-
-                ConnectionFields(
-                    gatewayUrl = gatewayUrl,
-                    onGatewayUrlChange = { gatewayUrl = it },
-                    terminalLabel = terminalLabel,
-                    onTerminalLabelChange = { terminalLabel = it },
-                    colors = colors,
-                )
             }
 
             statusMessage?.let { message ->
@@ -442,7 +502,12 @@ fun AuthScreen(
 }
 
 @Composable
-private fun AuthHeader(colors: MochiColors) {
+private fun AuthHeader(colors: MochiColors, authMode: AuthModeSpec) {
+    val subtitle = when (authMode) {
+        AuthModeSpec.LOGIN -> "欢迎回来"
+        AuthModeSpec.REGISTER -> "注册新账号"
+        AuthModeSpec.FORGOT -> "找回密码"
+    }
     Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
@@ -466,11 +531,36 @@ private fun AuthHeader(colors: MochiColors) {
                 fontWeight = FontWeight.SemiBold,
             )
             Text(
-                text = "登录后连接你的 Agent",
+                text = subtitle,
                 color = colors.textSecondary,
                 fontSize = 14.sp,
             )
         }
+    }
+}
+
+@Composable
+private fun TermsAgreementRow(
+    accepted: Boolean,
+    colors: MochiColors,
+    onToggle: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onToggle),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(
+            text = if (accepted) "☑" else "☐",
+            color = if (accepted) colors.primary else colors.textSecondary,
+            fontSize = 16.sp,
+        )
+        Text("我已阅读并同意", color = colors.textSecondary, fontSize = 13.sp)
+        Text("《用户协议》", color = colors.primary, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+        Text("和", color = colors.textSecondary, fontSize = 13.sp)
+        Text("《隐私政策》", color = colors.primary, fontSize = 13.sp, fontWeight = FontWeight.Medium)
     }
 }
 

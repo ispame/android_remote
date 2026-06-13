@@ -36,6 +36,8 @@ class SettingsManagerAndroid(
         private val TTS_ENGINE = stringPreferencesKey("tts_engine")
         private val MINIMAX_API_KEY = stringPreferencesKey("minimax_api_key")
         private val MINIMAX_VOICE_ID = stringPreferencesKey("minimax_voice_id")
+        private val LAST_LOGIN_MODE = stringPreferencesKey("last_login_mode")
+        private val LAST_PHONE_NUMBER = stringPreferencesKey("last_phone_number")
         private val AI_SERVICE_SETTINGS = stringPreferencesKey("ai_service_settings_v1")
         private val AGENT_PROFILES = stringPreferencesKey("agent_profiles_v1")
         private val SELECTED_AGENT_PROFILE_ID = stringPreferencesKey("selected_agent_profile_id")
@@ -107,6 +109,8 @@ class SettingsManagerAndroid(
             prefs[TTS_ENGINE] = config.ttsEngine.normalizedTtsEngine()
             prefs.remove(MINIMAX_API_KEY)
             prefs[MINIMAX_VOICE_ID] = config.minimaxVoiceId.normalizedMiniMaxVoiceId()
+            prefs[LAST_LOGIN_MODE] = config.lastLoginMode
+            prefs[LAST_PHONE_NUMBER] = config.lastPhoneNumber
             prefs[AI_SERVICE_SETTINGS] = encodeAiServiceSettings(
                 prefs.toAiSettings().copy(
                     defaults = prefs.toAiSettings().defaults.copy(
@@ -458,6 +462,8 @@ class SettingsManagerAndroid(
             ttsEngine = ttsChoice.toLegacyTtsEngine(),
             minimaxApiKey = localMiniMaxApiKey,
             minimaxVoiceId = ttsChoice.voiceId.normalizedMiniMaxVoiceId(),
+            lastLoginMode = this[LAST_LOGIN_MODE] ?: "",
+            lastPhoneNumber = this[LAST_PHONE_NUMBER] ?: "",
         )
     }
 
