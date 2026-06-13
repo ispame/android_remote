@@ -20,4 +20,6 @@ data class GatewayConfig(
     val ttsEngine: String = "system",
     val minimaxApiKey: String = "",
     val minimaxVoiceId: String = "male-qn-qingse",
+    val lastLoginMode: String = "",
+    val lastPhoneNumber: String = "",
 )

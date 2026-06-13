@@ -10,10 +10,12 @@ class SettingsManagerIOS : SettingsManager {
 
     private val _configFlow = MutableStateFlow(loadConfig())
     private val _profilesFlow = MutableStateFlow(makeState(loadConfig()))
+    private val _aiSettingsFlow = MutableStateFlow(loadAiSettings())
     private val _soundPlaybackEnabledFlow = MutableStateFlow(loadSoundPlaybackEnabled())
 
     override val configFlow: Flow<GatewayConfig> = _configFlow.asStateFlow()
     override val profilesFlow: Flow<AgentProfilesState> = _profilesFlow.asStateFlow()
+    override val aiSettingsFlow: Flow<AiServiceSettings> = _aiSettingsFlow.asStateFlow()
     override val soundPlaybackEnabledFlow: Flow<Boolean> = _soundPlaybackEnabledFlow.asStateFlow()
 
     private fun loadSoundPlaybackEnabled(): Boolean {
@@ -38,8 +40,13 @@ class SettingsManagerIOS : SettingsManager {
             pairedBackendLabel = defaults.stringForKey("paired_backend_label"),
             asrMode = defaults.stringForKey("asr_mode") ?: "router",
             asrProfileId = defaults.stringForKey("asr_profile_id") ?: "",
+            lastLoginMode = defaults.stringForKey("last_login_mode") ?: "",
+            lastPhoneNumber = defaults.stringForKey("last_phone_number") ?: "",
         )
     }
+
+    private fun loadAiSettings(): AiServiceSettings =
+        decodeAiServiceSettings(defaults.stringForKey("ai_service_settings_v1"))
 
     private fun saveConfig(config: GatewayConfig) {
         defaults.setObject(config.gatewayUrl, forKey = "gateway_url")
@@ -52,6 +59,9 @@ class SettingsManagerIOS : SettingsManager {
         defaults.setObject(config.token, forKey = "token")
         defaults.setObject(config.asrMode, forKey = "asr_mode")
         defaults.setObject(config.asrProfileId, forKey = "asr_profile_id")
+        defaults.setObject(config.lastLoginMode, forKey = "last_login_mode")
+        defaults.setObject(config.lastPhoneNumber, forKey = "last_phone_number")
+        saveAiSettings(aiSettingsFromLegacyConfig(config), updateConfigFlow = false)
         if (config.pairedBackendId != null) {
             defaults.setObject(config.pairedBackendId, forKey = "paired_backend_id")
         } else {
@@ -64,6 +74,21 @@ class SettingsManagerIOS : SettingsManager {
         }
         _configFlow.value = config
         _profilesFlow.value = makeState(config)
+    }
+
+    private fun saveAiSettings(settings: AiServiceSettings, updateConfigFlow: Boolean = true) {
+        val normalized = settings.normalized()
+        defaults.setObject(encodeAiServiceSettings(normalized), forKey = "ai_service_settings_v1")
+        _aiSettingsFlow.value = normalized
+        if (updateConfigFlow) {
+            val current = _configFlow.value
+            _configFlow.value = current.copy(
+                asrMode = normalized.defaults.asr.mode,
+                asrProfileId = normalized.defaults.asr.profileId,
+                ttsEngine = normalized.defaults.tts.toLegacyTtsEngine(),
+                minimaxVoiceId = normalized.defaults.tts.voiceId,
+            )
+        }
     }
 
     private fun makeState(config: GatewayConfig): AgentProfilesState {
@@ -146,6 +171,28 @@ class SettingsManagerIOS : SettingsManager {
         clearConfig()
     }
 
+    override suspend fun setProfilePinned(profileId: String, pinned: Boolean) {
+        _profilesFlow.value = _profilesFlow.value.copy(
+            profiles = _profilesFlow.value.profiles.map { profile ->
+                if (profile.id == profileId) profile.copy(isPinned = pinned) else profile
+            }
+        )
+    }
+
+    override suspend fun updateAiSettings(settings: AiServiceSettings) {
+        saveAiSettings(settings)
+    }
+
+    override suspend fun updateLocalCredential(id: String, apiKey: String) = Unit
+
+    override suspend fun localCredential(id: String): String? = null
+
+    override suspend fun updateLocalTtsCredential(providerId: String, apiKey: String) =
+        updateLocalCredential(if (providerId == "minimax") LOCAL_TTS_MINIMAX_CREDENTIAL_ID else providerId, apiKey)
+
+    override suspend fun localTtsCredential(providerId: String): String? =
+        localCredential(if (providerId == "minimax") LOCAL_TTS_MINIMAX_CREDENTIAL_ID else providerId)
+
     override suspend fun updateGlobalAsr(mode: String, profileId: String) {
         val normalizedMode = if (mode == "backend") "backend" else "router"
         val current = _configFlow.value
@@ -174,9 +221,13 @@ class SettingsManagerIOS : SettingsManager {
         defaults.removeObjectForKey("paired_backend_label")
         defaults.removeObjectForKey("asr_mode")
         defaults.removeObjectForKey("asr_profile_id")
+        defaults.removeObjectForKey("last_login_mode")
+        defaults.removeObjectForKey("last_phone_number")
+        defaults.removeObjectForKey("ai_service_settings_v1")
         defaults.removeObjectForKey("sound_playback_enabled_v1")
         _configFlow.value = GatewayConfig()
         _profilesFlow.value = makeState(_configFlow.value)
+        _aiSettingsFlow.value = AiServiceSettings()
         _soundPlaybackEnabledFlow.value = true
     }
 }

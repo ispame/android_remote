@@ -16,6 +16,8 @@ struct TtsBehaviorTests {
         try testMiniMaxResponseParserRejectsProviderErrors()
         try testMiniMaxVoiceCatalogBuildsSelectableVoices()
         try testSettingsManagerPersistsTtsDefaultsAndSoundPlaybackPreference()
+        try testSettingsManagerPreservesRouterTtsModeForUnifiedSettings()
+        try testSettingsManagerMigratesOldMiniMaxLlmHost()
         try testAgentProfileTtsDefaultsAndLegacyDecode()
         try testSettingsManagerMigratesLegacyGlobalTtsToAgentProfilesOnce()
         try testSettingsManagerBuildsProfileSpecificTtsConfig()
@@ -245,9 +247,10 @@ struct TtsBehaviorTests {
     private static func testSettingsManagerPersistsTtsDefaultsAndSoundPlaybackPreference() throws {
         let suiteName = "TtsBehaviorTests-\(UUID().uuidString)"
         let defaults = try expectNotNil(UserDefaults(suiteName: suiteName), "test defaults suite should be available")
+        let vault = FakeCredentialVault()
         defer { defaults.removePersistentDomain(forName: suiteName) }
 
-        let manager = SettingsManager(defaults: defaults)
+        let manager = SettingsManager(defaults: defaults, credentialVault: vault)
         try expect(manager.config.ttsEngine == "system", "default TTS engine should be system")
         try expect(manager.config.minimaxApiKey == "", "default MiniMax API key should be empty")
         try expect(manager.config.minimaxVoiceId == MiniMaxVoiceCatalog.defaultVoiceId, "default MiniMax voice should match catalog default")
@@ -260,11 +263,75 @@ struct TtsBehaviorTests {
         manager.updateConfig(config)
         manager.updateSoundPlaybackEnabled(false)
 
-        let reloaded = SettingsManager(defaults: defaults)
+        let reloaded = SettingsManager(defaults: defaults, credentialVault: vault)
         try expect(reloaded.config.ttsEngine == "minimax", "TTS engine should persist")
         try expect(reloaded.config.minimaxApiKey == "key", "MiniMax API key should persist")
         try expect(reloaded.config.minimaxVoiceId == "voice", "MiniMax voice should persist")
+        try expect(defaults.string(forKey: "minimax_api_key") == nil, "MiniMax API key should not persist in UserDefaults")
         try expect(!reloaded.soundPlaybackEnabled, "sound playback preference should persist")
+    }
+
+    private static func testSettingsManagerPreservesRouterTtsModeForUnifiedSettings() throws {
+        let suiteName = "TtsBehaviorTests-\(UUID().uuidString)"
+        let defaults = try expectNotNil(UserDefaults(suiteName: suiteName), "test defaults suite should be available")
+        let vault = FakeCredentialVault()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let manager = SettingsManager(defaults: defaults, credentialVault: vault)
+        manager.updateAiSettings(AiServiceSettings(
+            defaults: AiServiceDefaults(
+                llm: AiServiceChoice(mode: "router", profileId: "default"),
+                asr: AiServiceChoice(mode: "router", profileId: "volcengine-streaming"),
+                tts: AiServiceChoice(
+                    mode: "router",
+                    profileId: "router-tts-default",
+                    providerId: "router",
+                    voiceId: "router-voice"
+                )
+            )
+        ))
+
+        try expect(manager.aiSettings.defaults.tts.mode == "router", "unified AI settings should preserve Router TTS mode")
+        try expect(manager.aiSettings.defaults.tts.providerId == "router", "Router TTS settings should keep router provider id")
+        try expect(manager.config.ttsEngine == "system", "legacy playback projection should stay system until Router TTS playback is implemented")
+    }
+
+    private static func testSettingsManagerMigratesOldMiniMaxLlmHost() throws {
+        let suiteName = "TtsBehaviorTests-\(UUID().uuidString)"
+        let defaults = try expectNotNil(UserDefaults(suiteName: suiteName), "test defaults suite should be available")
+        let vault = FakeCredentialVault()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let manager = SettingsManager(defaults: defaults, credentialVault: vault)
+        manager.updateAiSettings(AiServiceSettings(
+            defaults: AiServiceDefaults(
+                llm: AiServiceChoice(
+                    mode: "byok",
+                    providerId: "minimax",
+                    baseUrl: "https://api.minimax.com/v1/",
+                    model: "MiniMax-M2.7",
+                    credentialId: localLlmMiniMaxCredentialId
+                ),
+                asr: AiServiceChoice(mode: "router", profileId: ""),
+                tts: AiServiceChoice(mode: "system", providerId: "system")
+            ),
+            agentOverrides: [
+                "agent-minimax": AiAgentOverride(
+                    inherit: false,
+                    llm: AiServiceChoice(
+                        mode: "byok",
+                        providerId: "minimax",
+                        baseUrl: "https://api.minimax.com/v1",
+                        model: "MiniMax-M2.7",
+                        credentialId: localLlmMiniMaxCredentialId
+                    )
+                )
+            ]
+        ))
+
+        let reloaded = SettingsManager(defaults: defaults, credentialVault: vault)
+        try expect(reloaded.aiSettings.defaults.llm.baseUrl == "https://api.minimaxi.com/v1", "saved MiniMax LLM defaults should migrate to the documented China endpoint")
+        try expect(reloaded.aiSettings.agentOverrides["agent-minimax"]?.llm?.baseUrl == "https://api.minimaxi.com/v1", "saved MiniMax LLM overrides should migrate to the documented China endpoint")
     }
 
     private static func testAgentProfileTtsDefaultsAndLegacyDecode() throws {
@@ -286,6 +353,7 @@ struct TtsBehaviorTests {
     private static func testSettingsManagerMigratesLegacyGlobalTtsToAgentProfilesOnce() throws {
         let suiteName = "TtsBehaviorTests-\(UUID().uuidString)"
         let defaults = try expectNotNil(UserDefaults(suiteName: suiteName), "test defaults suite should be available")
+        let vault = FakeCredentialVault()
         defer { defaults.removePersistentDomain(forName: suiteName) }
 
         defaults.set("minimax", forKey: "tts_engine")
@@ -298,7 +366,7 @@ struct TtsBehaviorTests {
         defaults.set(try JSONEncoder().encode(legacyProfiles), forKey: "agent_profiles_v1")
         defaults.set("agent-a", forKey: "selected_agent_profile_id")
 
-        let migrated = SettingsManager(defaults: defaults)
+        let migrated = SettingsManager(defaults: defaults, credentialVault: vault)
 
         try expect(migrated.profiles.count == 2, "legacy persisted profiles should load")
         try expect(migrated.profiles.allSatisfy { $0.ttsEngine == "minimax" }, "legacy global TTS engine should migrate to all Agent profiles")
@@ -312,7 +380,7 @@ struct TtsBehaviorTests {
         customized.minimaxVoiceId = MiniMaxVoiceCatalog.defaultVoiceId
         migrated.updateProfile(customized)
 
-        let reloaded = SettingsManager(defaults: defaults)
+        let reloaded = SettingsManager(defaults: defaults, credentialVault: vault)
         let reloadedAgent = try expectNotNil(reloaded.profiles.first { $0.id == "agent-a" }, "agent-a should exist after reload")
         try expect(reloadedAgent.ttsEngine == "system", "migration should not overwrite later per-Agent edits")
         try expect(reloadedAgent.minimaxApiKey == "", "migration should not restore the legacy global key after edits")
@@ -322,9 +390,10 @@ struct TtsBehaviorTests {
     private static func testSettingsManagerBuildsProfileSpecificTtsConfig() throws {
         let suiteName = "TtsBehaviorTests-\(UUID().uuidString)"
         let defaults = try expectNotNil(UserDefaults(suiteName: suiteName), "test defaults suite should be available")
+        let vault = FakeCredentialVault()
         defer { defaults.removePersistentDomain(forName: suiteName) }
 
-        let manager = SettingsManager(defaults: defaults)
+        let manager = SettingsManager(defaults: defaults, credentialVault: vault)
         var first = manager.selectedProfile
         first.ttsEngine = "minimax"
         first.minimaxApiKey = "key-a"
@@ -429,6 +498,27 @@ private final class FakeTtsEngine: TtsEngine {
     }
 
     func releaseResources() {}
+}
+
+private final class FakeCredentialVault: CredentialVault {
+    private var values: [String: String] = [:]
+
+    func secret(for id: String) -> String? {
+        values[id]
+    }
+
+    func setSecret(_ secret: String, for id: String) {
+        let trimmed = secret.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            values.removeValue(forKey: id)
+        } else {
+            values[id] = trimmed
+        }
+    }
+
+    func removeSecret(for id: String) {
+        values.removeValue(forKey: id)
+    }
 }
 
 private struct TestFailure: Error, CustomStringConvertible {

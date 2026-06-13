@@ -197,6 +197,12 @@ struct TasksTabView: View {
                 currentJobId = jobId
                 recordingStore.updateAsrJob(recordingId: recording.id, jobId: jobId, uploadProgress: 0, asrProgress: 0)
             },
+            onJobUpdate: { payload in
+                recordingStore.applyLongRecordingAsrJob(payload, fallbackRecordingId: recording.id)
+            },
+            onJobExpired: { recordingId in
+                recordingStore.updateAsrFailure(recordingId: recordingId, error: "ASR 任务已过期，请重新转写")
+            },
             onFailure: { clientMessageId, error in
                 recordingStore.updateAsrFailure(clientMessageId: clientMessageId, error: error)
             }
@@ -366,6 +372,11 @@ private struct RecordingDetailView: View {
     @State private var isAsrExpanded = false
     @State private var isProgressExpanded = false
     @State private var isMetadataExpanded = false
+    @State private var workflowActionError: String?
+    @State private var activeWorkflowActionTaskId: String?
+    @State private var editingWorkflowTask: RecordingExecutionTaskSnapshot?
+    @State private var isRedeliveringToAgent = false
+    @State private var deliveryActionError: String?
     @StateObject private var audioPlayer = RecordingAudioPlayer()
 
     init(
@@ -385,6 +396,15 @@ private struct RecordingDetailView: View {
 
     private var currentRecording: RecordingItem {
         store.items.first(where: { $0.id == recording.id }) ?? recording
+    }
+
+    private var recordingFileExists: Bool {
+        FileManager.default.fileExists(atPath: currentRecording.fileURL.path)
+    }
+
+    private var asrNeedsRetry: Bool {
+        currentRecording.processingStatus == .failed
+            && currentRecording.asrText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private var presentation: RecordingDetailPresentation {
@@ -408,6 +428,7 @@ private struct RecordingDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
             asrText = currentRecording.asrText
+            refreshWorkflowSnapshot()
         }
         .onChange(of: currentRecording.asrText) { value in
             if asrText != value {
@@ -431,6 +452,18 @@ private struct RecordingDetailView: View {
         }
         .sheet(item: $sharePayload) { payload in
             RecordingActivityView(activityItems: payload.items)
+        }
+        .sheet(item: $editingWorkflowTask) { task in
+            RecordingTaskEditorView(task: task, colors: colors) { prompt, executor, model, sources, maxAttempts in
+                updateTask(
+                    task,
+                    prompt: prompt,
+                    executorHint: executor,
+                    modelHint: model,
+                    sourceConstraints: sources,
+                    maxAttempts: maxAttempts
+                )
+            }
         }
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
@@ -485,7 +518,54 @@ private struct RecordingDetailView: View {
             Button {
                 typeSelectionContext = RecordingTypeSelectionContext(recording: currentRecording)
             } label: {
-                Label(currentRecording.recordingType == .audioOnly ? "选择录音类型" : "重新处理录音", systemImage: "arrow.triangle.2.circlepath")
+                Label(
+                    asrNeedsRetry
+                        ? "重新转写"
+                        : (currentRecording.recordingType == .audioOnly ? "选择录音类型" : "重新处理录音"),
+                    systemImage: "arrow.triangle.2.circlepath"
+                )
+            }
+            .disabled(!recordingFileExists)
+            if asrNeedsRetry && !recordingFileExists {
+                Text("本地录音文件已不存在，无法重新转写")
+                    .font(.system(size: 12))
+                    .foregroundColor(colors.recordingRed)
+            }
+            if let deliveryStatus = currentRecording.agentDeliveryStatus,
+               currentRecording.recordingType.sendsToAgent,
+               !currentRecording.asrText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                HStack {
+                    Label(deliveryStatus.label, systemImage: deliveryStatus == .delivered ? "checkmark.circle" : "paperplane")
+                    Spacer()
+                    if currentRecording.agentDeliveryAttempts > 0 {
+                        Text("尝试 \(currentRecording.agentDeliveryAttempts) 次")
+                            .foregroundColor(.secondary)
+                    }
+                }
+                .font(.system(size: 12))
+                if let error = currentRecording.agentDeliveryError, !error.isEmpty {
+                    Text(error)
+                        .font(.system(size: 12))
+                        .foregroundColor(colors.recordingRed)
+                }
+                if deliveryStatus.canRetry,
+                   currentRecording.agentDeliveryRetryable,
+                   currentRecording.asrJobId?.isEmpty == false {
+                    Button {
+                        redeliverToAgent()
+                    } label: {
+                        Label(
+                            isRedeliveringToAgent ? "正在重新发送..." : "重新发送给 Agent",
+                            systemImage: "paperplane.circle"
+                        )
+                    }
+                    .disabled(isRedeliveringToAgent)
+                }
+            }
+            if let deliveryActionError {
+                Text(deliveryActionError)
+                    .font(.system(size: 12))
+                    .foregroundColor(colors.recordingRed)
             }
         }
     }
@@ -500,9 +580,105 @@ private struct RecordingDetailView: View {
     }
 
     private var agentTasksSection: some View {
-        Section("Agent 可承接的待办") {
-            if presentation.agentTaskGroups.isEmpty {
-                Text("Agent 可执行的录音子任务会在这里拆分展示")
+        Section("Agent 执行任务") {
+            if let workflow = currentRecording.workflow {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text(workflow.title)
+                            .font(.system(size: 14, weight: .semibold))
+                        Spacer()
+                        Text(workflow.status.label)
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundColor(workflowStatusColor(workflow.status))
+                    }
+                    ProgressView(value: workflow.progress)
+                    Text(
+                        "成功 \(workflow.successfulTaskCount) · 降级 \(workflow.degradedTaskCount) · " +
+                        "失败 \(workflow.failedTaskCount) · 阻塞 \(workflow.blockedTaskCount)"
+                    )
+                        .font(.system(size: 12))
+                        .foregroundColor(.secondary)
+                    Text("\(workflow.completedTaskCount) / \(workflow.businessTaskCount) 项可用于报告")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                    if let summary = workflow.summary, !summary.isEmpty {
+                        Text(summary)
+                            .font(.system(size: 13))
+                    }
+                    ForEach(workflow.warnings ?? [], id: \.self) { warning in
+                        Label(warning, systemImage: "exclamationmark.triangle")
+                            .font(.system(size: 12))
+                            .foregroundColor(colors.recordingRed)
+                    }
+                    if let artifact = workflow.finalArtifact {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Label(artifact.filename, systemImage: "doc.richtext")
+                                .font(.system(size: 13, weight: .semibold))
+                            if let content = artifact.content, !content.isEmpty {
+                                Text(content)
+                                    .font(.system(size: 12))
+                                    .lineLimit(8)
+                                    .textSelection(.enabled)
+                            }
+                            if let reference = artifact.downloadUrl ?? artifact.retrievalRef,
+                               !reference.isEmpty {
+                                Text(reference)
+                                    .font(.system(size: 10, design: .monospaced))
+                                    .foregroundColor(.secondary)
+                                    .textSelection(.enabled)
+                            }
+                        }
+                    }
+                    if !workflow.status.isTerminal {
+                        HStack {
+                            if workflow.status == .paused {
+                                Button {
+                                    runWorkflowAction(.resume, workflow: workflow)
+                                } label: {
+                                    Label("恢复", systemImage: "play.circle")
+                                }
+                            } else {
+                                Button {
+                                    runWorkflowAction(.pause, workflow: workflow)
+                                } label: {
+                                    Label("暂停", systemImage: "pause.circle")
+                                }
+                            }
+                            Button {
+                                runWorkflowAction(.finalize, workflow: workflow)
+                            } label: {
+                                Label("立即生成报告", systemImage: "doc.badge.gearshape")
+                            }
+                        }
+                        Button(role: .destructive) {
+                            runWorkflowAction(.cancel, workflow: workflow)
+                        } label: {
+                            Label("立即终止", systemImage: "xmark.circle")
+                        }
+                    }
+                }
+                ForEach(workflow.tasks) { task in
+                    RecordingExecutionTaskRow(
+                        task: task,
+                        isActing: activeWorkflowActionTaskId == task.taskId,
+                        colors: colors,
+                        onAction: { action in
+                            runTaskAction(action, task: task, workflow: workflow)
+                        },
+                        onEdit: {
+                            editingWorkflowTask = task
+                        }
+                    )
+                }
+                if let workflowActionError {
+                    Text(workflowActionError)
+                        .font(.system(size: 12))
+                        .foregroundColor(colors.recordingRed)
+                }
+            } else if presentation.agentTaskGroups.isEmpty {
+                Text(wsManager.recordingExecutionSupported
+                     ? "等待 Agent 生成并提交执行计划"
+                     : "当前 Agent 未声明自动执行能力，继续显示兼容录音事件")
                     .foregroundColor(.secondary)
             } else {
                 ForEach(presentation.agentTaskGroups) { group in
@@ -522,6 +698,119 @@ private struct RecordingDetailView: View {
                     }
                 }
                 .padding(.vertical, 3)
+            }
+        }
+    }
+
+    private func workflowStatusColor(_ status: RecordingWorkflowStatus) -> Color {
+        switch status {
+        case .succeeded: return colors.onlineGreen
+        case .partial, .failed: return colors.recordingRed
+        case .cancelled: return .secondary
+        case .paused: return .secondary
+        case .planning, .running, .waitingApproval: return colors.primary
+        }
+    }
+
+    private func refreshWorkflowSnapshot() {
+        guard wsManager.recordingExecutionSupported, currentRecording.recordingType.sendsToAgent else { return }
+        Task {
+            guard let workflow = try? await wsManager.fetchRecordingWorkflow(recordingId: currentRecording.id) else {
+                return
+            }
+            await MainActor.run {
+                store.upsertWorkflow(workflow)
+            }
+        }
+    }
+
+    private func runTaskAction(
+        _ action: RecordingTaskAction,
+        task: RecordingExecutionTaskSnapshot,
+        workflow: RecordingWorkflowSnapshot
+    ) {
+        activeWorkflowActionTaskId = task.taskId
+        workflowActionError = nil
+        Task {
+            do {
+                let updated = try await wsManager.performRecordingTaskAction(
+                    workflowId: workflow.workflowId,
+                    taskId: task.taskId,
+                    action: action,
+                    expectedRevision: workflow.effectiveRevision
+                )
+                await MainActor.run {
+                    store.upsertWorkflow(updated)
+                    activeWorkflowActionTaskId = nil
+                }
+            } catch {
+                await MainActor.run {
+                    workflowActionError = error.localizedDescription
+                    activeWorkflowActionTaskId = nil
+                }
+            }
+        }
+    }
+
+    private func runWorkflowAction(
+        _ action: RecordingWorkflowAction,
+        workflow: RecordingWorkflowSnapshot
+    ) {
+        activeWorkflowActionTaskId = workflow.workflowId
+        workflowActionError = nil
+        Task {
+            do {
+                let updated = try await wsManager.performRecordingWorkflowAction(
+                    workflowId: workflow.workflowId,
+                    action: action,
+                    expectedRevision: workflow.effectiveRevision
+                )
+                await MainActor.run {
+                    store.upsertWorkflow(updated)
+                    activeWorkflowActionTaskId = nil
+                }
+            } catch {
+                await MainActor.run {
+                    workflowActionError = error.localizedDescription
+                    activeWorkflowActionTaskId = nil
+                }
+            }
+        }
+    }
+
+    private func updateTask(
+        _ task: RecordingExecutionTaskSnapshot,
+        prompt: String,
+        executorHint: String?,
+        modelHint: String?,
+        sourceConstraints: [String],
+        maxAttempts: Int
+    ) {
+        guard let workflow = currentRecording.workflow else { return }
+        activeWorkflowActionTaskId = task.taskId
+        workflowActionError = nil
+        Task {
+            do {
+                let updated = try await wsManager.updateRecordingTask(
+                    workflowId: workflow.workflowId,
+                    taskId: task.taskId,
+                    expectedRevision: workflow.effectiveRevision,
+                    prompt: prompt,
+                    executorHint: executorHint,
+                    modelHint: modelHint,
+                    sourceConstraints: sourceConstraints,
+                    maxAttempts: maxAttempts
+                )
+                await MainActor.run {
+                    store.upsertWorkflow(updated)
+                    editingWorkflowTask = nil
+                    activeWorkflowActionTaskId = nil
+                }
+            } catch {
+                await MainActor.run {
+                    workflowActionError = error.localizedDescription
+                    activeWorkflowActionTaskId = nil
+                }
             }
         }
     }
@@ -610,6 +899,12 @@ private struct RecordingDetailView: View {
                 if let error = currentRecording.asrError, !error.isEmpty {
                     RecordingMetadataRow(title: "错误", value: error)
                 }
+                if let deliveryStatus = currentRecording.agentDeliveryStatus {
+                    RecordingMetadataRow(title: "Agent 投递", value: deliveryStatus.label)
+                }
+                if let deliveryError = currentRecording.agentDeliveryError, !deliveryError.isEmpty {
+                    RecordingMetadataRow(title: "投递错误", value: deliveryError)
+                }
                 RecordingMetadataRow(
                     title: "文件",
                     value: currentRecording.fileURL.lastPathComponent,
@@ -684,6 +979,12 @@ private struct RecordingDetailView: View {
                 currentJobId = jobId
                 store.updateAsrJob(recordingId: recording.id, jobId: jobId, uploadProgress: 0, asrProgress: 0)
             },
+            onJobUpdate: { payload in
+                store.applyLongRecordingAsrJob(payload, fallbackRecordingId: recording.id)
+            },
+            onJobExpired: { recordingId in
+                store.updateAsrFailure(recordingId: recordingId, error: "ASR 任务已过期，请重新转写")
+            },
             onFailure: { clientMessageId, error in
                 store.updateAsrFailure(clientMessageId: clientMessageId, error: error)
             }
@@ -694,6 +995,308 @@ private struct RecordingDetailView: View {
             prompt: prompt,
             clientMessageId: clientMessageId
         )
+    }
+
+    private func redeliverToAgent() {
+        guard let jobId = currentRecording.asrJobId, !jobId.isEmpty else { return }
+        isRedeliveringToAgent = true
+        deliveryActionError = nil
+        Task {
+            do {
+                let payload = try await wsManager.redeliverLongRecordingAsrJob(jobId: jobId)
+                await MainActor.run {
+                    store.applyLongRecordingAsrJob(payload, fallbackRecordingId: currentRecording.id)
+                    isRedeliveringToAgent = false
+                    wsManager.monitorLongRecordingAsrJob(jobId: jobId) { payload in
+                        store.applyLongRecordingAsrJob(payload, fallbackRecordingId: currentRecording.id)
+                    } onExpired: {
+                        store.updateAsrFailure(recordingId: currentRecording.id, error: "ASR 任务已过期，请重新转写")
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    deliveryActionError = error.localizedDescription
+                    isRedeliveringToAgent = false
+                }
+            }
+        }
+    }
+}
+
+private struct RecordingExecutionTaskRow: View {
+    let task: RecordingExecutionTaskSnapshot
+    let isActing: Bool
+    let colors: MochiColors
+    let onAction: (RecordingTaskAction) -> Void
+    let onEdit: () -> Void
+
+    private var statusColor: Color {
+        switch task.status {
+        case .succeeded: return colors.onlineGreen
+        case .degraded: return .orange
+        case .failed, .blocked: return colors.recordingRed
+        case .cancelled, .paused: return .secondary
+        case .planned, .queued, .running, .waitingApproval: return colors.primary
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                HStack(spacing: 5) {
+                    Text(task.title)
+                        .font(.system(size: 14, weight: .semibold))
+                    if task.systemKind == "summary" {
+                        Text("最终汇总")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundColor(.secondary)
+                    }
+                }
+                Spacer()
+                Text(task.status.label)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(statusColor)
+            }
+            Text(task.prompt)
+                .font(.system(size: 13))
+                .foregroundColor(.secondary)
+            HStack(spacing: 12) {
+                Text("尝试 \(task.attempt)/\(task.maxAttempts)")
+                if !task.dependsOn.isEmpty {
+                    Text("依赖 \(task.dependsOn.joined(separator: ", "))")
+                }
+            }
+            .font(.system(size: 11))
+            .foregroundColor(.secondary)
+            HStack(spacing: 10) {
+                if let criticality = task.criticality {
+                    Text("级别 \(criticality)")
+                }
+                if let policy = task.dependencyPolicy {
+                    Text("依赖策略 \(policy)")
+                }
+                if let confidence = task.confidence {
+                    Text("置信度 \(Int(confidence * 100))%")
+                }
+            }
+            .font(.system(size: 10))
+            .foregroundColor(.secondary)
+            if let executor = task.executorHint, !executor.isEmpty {
+                Text("执行器：\(executor)")
+                    .font(.system(size: 10))
+                    .foregroundColor(.secondary)
+            }
+            if let model = task.modelHint, !model.isEmpty {
+                Text("模型：\(model)")
+                    .font(.system(size: 10))
+                    .foregroundColor(.secondary)
+            }
+            if let sources = task.sourceConstraints, !sources.isEmpty {
+                Text("来源约束：\(sources.joined(separator: "、"))")
+                    .font(.system(size: 10))
+                    .foregroundColor(.secondary)
+            }
+
+            if let result = task.resultSummary, !result.isEmpty {
+                Text(result)
+                    .font(.system(size: 13))
+            }
+            if let error = task.lastError, !error.isEmpty {
+                Text(error)
+                    .font(.system(size: 12))
+                    .foregroundColor(colors.recordingRed)
+            }
+            if let riskReason = task.riskReason, !riskReason.isEmpty {
+                Label(riskReason, systemImage: "exclamationmark.shield")
+                    .font(.system(size: 12))
+                    .foregroundColor(colors.primary)
+            }
+            ForEach(task.warnings ?? [], id: \.self) { warning in
+                Label(warning, systemImage: "exclamationmark.triangle")
+                    .font(.system(size: 12))
+                    .foregroundColor(.orange)
+            }
+            if let blockers = task.blockingTaskIds, !blockers.isEmpty {
+                Label("阻塞来源：\(blockers.joined(separator: ", "))", systemImage: "link.badge.plus")
+                    .font(.system(size: 12))
+                    .foregroundColor(colors.recordingRed)
+            }
+            if !task.evidence.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("证据")
+                        .font(.system(size: 12, weight: .semibold))
+                    ForEach(task.evidence) { evidence in
+                        Text(evidenceText(evidence))
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundColor(.secondary)
+                            .textSelection(.enabled)
+                    }
+                }
+            }
+            if !task.artifacts.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("产物")
+                        .font(.system(size: 12, weight: .semibold))
+                    ForEach(task.artifacts) { artifact in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Label(artifact.filename, systemImage: "doc")
+                            if let path = artifact.backendPath, !path.isEmpty {
+                                Text(path)
+                                    .font(.system(size: 10, design: .monospaced))
+                                    .foregroundColor(.secondary)
+                                    .textSelection(.enabled)
+                            }
+                            if let sha256 = artifact.sha256, !sha256.isEmpty {
+                                Text("SHA256 \(sha256)")
+                                    .font(.system(size: 10, design: .monospaced))
+                                    .foregroundColor(.secondary)
+                                    .textSelection(.enabled)
+                            }
+                        }
+                        .font(.system(size: 12))
+                    }
+                }
+            }
+
+            if isActing {
+                ProgressView()
+            } else {
+                if isEditable {
+                    Button {
+                        onEdit()
+                    } label: {
+                        Label("编辑任务", systemImage: "slider.horizontal.3")
+                    }
+                }
+                actionButtons
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    @ViewBuilder
+    private var actionButtons: some View {
+        if supportedActions.isEmpty {
+            EmptyView()
+        } else {
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(supportedActions, id: \.rawValue) { action in
+                    Button(role: action == .reject || action == .cancel ? .destructive : nil) {
+                        onAction(action)
+                    } label: {
+                        Label(action.label, systemImage: action.systemImage)
+                    }
+                }
+            }
+        }
+    }
+
+    private var supportedActions: [RecordingTaskAction] {
+        let advertised = (task.availableActions ?? []).compactMap { value in
+            RecordingTaskAction(rawValue: value.replacingOccurrences(of: "_", with: "-"))
+        }
+        if !advertised.isEmpty { return advertised }
+        switch task.status {
+        case .waitingApproval: return [.approve, .reject, .skip]
+        case .failed, .degraded: return [.retry, .skip]
+        case .blocked: return [.retryBlockers, .skip]
+        case .cancelled: return [.reopen, .skip]
+        case .running, .queued: return [.cancel]
+        case .planned, .paused, .succeeded: return []
+        }
+    }
+
+    private var isEditable: Bool {
+        task.systemKind != "summary" && ![.running, .succeeded, .degraded].contains(task.status)
+    }
+
+    private func evidenceText(_ evidence: RecordingTaskEvidence) -> String {
+        var parts = [evidence.description]
+        if let path = evidence.path, !path.isEmpty { parts.append(path) }
+        if let exitCode = evidence.exitCode { parts.append("exit=\(exitCode)") }
+        if let passed = evidence.passed { parts.append(passed ? "passed" : "failed") }
+        if let receiptId = evidence.receiptId, !receiptId.isEmpty { parts.append("receipt=\(receiptId)") }
+        if let url = evidence.url, !url.isEmpty { parts.append(url) }
+        if evidence.verified == false { parts.append("未验证") }
+        return parts.joined(separator: " · ")
+    }
+}
+
+private struct RecordingTaskEditorView: View {
+    let task: RecordingExecutionTaskSnapshot
+    let colors: MochiColors
+    let onSave: (String, String?, String?, [String], Int) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var prompt: String
+    @State private var executorHint: String
+    @State private var modelHint: String
+    @State private var sourceConstraints: String
+    @State private var maxAttempts: Int
+
+    init(
+        task: RecordingExecutionTaskSnapshot,
+        colors: MochiColors,
+        onSave: @escaping (String, String?, String?, [String], Int) -> Void
+    ) {
+        self.task = task
+        self.colors = colors
+        self.onSave = onSave
+        _prompt = State(initialValue: task.prompt)
+        _executorHint = State(initialValue: task.executorHint ?? "")
+        _modelHint = State(initialValue: task.modelHint ?? "")
+        _sourceConstraints = State(initialValue: (task.sourceConstraints ?? []).joined(separator: ", "))
+        _maxAttempts = State(initialValue: min(2, max(1, task.maxAttempts)))
+    }
+
+    var body: some View {
+        NavigationView {
+            Form {
+                Section("任务") {
+                    Text(task.title)
+                    TextEditor(text: $prompt)
+                        .frame(minHeight: 140)
+                }
+                Section("执行约束") {
+                    TextField("执行器，例如 hermes", text: $executorHint)
+                    TextField("模型名称", text: $modelHint)
+                    TextField("来源约束，逗号分隔", text: $sourceConstraints)
+                    Picker("最多执行次数", selection: $maxAttempts) {
+                        Text("1 次").tag(1)
+                        Text("2 次").tag(2)
+                    }
+                }
+                Text("已完成任务不可修改；本次保存会创建新的 workflow revision。")
+                    .font(.system(size: 12))
+                    .foregroundColor(.secondary)
+            }
+            .navigationTitle("编辑任务")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("保存") {
+                        onSave(
+                            prompt.trimmingCharacters(in: .whitespacesAndNewlines),
+                            nilIfBlank(executorHint),
+                            nilIfBlank(modelHint),
+                            sourceConstraints
+                                .split(separator: ",")
+                                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                                .filter { !$0.isEmpty },
+                            maxAttempts
+                        )
+                    }
+                    .disabled(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+        }
+    }
+
+    private func nilIfBlank(_ value: String) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 }
 

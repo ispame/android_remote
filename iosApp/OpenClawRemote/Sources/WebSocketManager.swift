@@ -23,16 +23,20 @@ private struct PendingAudioContext {
     let recordingPrompt: String?
 }
 
-private enum LongRecordingUploadError: Error {
+private enum LongRecordingUploadError: Error, LocalizedError {
     case invalidResponse(String)
-    case server(String)
+    case httpStatus(Int, String)
 
     var message: String {
         switch self {
-        case .invalidResponse(let message), .server(let message):
+        case .invalidResponse(let message):
+            return message
+        case .httpStatus(_, let message):
             return message
         }
     }
+
+    var errorDescription: String? { message }
 }
 
 func shouldDropAsrFailureMessage(_ error: String?) -> Bool {
@@ -62,6 +66,7 @@ final class WebSocketManager: ObservableObject {
     @Published private(set) var historyLoaded = false
     @Published private(set) var unreadCounts: [String: Int] = [:]
     @Published private(set) var agentListActivities: [String: AgentListActivity] = [:]
+    @Published private(set) var recordingExecutionSupported = false
 
     private let messageSubject = PassthroughSubject<WsMessageEvent, Never>()
     var messageChannel: AnyPublisher<WsMessageEvent, Never> {
@@ -75,6 +80,8 @@ final class WebSocketManager: ObservableObject {
     private var profileIdsByBackendId: [String: String] = [:]
     private var pendingHistoryProfileId: String?
     private var pendingAudioContextsByClientMessageId: [String: PendingAudioContext] = [:]
+    private var longRecordingJobTasks: [String: Task<Void, Never>] = [:]
+    private var longRecordingJobTaskIds: [String: UUID] = [:]
 
     private var accountId: String?
     private var registeredBackendId: String?
@@ -293,6 +300,126 @@ final class WebSocketManager: ObservableObject {
         self.accessToken = accessToken
     }
 
+    func fetchRecordingWorkflow(recordingId: String) async throws -> RecordingWorkflowSnapshot {
+        guard let baseURL = recordingApiBaseURL() else {
+            throw LongRecordingUploadError.invalidResponse("录音工作流服务地址无效")
+        }
+        let json = try await sendLongRecordingJsonRequest(
+            url: apiURL(baseURL, "api", "recordings", recordingId, "workflow"),
+            method: "GET",
+            body: [:]
+        )
+        guard let workflowJson = json["workflow"] as? [String: Any],
+              let workflow = RecordingWorkflowSnapshot(json: workflowJson) else {
+            throw LongRecordingUploadError.invalidResponse("录音工作流快照无效")
+        }
+        return workflow
+    }
+
+    func performRecordingTaskAction(
+        workflowId: String,
+        taskId: String,
+        action: RecordingTaskAction,
+        expectedRevision: Int,
+        idempotencyKey: String = UUID().uuidString
+    ) async throws -> RecordingWorkflowSnapshot {
+        guard let baseURL = recordingApiBaseURL() else {
+            throw LongRecordingUploadError.invalidResponse("录音工作流服务地址无效")
+        }
+        let json = try await sendLongRecordingJsonRequest(
+            url: apiURL(
+                baseURL,
+                "api",
+                "recording-workflows",
+                workflowId,
+                "tasks",
+                taskId,
+                action.rawValue
+            ),
+            method: "POST",
+            body: [
+                "expected_revision": expectedRevision,
+                "idempotency_key": idempotencyKey
+            ]
+        )
+        guard let workflowJson = json["workflow"] as? [String: Any],
+              let workflow = RecordingWorkflowSnapshot(json: workflowJson) else {
+            throw LongRecordingUploadError.invalidResponse("录音工作流操作响应无效")
+        }
+        return workflow
+    }
+
+    func performRecordingWorkflowAction(
+        workflowId: String,
+        action: RecordingWorkflowAction,
+        expectedRevision: Int,
+        idempotencyKey: String = UUID().uuidString
+    ) async throws -> RecordingWorkflowSnapshot {
+        guard let baseURL = recordingApiBaseURL() else {
+            throw LongRecordingUploadError.invalidResponse("录音工作流服务地址无效")
+        }
+        let json = try await sendLongRecordingJsonRequest(
+            url: apiURL(baseURL, "api", "recording-workflows", workflowId, action.rawValue),
+            method: "POST",
+            body: [
+                "expected_revision": expectedRevision,
+                "idempotency_key": idempotencyKey
+            ]
+        )
+        guard let workflowJson = json["workflow"] as? [String: Any],
+              let workflow = RecordingWorkflowSnapshot(json: workflowJson) else {
+            throw LongRecordingUploadError.invalidResponse("录音工作流操作响应无效")
+        }
+        return workflow
+    }
+
+    func updateRecordingTask(
+        workflowId: String,
+        taskId: String,
+        expectedRevision: Int,
+        prompt: String,
+        executorHint: String?,
+        modelHint: String?,
+        sourceConstraints: [String],
+        maxAttempts: Int,
+        idempotencyKey: String = UUID().uuidString
+    ) async throws -> RecordingWorkflowSnapshot {
+        guard let baseURL = recordingApiBaseURL() else {
+            throw LongRecordingUploadError.invalidResponse("录音工作流服务地址无效")
+        }
+        let json = try await sendLongRecordingJsonRequest(
+            url: apiURL(baseURL, "api", "recording-workflows", workflowId, "tasks", taskId),
+            method: "PUT",
+            body: [
+                "expected_revision": expectedRevision,
+                "idempotency_key": idempotencyKey,
+                "prompt": prompt,
+                "executor_hint": executorHint ?? NSNull(),
+                "model_hint": modelHint ?? NSNull(),
+                "source_constraints": sourceConstraints,
+                "max_attempts": maxAttempts
+            ]
+        )
+        guard let workflowJson = json["workflow"] as? [String: Any],
+              let workflow = RecordingWorkflowSnapshot(json: workflowJson) else {
+            throw LongRecordingUploadError.invalidResponse("录音工作流编辑响应无效")
+        }
+        return workflow
+    }
+
+    func cancelRecordingWorkflow(
+        workflowId: String,
+        expectedRevision: Int,
+        idempotencyKey: String = UUID().uuidString
+    ) async throws -> RecordingWorkflowSnapshot {
+        try await performRecordingWorkflowAction(
+            workflowId: workflowId,
+            action: .cancel,
+            expectedRevision: expectedRevision,
+            idempotencyKey: idempotencyKey
+        )
+    }
+
     func restorePairing(backendId: String?, backendLabel: String?) {
         preferredBackendId = backendId
         preferredBackendLabel = backendLabel
@@ -335,6 +462,9 @@ final class WebSocketManager: ObservableObject {
         persistActiveRuntimeState()
         intentionalDisconnect = true
         cancelReconnect()
+        longRecordingJobTasks.values.forEach { $0.cancel() }
+        longRecordingJobTasks.removeAll()
+        longRecordingJobTaskIds.removeAll()
         socketGeneration += 1
         webSocketTask?.cancel(with: .normalClosure, reason: nil)
         webSocketTask = nil
@@ -576,6 +706,8 @@ final class WebSocketManager: ObservableObject {
         prompt: String,
         onUploadProgress: ((String, Double) -> Void)? = nil,
         onJobCreated: ((String, String) -> Void)? = nil,
+        onJobUpdate: ((LongRecordingAsrJobStatusPayload) -> Void)? = nil,
+        onJobExpired: ((String) -> Void)? = nil,
         onFailure: ((String, String) -> Void)? = nil
     ) -> String? {
         let state = profileId == activeProfileId
@@ -585,6 +717,15 @@ final class WebSocketManager: ObservableObject {
         guard let baseURL = recordingApiBaseURL() else { return nil }
 
         let clientMessageId = UUID().uuidString
+        do {
+            _ = try LongRecordingAudioValidator.validate(fileURL: fileURL)
+        } catch {
+            let message = (error as? LongRecordingAudioValidationError)?.message ?? error.localizedDescription
+            DispatchQueue.main.async {
+                onFailure?(clientMessageId, message)
+            }
+            return clientMessageId
+        }
         let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         let msg = ChatMessage(
             content: "录音上传中...",
@@ -615,39 +756,101 @@ final class WebSocketManager: ObservableObject {
                 settings: settings,
                 onUploadProgress: onUploadProgress,
                 onJobCreated: onJobCreated,
+                onJobUpdate: onJobUpdate,
+                onJobExpired: onJobExpired,
                 onFailure: onFailure
             )
         }
         return clientMessageId
     }
 
-    func fetchLongRecordingAsrJob(
+    func monitorLongRecordingAsrJob(
         jobId: String,
-        completion: @escaping (LongRecordingAsrJobStatusPayload?) -> Void
+        onUpdate: @escaping (LongRecordingAsrJobStatusPayload) -> Void,
+        onExpired: @escaping () -> Void
     ) {
-        guard let baseURL = recordingApiBaseURL() else {
-            completion(nil)
-            return
-        }
-        Task { [weak self] in
+        guard longRecordingJobTasks[jobId] == nil else { return }
+        let taskId = UUID()
+        let task = Task { [weak self] in
             guard let self else { return }
-            do {
-                let json = try await sendLongRecordingJsonRequest(
-                    url: apiURL(baseURL, "api", "recordings", "asr-jobs", jobId),
-                    method: "GET",
-                    body: [:]
-                )
-                guard let payload = LongRecordingAsrJobStatusPayload(json: json) else {
-                    throw LongRecordingUploadError.invalidResponse("ASR Job 响应格式错误")
-                }
-                DispatchQueue.main.async {
-                    completion(payload)
-                }
-            } catch {
-                DispatchQueue.main.async {
-                    completion(nil)
+            defer {
+                DispatchQueue.main.async { [weak self] in
+                    guard self?.longRecordingJobTaskIds[jobId] == taskId else { return }
+                    self?.longRecordingJobTasks.removeValue(forKey: jobId)
+                    self?.longRecordingJobTaskIds.removeValue(forKey: jobId)
                 }
             }
+            var delaySeconds: UInt64 = 3
+            while !Task.isCancelled {
+                do {
+                    let payload = try await fetchLongRecordingAsrJob(jobId: jobId)
+                    await MainActor.run {
+                        onUpdate(payload)
+                    }
+                    if payload.status == "failed" || isLongRecordingDeliveryTerminal(payload) {
+                        return
+                    }
+                } catch let error as LongRecordingUploadError {
+                    if case .httpStatus(let statusCode, _) = error, statusCode == 404 {
+                        await MainActor.run {
+                            onExpired()
+                        }
+                        return
+                    }
+                } catch {
+                    // Transient polling failures keep the durable job active.
+                }
+                do {
+                    try await Task.sleep(nanoseconds: delaySeconds * 1_000_000_000)
+                } catch {
+                    return
+                }
+                delaySeconds = min(delaySeconds + 3, 15)
+            }
+        }
+        longRecordingJobTasks[jobId] = task
+        longRecordingJobTaskIds[jobId] = taskId
+    }
+
+    private func fetchLongRecordingAsrJob(jobId: String) async throws -> LongRecordingAsrJobStatusPayload {
+        guard let baseURL = recordingApiBaseURL() else {
+            throw LongRecordingUploadError.invalidResponse("无法生成 ASR Job 查询地址")
+        }
+        let json = try await sendLongRecordingJsonRequest(
+            url: apiURL(baseURL, "api", "recordings", "asr-jobs", jobId),
+            method: "GET",
+            body: [:]
+        )
+        guard let payload = LongRecordingAsrJobStatusPayload(json: json) else {
+            throw LongRecordingUploadError.invalidResponse("ASR Job 响应格式错误")
+        }
+        return payload
+    }
+
+    func redeliverLongRecordingAsrJob(jobId: String) async throws -> LongRecordingAsrJobStatusPayload {
+        guard let baseURL = recordingApiBaseURL() else {
+            throw LongRecordingUploadError.invalidResponse("无法生成 ASR Job 重发地址")
+        }
+        let json = try await sendLongRecordingJsonRequest(
+            url: apiURL(baseURL, "api", "recordings", "asr-jobs", jobId, "deliver"),
+            method: "POST",
+            body: [:]
+        )
+        guard let payload = LongRecordingAsrJobStatusPayload(json: json) else {
+            throw LongRecordingUploadError.invalidResponse("ASR Job 重发响应格式错误")
+        }
+        return payload
+    }
+
+    private func isLongRecordingDeliveryTerminal(_ payload: LongRecordingAsrJobStatusPayload) -> Bool {
+        guard payload.status == "completed" else { return false }
+        switch payload.deliveryStatus {
+        case nil, "not_required", "delivered":
+            return true
+        case "failed":
+            return true
+        default:
+            return false
         }
     }
 
@@ -714,10 +917,12 @@ final class WebSocketManager: ObservableObject {
         settings: RecordingSettings,
         onUploadProgress: ((String, Double) -> Void)?,
         onJobCreated: ((String, String) -> Void)?,
+        onJobUpdate: ((LongRecordingAsrJobStatusPayload) -> Void)?,
+        onJobExpired: ((String) -> Void)?,
         onFailure: ((String, String) -> Void)?
     ) async {
         do {
-            let fileSize = try fileSize(at: fileURL)
+            let fileSize = try LongRecordingAudioValidator.validate(fileURL: fileURL).fileSize
             let sha256 = try sha256Hex(fileURL: fileURL)
             let createRequest = LongRecordingAsrJobRequest(
                 recordingId: recordingId,
@@ -757,6 +962,13 @@ final class WebSocketManager: ObservableObject {
                 method: "POST",
                 body: [:]
             )
+            await MainActor.run {
+                monitorLongRecordingAsrJob(jobId: jobId) { payload in
+                    onJobUpdate?(payload)
+                } onExpired: {
+                    onJobExpired?(recordingId)
+                }
+            }
         } catch {
             let message = (error as? LongRecordingUploadError)?.message ?? error.localizedDescription
             DispatchQueue.main.async {
@@ -829,7 +1041,7 @@ final class WebSocketManager: ObservableObject {
             } else {
                 message = "HTTP \(http.statusCode)"
             }
-            throw LongRecordingUploadError.server(message)
+            throw LongRecordingUploadError.httpStatus(http.statusCode, message)
         }
     }
 
@@ -855,14 +1067,6 @@ final class WebSocketManager: ObservableObject {
         pathComponents.reduce(baseURL) { url, component in
             url.appendingPathComponent(component)
         }
-    }
-
-    private func fileSize(at url: URL) throws -> Int {
-        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
-        guard let size = attributes[.size] as? NSNumber else {
-            throw LongRecordingUploadError.invalidResponse("无法读取录音文件大小")
-        }
-        return size.intValue
     }
 
     private func sha256Hex(fileURL: URL) throws -> String {
@@ -1082,6 +1286,11 @@ final class WebSocketManager: ObservableObject {
                 if success {
                     self.accountId = json["account_id"] as? String ?? self.accountId
                     self.connectionState = .registered
+                    if let capabilities = json["capabilities"] as? [String: Any] {
+                        self.recordingExecutionSupported = capabilities["recording_execution_v1"] as? Bool ?? false
+                    } else {
+                        self.recordingExecutionSupported = false
+                    }
                     self.reconnectAttempts = 0
                     self.cancelReconnect()
                     let pairedBackends = (json["paired_backends"] as? [[String: Any]] ?? [])
@@ -1121,6 +1330,12 @@ final class WebSocketManager: ObservableObject {
             case "recording_event":
                 if let payload = RecordingEventPayload(json: json) {
                     self.messageSubject.send(.recordingEvent(payload))
+                }
+
+            case "recording_workflow_update":
+                if let workflowJson = json["workflow"] as? [String: Any],
+                   let workflow = RecordingWorkflowSnapshot(json: workflowJson) {
+                    self.messageSubject.send(.recordingWorkflowUpdate(workflow))
                 }
 
             case "history_response":
@@ -1591,6 +1806,48 @@ enum WsMessageEvent {
     case approvalHistoryResponse(ApprovalHistoryResponsePayload)
     case asrResult(ASRResultEventPayload)
     case recordingEvent(RecordingEventPayload)
+    case recordingWorkflowUpdate(RecordingWorkflowSnapshot)
     case sessionPreempted(replacementTerminalLabel: String?)
     case error(code: String, message: String)
+}
+
+enum RecordingTaskAction: String {
+    case approve
+    case reject
+    case retry
+    case cancel
+    case reopen
+    case skip
+    case retryBlockers = "retry-blockers"
+
+    var label: String {
+        switch self {
+        case .approve: return "批准"
+        case .reject: return "拒绝"
+        case .retry: return "重试任务"
+        case .cancel: return "取消本次执行"
+        case .reopen: return "重新打开"
+        case .skip: return "跳过并带缺口继续"
+        case .retryBlockers: return "修复并重试阻塞链"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .approve: return "checkmark.circle"
+        case .reject: return "xmark.circle"
+        case .retry: return "arrow.clockwise"
+        case .cancel: return "pause.circle"
+        case .reopen: return "arrow.uturn.backward.circle"
+        case .skip: return "forward.end.circle"
+        case .retryBlockers: return "link.badge.plus"
+        }
+    }
+}
+
+enum RecordingWorkflowAction: String {
+    case pause
+    case resume
+    case cancel
+    case finalize
 }

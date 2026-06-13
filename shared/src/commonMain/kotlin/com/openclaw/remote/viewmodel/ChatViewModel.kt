@@ -6,6 +6,7 @@ import com.openclaw.remote.data.AgentProfilesState
 import com.openclaw.remote.data.ChatMessage
 import com.openclaw.remote.data.GatewayConfig
 import com.openclaw.remote.data.MessageStatus
+import com.openclaw.remote.data.RecordingWorkflow
 import com.openclaw.remote.data.SettingsManager
 import com.openclaw.remote.domain.ConnectionState
 import com.openclaw.remote.domain.PairingState
@@ -13,6 +14,7 @@ import com.openclaw.remote.network.AuthRecoveryAction
 import com.openclaw.remote.network.WebSocketManager
 import com.openclaw.remote.network.WsMessageEvent
 import com.openclaw.remote.network.authRecoveryActionForWsError
+import com.openclaw.remote.network.isNotPairedRouterError
 import com.openclaw.remote.network.isTerminalAuthError
 import com.openclaw.remote.network.shouldRefreshAccessToken
 import kotlinx.coroutines.*
@@ -55,6 +57,16 @@ class ChatViewModel(
 
     private val _authNotice = MutableStateFlow<String?>(null)
     val authNotice: StateFlow<String?> = _authNotice.asStateFlow()
+
+    private val _latestRecordingWorkflow = MutableStateFlow<RecordingWorkflow?>(null)
+    val latestRecordingWorkflow: StateFlow<RecordingWorkflow?> = _latestRecordingWorkflow.asStateFlow()
+
+    private val _recordingEvents = MutableSharedFlow<WsMessageEvent.RecordingEventReceived>(extraBufferCapacity = 16)
+    val recordingEvents: SharedFlow<WsMessageEvent.RecordingEventReceived> = _recordingEvents.asSharedFlow()
+
+    private val _longRecordingAsrStatuses = MutableSharedFlow<WsMessageEvent.LongRecordingAsrStatusReceived>(extraBufferCapacity = 16)
+    val longRecordingAsrStatuses: SharedFlow<WsMessageEvent.LongRecordingAsrStatusReceived> =
+        _longRecordingAsrStatuses.asSharedFlow()
 
     private val _authRecoveryRequests = MutableSharedFlow<AuthRecoveryRequest>(extraBufferCapacity = 1)
     val authRecoveryRequests: SharedFlow<AuthRecoveryRequest> = _authRecoveryRequests.asSharedFlow()
@@ -299,6 +311,15 @@ class ChatViewModel(
                             }
                             updateProfileState(profileId) { currentState.copy(messages = updatedMessages) }
                         }
+                        is WsMessageEvent.RecordingWorkflowUpdate -> {
+                            _latestRecordingWorkflow.value = event.workflow
+                        }
+                        is WsMessageEvent.RecordingEventReceived -> {
+                            _recordingEvents.emit(event)
+                        }
+                        is WsMessageEvent.LongRecordingAsrStatusReceived -> {
+                            _longRecordingAsrStatuses.emit(event)
+                        }
                         is WsMessageEvent.Unpaired -> {
                             val profileId = resolveProfileIdForBackendId(
                                 profiles = _profiles.value,
@@ -370,6 +391,14 @@ class ChatViewModel(
                                 }
                                 AuthRecoveryAction.NONE -> Unit
                             }
+                            if (isNotPairedRouterError(event.code)) {
+                                val profileId = managerProfileId.takeIf { it.isNotBlank() } ?: _selectedProfileId.value
+                                clearProfilePairing(profileId)
+                                viewModelScope.launch {
+                                    settingsManager.updatePairedBackend(null, null, profileId)
+                                }
+                                return@collect
+                            }
                             appendMessageToProfile(
                                 managerProfileId,
                                 ChatMessage(
@@ -402,6 +431,10 @@ class ChatViewModel(
                 reconnectIfNeeded(config)
             }
         }
+    }
+
+    fun applyRecordingWorkflow(workflow: RecordingWorkflow) {
+        _latestRecordingWorkflow.value = workflow
     }
 
     fun requestPair(backendId: String) {
@@ -573,6 +606,23 @@ class ChatViewModel(
         profileStates[profileId] = updated
         if (profileId == _selectedProfileId.value) {
             loadRuntimeState(profileId)
+        }
+    }
+
+    private fun clearProfilePairing(profileId: String) {
+        updateProfileState(profileId) { state ->
+            val nextConnectionState = if (state.connectionState == ConnectionState.DISCONNECTED) {
+                ConnectionState.DISCONNECTED
+            } else {
+                ConnectionState.REGISTERED
+            }
+            state.copy(
+                registeredBackendId = null,
+                pairedBackendLabel = null,
+                pairingState = PairingState.UNPAIRED,
+                connectionState = nextConnectionState,
+                loadedHistoryKeys = emptySet(),
+            )
         }
     }
 

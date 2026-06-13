@@ -231,30 +231,15 @@ struct SettingsTopBarView: View {
 
 private struct AdvancedSettingsDraft: Equatable {
     var deviceLabel: String
-    var asrMode: String
-    var asrProfileId: String
 
     init(config: GatewayConfig) {
         deviceLabel = config.deviceLabel
-        asrMode = config.asrMode == "backend" ? "backend" : "router"
-        asrProfileId = asrMode == "router" ? config.asrProfileId : ""
     }
 
     var normalizedDeviceLabel: String {
         let trimmed = deviceLabel.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? "我的设备" : trimmed
     }
-
-    var savedAsrProfileId: String {
-        asrMode == "router" ? asrProfileId.trimmingCharacters(in: .whitespacesAndNewlines) : ""
-    }
-}
-
-private enum AsrProviderLoadState: Equatable {
-    case idle
-    case loading
-    case loaded([AsrProviderProfile])
-    case failed(String)
 }
 
 private struct AdvancedInfoRow: View {
@@ -294,8 +279,6 @@ struct SettingsScreenView: View {
     let onSelectProfile: (String) -> Void
 
     @State private var draft: AdvancedSettingsDraft
-    @State private var asrProviderLoadState: AsrProviderLoadState = .idle
-    @State private var loadedAsrGatewayUrl = ""
     @State private var statusMessage: String?
 
     init(
@@ -364,24 +347,11 @@ struct SettingsScreenView: View {
             }
 
             Section(
-                header: Text("语音识别"),
-                footer: Text(draft.asrMode == "router" ? "Router 会先转写音频，再把文本发给 Agent。" : "音频会直接交给 Agent，由 Agent 后端自行识别。")
+                header: Text("AI 服务"),
+                footer: Text("LLM、ASR、TTS 的 Router / BYOK / Agent 配置统一在 AI 服务页管理。")
             ) {
-                Picker("语音识别", selection: $draft.asrMode) {
-                    Text("Router 识别").tag("router")
-                    Text("Agent 识别").tag("backend")
-                }
-                .pickerStyle(.segmented)
-
-                if draft.asrMode == "router" {
-                    asrProviderPicker
-
-                    Button {
-                        loadAsrProfiles(force: true)
-                    } label: {
-                        Label("刷新模型列表", systemImage: "arrow.clockwise")
-                    }
-                }
+                AdvancedInfoRow(title: "AI 服务", value: aiServiceSummary)
+                AIServiceNavigationLink(settingsManager: settingsManager, colors: colors)
             }
 
             Section {
@@ -404,70 +374,14 @@ struct SettingsScreenView: View {
         .background(colors.background)
         .onAppear {
             syncDraftFromSettings()
-            loadAsrProfiles(force: false)
         }
         .onChange(of: settingsManager.selectedProfileId) { _ in
             syncDraftFromSettings()
-            loadAsrProfiles(force: true)
-        }
-        .onChange(of: asrGatewayUrl) { _ in
-            loadAsrProfiles(force: true)
-        }
-        .onChange(of: draft.asrMode) { mode in
-            if mode == "router" {
-                loadAsrProfiles(force: false)
-            } else {
-                asrProviderLoadState = .idle
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var asrProviderPicker: some View {
-        switch asrProviderLoadState {
-        case .idle:
-            TextField("手动 Profile ID", text: $draft.asrProfileId)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-
-        case .loading:
-            HStack {
-                ProgressView()
-                Text("正在加载模型列表")
-                    .foregroundColor(.secondary)
-            }
-
-        case .loaded(let profiles):
-            if profiles.isEmpty {
-                TextField("手动 Profile ID", text: $draft.asrProfileId)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-            } else {
-                Picker("Provider / Model", selection: $draft.asrProfileId) {
-                    ForEach(profiles) { profile in
-                        Text("\(profile.providerLabel) · \(profile.modelLabel)").tag(profile.id)
-                    }
-                }
-            }
-
-        case .failed(let message):
-            VStack(alignment: .leading, spacing: 8) {
-                Text(message)
-                    .font(.footnote)
-                    .foregroundColor(.secondary)
-                TextField("手动 Profile ID", text: $draft.asrProfileId)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-            }
         }
     }
 
     private var selectedProfile: AgentProfile {
         settingsManager.selectedProfile
-    }
-
-    private var asrGatewayUrl: String {
-        selectedProfile.gatewayUrl
     }
 
     private var accountStatusText: String {
@@ -511,9 +425,38 @@ struct SettingsScreenView: View {
             "Backend ID: \(selectedProfile.backendId)",
             "Account: \(accountStatusText)",
             "Device: \(draft.normalizedDeviceLabel)",
-            "ASR Mode: \(draft.asrMode)",
-            "ASR Profile: \(draft.savedAsrProfileId)"
+            "AI Service: \(aiServiceSummary)"
         ].joined(separator: "\n")
+    }
+
+    private var aiServiceSummary: String {
+        let resolved = settingsManager.aiSettings.resolved(for: selectedProfile.id)
+        let llm: String
+        switch resolved.llm.mode {
+        case "byok": llm = "BYOK \(providerLabel(resolved.llm))"
+        case "agent": llm = "Agent LLM"
+        default: llm = "Router LLM"
+        }
+        let asr: String
+        switch resolved.asr.mode {
+        case "byok": asr = "BYOK \(providerLabel(resolved.asr))"
+        case "backend": asr = "Agent ASR"
+        default: asr = "Router ASR"
+        }
+        let tts: String
+        switch resolved.tts.mode {
+        case "router": tts = "Router TTS"
+        case "byok": tts = providerLabel(resolved.tts)
+        default: tts = "系统 TTS"
+        }
+        return "\(llm) · \(asr) · \(tts)"
+    }
+
+    private func providerLabel(_ choice: AiServiceChoice) -> String {
+        let displayName = choice.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !displayName.isEmpty { return displayName }
+        let providerId = choice.providerId.trimmingCharacters(in: .whitespacesAndNewlines)
+        return providerId.isEmpty ? "BYOK" : providerId
     }
 
     private func syncDraftFromSettings() {
@@ -523,8 +466,6 @@ struct SettingsScreenView: View {
 
     private func saveAdvancedSettings() {
         settingsManager.updateDeviceLabel(draft.normalizedDeviceLabel)
-        settingsManager.updateGlobalAsr(mode: draft.asrMode, profileId: draft.savedAsrProfileId)
-        wsManager.updateAsrConfiguration(mode: draft.asrMode, profileId: draft.savedAsrProfileId)
         wsManager.applyProfile(
             settingsManager.selectedProfile,
             deviceLabel: settingsManager.config.deviceLabel,
@@ -547,90 +488,6 @@ struct SettingsScreenView: View {
     private func copyDiagnostics() {
         UIPasteboard.general.string = diagnosticsText
         statusMessage = "诊断信息已复制"
-    }
-
-    private func loadAsrProfiles(force: Bool) {
-        guard draft.asrMode == "router" else {
-            asrProviderLoadState = .idle
-            return
-        }
-        if !force, loadedAsrGatewayUrl == asrGatewayUrl {
-            if case .loaded = asrProviderLoadState { return }
-        }
-        guard let url = asrProvidersUrl(from: asrGatewayUrl) else {
-            asrProviderLoadState = .failed("Gateway URL 无效，请手动填写 Profile ID")
-            return
-        }
-
-        loadedAsrGatewayUrl = asrGatewayUrl
-        asrProviderLoadState = .loading
-        URLSession.shared.dataTask(with: url) { data, _, error in
-            if let error {
-                DispatchQueue.main.async {
-                    asrProviderLoadState = .failed("模型列表加载失败：\(error.localizedDescription)")
-                }
-                return
-            }
-            guard let data,
-                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                DispatchQueue.main.async {
-                    asrProviderLoadState = .failed("模型列表解析失败，请手动填写 Profile ID")
-                }
-                return
-            }
-            let defaultProfileId = json["defaultProfileId"] as? String
-            let rawProfiles = json["profiles"] as? [[String: Any]] ?? []
-            let profiles = rawProfiles.compactMap { item -> AsrProviderProfile? in
-                guard let id = item["id"] as? String,
-                      let provider = item["provider"] as? String,
-                      let model = item["model"] as? String else { return nil }
-                return AsrProviderProfile(
-                    id: id,
-                    provider: provider,
-                    providerLabel: item["providerLabel"] as? String ?? provider,
-                    model: model,
-                    modelLabel: item["modelLabel"] as? String ?? model
-                )
-            }
-            DispatchQueue.main.async {
-                asrProviderLoadState = .loaded(profiles)
-                if shouldReplaceChatAsrProfile(draft.asrProfileId, profiles: profiles) {
-                    draft.asrProfileId = preferredChatAsrProfileId(profiles: profiles, defaultProfileId: defaultProfileId)
-                }
-            }
-        }.resume()
-    }
-
-    private func shouldReplaceChatAsrProfile(_ profileId: String, profiles: [AsrProviderProfile]) -> Bool {
-        let trimmed = profileId.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return true }
-        guard let profile = profiles.first(where: { $0.id == trimmed }) else { return true }
-        return profile.provider == "volcengine-file"
-    }
-
-    private func preferredChatAsrProfileId(profiles: [AsrProviderProfile], defaultProfileId: String?) -> String {
-        profiles.first(where: { $0.provider == "volcengine-streaming" })?.id
-            ?? profiles.first(where: { $0.provider == "volcengine" })?.id
-            ?? profiles.first(where: { $0.id.localizedCaseInsensitiveContains("stream") })?.id
-            ?? defaultProfileId
-            ?? profiles.first?.id
-            ?? ""
-    }
-
-    private func asrProvidersUrl(from gatewayUrl: String) -> URL? {
-        var value = gatewayUrl.trimmingCharacters(in: .whitespacesAndNewlines)
-        if value.hasPrefix("wss://") {
-            value = "https://" + String(value.dropFirst("wss://".count))
-        } else if value.hasPrefix("ws://") {
-            value = "http://" + String(value.dropFirst("ws://".count))
-        }
-        if value.hasSuffix("/ws") {
-            value.removeLast(3)
-        }
-        if value.hasSuffix("/") {
-            value.removeLast()
-        }
-        return URL(string: "\(value)/api/asr/providers")
     }
 }
 
@@ -663,6 +520,20 @@ struct GatewayAuthSessionResponse: Decodable {
         case refreshToken = "refresh_token"
         case accessExpiresAt = "access_expires_at"
         case refreshExpiresAt = "refresh_expires_at"
+    }
+}
+
+struct GatewayAuthMeResponse: Decodable {
+    let accountId: String
+    let displayName: String?
+    let accountDisplayName: String
+    let phoneNumberMasked: String
+
+    private enum CodingKeys: String, CodingKey {
+        case accountId = "account_id"
+        case displayName = "display_name"
+        case accountDisplayName = "account_display_name"
+        case phoneNumberMasked = "phone_number_masked"
     }
 }
 
@@ -848,6 +719,49 @@ private struct GatewayBillingOrdersResponse: Decodable {
     let orders: [GatewayBillingOrderResponse]
 }
 
+struct GatewayAiChatResponse: Decodable {
+    let id: String
+    let modelProfileId: String
+    let message: GatewayAiChatMessageResponse
+    let usage: GatewayAiChatUsageResponse?
+    let billing: GatewayAiChatBillingResponse?
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case modelProfileId = "model_profile_id"
+        case message
+        case usage
+        case billing
+    }
+}
+
+struct GatewayAiChatMessageResponse: Decodable {
+    let role: String
+    let content: String
+}
+
+struct GatewayAiChatUsageResponse: Decodable {
+    let promptTokens: Int?
+    let completionTokens: Int?
+    let totalTokens: Int?
+
+    private enum CodingKeys: String, CodingKey {
+        case promptTokens = "prompt_tokens"
+        case completionTokens = "completion_tokens"
+        case totalTokens = "total_tokens"
+    }
+}
+
+struct GatewayAiChatBillingResponse: Decodable {
+    let chargedCents: Int
+    let usageEventId: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case chargedCents = "charged_cents"
+        case usageEventId = "usage_event_id"
+    }
+}
+
 enum GatewayAuthClient {
     static func requestSms(
         gatewayUrl: String,
@@ -998,6 +912,34 @@ enum GatewayAuthClient {
         }
     }
 
+    static func me(gatewayUrl: String, accessToken: String) async throws -> GatewayAuthMeResponse {
+        let request = try authorizedGetRequest(
+            url: "/api/v2/auth/me",
+            gatewayUrl: gatewayUrl,
+            accessToken: accessToken
+        )
+        return try await send(request, as: GatewayAuthMeResponse.self)
+    }
+
+    static func updateAccountDisplayName(
+        gatewayUrl: String,
+        accessToken: String,
+        displayName: String
+    ) async throws -> GatewayAuthMeResponse {
+        let request = try jsonRequest(
+            url: "/api/v2/auth/me",
+            gatewayUrl: gatewayUrl,
+            body: [
+                "display_name": displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+            ],
+            method: "PUT",
+            headers: [
+                "Authorization": "Bearer \(accessToken.trimmingCharacters(in: .whitespacesAndNewlines))"
+            ]
+        )
+        return try await send(request, as: GatewayAuthMeResponse.self)
+    }
+
     static func listAccountAgents(gatewayUrl: String, accessToken: String) async throws -> [GatewayAccountAgentProfile] {
         let request = try authorizedGetRequest(
             url: "/api/v2/account/agents",
@@ -1044,6 +986,27 @@ enum GatewayAuthClient {
             accessToken: accessToken
         )
         return try await send(request, as: GatewayBillingSummaryResponse.self)
+    }
+
+    static func aiChat(
+        gatewayUrl: String,
+        accessToken: String,
+        modelProfileId: String,
+        messages: [OpenAICompatibleChatMessage]
+    ) async throws -> GatewayAiChatResponse {
+        let body: [String: Any] = [
+            "model_profile_id": modelProfileId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "default" : modelProfileId.trimmingCharacters(in: .whitespacesAndNewlines),
+            "messages": messages.map { ["role": $0.role, "content": $0.content] },
+        ]
+        let request = try jsonRequest(
+            url: "/api/v2/ai/chat",
+            gatewayUrl: gatewayUrl,
+            body: body,
+            headers: [
+                "Authorization": "Bearer \(accessToken.trimmingCharacters(in: .whitespacesAndNewlines))"
+            ]
+        )
+        return try await send(request, as: GatewayAiChatResponse.self)
     }
 
     static func createBillingOrder(

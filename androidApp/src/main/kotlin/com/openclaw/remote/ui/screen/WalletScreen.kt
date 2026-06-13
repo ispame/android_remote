@@ -62,6 +62,7 @@ import com.openclaw.remote.auth.BillingOrderResult
 import com.openclaw.remote.auth.BillingProductResult
 import com.openclaw.remote.auth.BillingSummaryResult
 import com.openclaw.remote.auth.GatewayAuthClient
+import com.openclaw.remote.auth.billingPaymentClipboardText
 import com.openclaw.remote.auth.formatBillingAmountCents
 import com.openclaw.remote.data.GatewayConfig
 import com.openclaw.remote.ui.theme.MochiColors
@@ -229,7 +230,7 @@ fun WalletScreen(
                             qrBitmap = qrBitmap,
                             colors = colors,
                             onCopy = {
-                                clipboard.setText(AnnotatedString(order.copyText.ifBlank { order.paymentUrl }))
+                                clipboard.setText(AnnotatedString(billingPaymentClipboardText(order)))
                                 scope.launch { showMessage("支付链接已复制") }
                             },
                             onClose = { activeOrder = null },

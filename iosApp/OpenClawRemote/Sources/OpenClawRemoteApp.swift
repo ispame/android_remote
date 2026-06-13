@@ -97,10 +97,10 @@ struct OpenClawRemoteApp: App {
                             handleQRParsed(scannedText)
                         },
                         onSwitchAccount: {
-                            clearAuthSession(message: "请登录新账号")
+                            clearAuthSession(message: "请登录新账号", clearProfiles: true)
                         },
                         onLogout: {
-                            clearAuthSession(message: "已退出登录")
+                            clearAuthSession(message: "已退出登录", clearProfiles: false)
                         },
                         walletNotice: $walletNotice
                     )
@@ -201,6 +201,7 @@ struct OpenClawRemoteApp: App {
         switch event {
         case .registered(_):
             restoreLongRecordingJobs()
+            restoreRecordingWorkflows()
         case .paired(let profileId, let backendId, let backendLabel):
             settingsManager.updatePairedBackend(backendId, backendLabel, profileId: profileId)
         case .unpaired(let profileId):
@@ -208,10 +209,16 @@ struct OpenClawRemoteApp: App {
         case .sessionPreempted(let replacementTerminalLabel):
             let suffix = replacementTerminalLabel
                 .flatMap { $0.isEmpty ? nil : "：\($0)" } ?? ""
-            clearAuthSession(message: "账号已在另一台设备登录\(suffix)")
+            clearAuthSession(message: "账号已在另一台设备登录\(suffix)", clearProfiles: false)
         case .error(let code, let message):
-            if code.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() == "PAYMENT_REQUIRED" {
+            let normalizedCode = code.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+            if normalizedCode == "PAYMENT_REQUIRED" {
                 walletNotice = message.isEmpty ? "余额不足，请开通套餐或充值余额" : message
+                return
+            }
+            if normalizedCode == "NOT_PAIRED" {
+                settingsManager.updatePairedBackend(nil, nil, profileId: settingsManager.selectedProfile.id)
+                applySelectedProfile()
                 return
             }
             switch authRecoveryAction(forWebSocketErrorCode: code) {
@@ -224,7 +231,7 @@ struct OpenClawRemoteApp: App {
                     }
                 }
             case .requireLogin:
-                clearAuthSession(message: "登录状态已过期，请重新登录")
+                clearAuthSession(message: "登录状态已过期，请重新登录", clearProfiles: false)
             case .none:
                 break
             }
@@ -250,30 +257,46 @@ struct OpenClawRemoteApp: App {
             }
         case .recordingEvent(let payload):
             recordingStore.appendEvent(payload)
+        case .recordingWorkflowUpdate(let workflow):
+            recordingStore.upsertWorkflow(workflow)
+        }
+    }
+
+    private func restoreRecordingWorkflows() {
+        guard wsManager.recordingExecutionSupported else { return }
+        let recordingIds = recordingStore.items
+            .filter { $0.recordingType.sendsToAgent }
+            .map(\.id)
+        Task {
+            for recordingId in recordingIds {
+                guard let workflow = try? await wsManager.fetchRecordingWorkflow(recordingId: recordingId) else {
+                    continue
+                }
+                await MainActor.run {
+                    recordingStore.upsertWorkflow(workflow)
+                }
+            }
         }
     }
 
     private func restoreLongRecordingJobs() {
         let candidates = recordingStore.items.filter { item in
-            (item.processingStatus == .queued || item.processingStatus == .processing)
-                && item.asrJobId?.isEmpty == false
+            guard item.asrJobId?.isEmpty == false else { return false }
+            if item.processingStatus == .queued || item.processingStatus == .processing {
+                return true
+            }
+            guard item.recordingType.sendsToAgent else { return false }
+            return item.agentDeliveryStatus == nil
+                || item.agentDeliveryStatus == .pending
+                || item.agentDeliveryStatus == .delivering
+                || (item.agentDeliveryStatus == .failed && item.agentDeliveryRetryable)
         }
         for recording in candidates {
             guard let jobId = recording.asrJobId else { continue }
-            wsManager.fetchLongRecordingAsrJob(jobId: jobId) { payload in
-                guard let payload else { return }
-                let recordingId = payload.recordingId ?? recording.id
-                recordingStore.updateAsrJob(
-                    recordingId: recordingId,
-                    jobId: payload.jobId,
-                    uploadProgress: payload.uploadProgress,
-                    asrProgress: payload.asrProgress
-                )
-                if payload.status == "failed",
-                   let error = payload.error,
-                   let clientMessageId = payload.clientMessageId ?? recording.clientMessageId {
-                    recordingStore.updateAsrFailure(clientMessageId: clientMessageId, error: error)
-                }
+            wsManager.monitorLongRecordingAsrJob(jobId: jobId) { payload in
+                recordingStore.applyLongRecordingAsrJob(payload, fallbackRecordingId: recording.id)
+            } onExpired: {
+                recordingStore.updateAsrFailure(recordingId: recording.id, error: "ASR 任务已过期，请重新转写")
             }
         }
     }
@@ -314,7 +337,7 @@ struct OpenClawRemoteApp: App {
         }
     }
 
-    private func clearAuthSession(message: String) {
+    private func clearAuthSession(message: String, clearProfiles: Bool) {
         tokenRefreshTask?.cancel()
         tokenRefreshTask = nil
         authNotice = message
@@ -339,7 +362,8 @@ struct OpenClawRemoteApp: App {
                 minimaxVoiceId: current.minimaxVoiceId,
                 lastLoginMode: current.lastLoginMode,
                 lastPhoneNumber: current.lastPhoneNumber
-            )
+            ),
+            clearProfilesOnAccountChange: clearProfiles
         )
     }
 
@@ -392,13 +416,13 @@ struct OpenClawRemoteApp: App {
         let config = settingsManager.configPublished
         guard !config.accessToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             await MainActor.run {
-                clearAuthSession(message: "请先登录账号")
+                clearAuthSession(message: "请先登录账号", clearProfiles: false)
             }
             return false
         }
         guard !config.refreshToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             await MainActor.run {
-                clearAuthSession(message: "登录状态已过期，请重新登录")
+                clearAuthSession(message: "登录状态已过期，请重新登录", clearProfiles: false)
             }
             return false
         }
@@ -438,7 +462,7 @@ struct OpenClawRemoteApp: App {
         } catch {
             if refreshFailureRequiresLogin(error.localizedDescription) {
                 await MainActor.run {
-                    clearAuthSession(message: "登录状态已过期，请重新登录")
+                    clearAuthSession(message: "登录状态已过期，请重新登录", clearProfiles: false)
                 }
             }
             return false

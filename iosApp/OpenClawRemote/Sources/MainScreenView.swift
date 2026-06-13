@@ -326,6 +326,7 @@ struct MainScreenView: View {
 
     @State private var inputMode: InputMode = .voice
     @State private var isNearChatBottom = true
+    @State private var initiallyPositionedProfileId: String?
     @State private var isSelectingMessages = false
     @State private var selectedMessageIds = Set<UUID>()
     @State private var quotedMessageSummary: String?
@@ -457,16 +458,24 @@ struct MainScreenView: View {
                             .padding(.vertical, 16)
                         }
                         .coordinateSpace(name: "chatScroll")
+                        .onAppear {
+                            positionAtChatBottomIfNeeded(proxy: proxy)
+                        }
                         .onPreferenceChange(ChatBottomPositionPreferenceKey.self) { bottomY in
                             isNearChatBottom = bottomY - geometry.size.height <= 120
                         }
                         .onChange(of: wsManager.messages.last?.id) { _ in
                             guard let lastMessage = wsManager.messages.last else { return }
-                            if isNearChatBottom || lastMessage.isUser {
+                            if initiallyPositionedProfileId != settingsManager.selectedProfileId {
+                                positionAtChatBottomIfNeeded(proxy: proxy)
+                            } else if isNearChatBottom || lastMessage.isUser {
                                 withAnimation(.easeOut(duration: 0.2)) {
                                     proxy.scrollTo(bottomAnchorId, anchor: .bottom)
                                 }
                             }
+                        }
+                        .onChange(of: settingsManager.selectedProfileId) { _ in
+                            positionAtChatBottomIfNeeded(proxy: proxy)
                         }
                         .refreshable {
                             wsManager.requestRecentHistory()
@@ -527,7 +536,7 @@ struct MainScreenView: View {
                     if audioRecorder.isRecording {
                         audioRecorder.stopRecording { data in
                             if !cancelled {
-                                wsManager.sendAudio(data)
+                                Task { await sendAudioUsingSelectedAsr(data) }
                             }
                         }
                     }
@@ -561,6 +570,29 @@ struct MainScreenView: View {
             if !settingsManager.selectedProfile.platform.supportsAudio {
                 inputMode = .text
             }
+        }
+    }
+
+    private func positionAtChatBottomIfNeeded(proxy: ScrollViewProxy) {
+        let profileId = settingsManager.selectedProfileId
+        guard initiallyPositionedProfileId != profileId,
+              !wsManager.messages.isEmpty else {
+            return
+        }
+
+        DispatchQueue.main.async {
+            guard settingsManager.selectedProfileId == profileId,
+                  initiallyPositionedProfileId != profileId,
+                  !wsManager.messages.isEmpty else {
+                return
+            }
+
+            var transaction = Transaction()
+            transaction.animation = nil
+            withTransaction(transaction) {
+                proxy.scrollTo(bottomAnchorId, anchor: .bottom)
+            }
+            initiallyPositionedProfileId = profileId
         }
     }
 
@@ -613,6 +645,44 @@ struct MainScreenView: View {
         }
         wsManager.sendText(command)
         return true
+    }
+
+    @MainActor
+    private func sendAudioUsingSelectedAsr(_ data: Data) async {
+        let asr = settingsManager.aiSettings.resolved(for: selectedProfile.id).asr
+        guard asr.mode == "byok" else {
+            wsManager.sendAudio(data)
+            return
+        }
+        guard wsManager.pairingState == .paired else {
+            wsManager.addLocalMessage("请先配对 \(selectedProfile.platform.label)", senderId: "assistant")
+            return
+        }
+        let credentialId = asr.credentialId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? localAsrOpenAICompatibleCredentialId
+            : asr.credentialId
+        guard let apiKey = settingsManager.localCredential(id: credentialId),
+              !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            wsManager.addLocalMessage("请先在 AI 服务中保存 ASR API Key", senderId: "assistant")
+            return
+        }
+        wsManager.addLocalMessage("正在使用本机 ASR 识别...", senderId: "assistant")
+        do {
+            let transcript = try await OpenAICompatibleAsrClient().transcribe(
+                baseUrl: asr.baseUrl,
+                apiKey: apiKey,
+                model: asr.model,
+                audioData: data
+            )
+            let text = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else {
+                wsManager.addLocalMessage("本机 ASR 没有识别到文本", senderId: "assistant")
+                return
+            }
+            wsManager.sendText(text)
+        } catch {
+            wsManager.addLocalMessage("本机 ASR 失败：\(error.localizedDescription)", senderId: "assistant")
+        }
     }
 
     private func quoteSummary(for content: String) -> String {

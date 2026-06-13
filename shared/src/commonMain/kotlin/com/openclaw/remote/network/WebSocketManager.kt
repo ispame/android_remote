@@ -2,6 +2,11 @@ package com.openclaw.remote.network
 
 import com.openclaw.remote.data.ChatMessage
 import com.openclaw.remote.data.MessageStatus
+import com.openclaw.remote.data.RecordingArtifact
+import com.openclaw.remote.data.RecordingAsrJob
+import com.openclaw.remote.data.RecordingAsrJobStatus
+import com.openclaw.remote.data.RecordingEvent
+import com.openclaw.remote.data.parseRecordingWorkflow
 import com.openclaw.remote.domain.ConnectionState
 import com.openclaw.remote.domain.PairingState
 import com.openclaw.remote.viewmodel.chatMessageFromPayload
@@ -16,6 +21,8 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.doubleOrNull
+import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
@@ -555,6 +562,16 @@ class WebSocketManager(
                     }
                     offerEvent(WsMessageEvent.AsrResult(clientMessageId, success, transcript, error))
                 }
+                "recording_workflow_update" -> {
+                    val workflowJson = obj["workflow"] as? JsonObject ?: return
+                    offerEvent(WsMessageEvent.RecordingWorkflowUpdate(parseRecordingWorkflow(workflowJson)))
+                }
+                "recording_event" -> {
+                    parseRecordingEventFrame(obj)?.let { offerEvent(it) }
+                }
+                "long_recording_asr_status" -> {
+                    parseLongRecordingAsrStatusFrame(obj)?.let { offerEvent(it) }
+                }
                 "message_ack", "ack" -> {
                     // Server acks our sent message — we don't need to act on it here
                     // because we don't track per-message delivery state at the app level
@@ -632,7 +649,7 @@ class WebSocketManager(
                             )
                         )
                     )
-                    if (isTerminalAuthError(code)) {
+                    if (isNotPairedRouterError(code) || isTerminalAuthError(code)) {
                         offerEvent(WsMessageEvent.Error(code, msg))
                     }
                 }
@@ -750,6 +767,76 @@ class WebSocketManager(
     }
 }
 
+internal fun parseWsMessageEventForTest(text: String): WsMessageEvent? {
+    val obj = Json.parseToJsonElement(text) as? JsonObject ?: return null
+    return when (obj["type"]?.jsonPrimitive?.contentOrNull) {
+        "recording_event" -> parseRecordingEventFrame(obj)
+        "long_recording_asr_status" -> parseLongRecordingAsrStatusFrame(obj)
+        else -> null
+    }
+}
+
+private fun parseRecordingEventFrame(obj: JsonObject): WsMessageEvent.RecordingEventReceived? {
+    val recordingId = obj.stringFieldValue("recording_id").ifBlank { return null }
+    val eventId = obj.stringFieldValue("event_id").ifBlank { "event_${randomEventSuffix(recordingId, obj.stringFieldValue("kind"))}" }
+    return WsMessageEvent.RecordingEventReceived(
+        RecordingEvent(
+            id = eventId,
+            recordingId = recordingId,
+            kind = obj.stringFieldValue("kind").ifBlank { "event" },
+            title = obj.stringFieldValue("title").ifBlank { "录音事件" },
+            body = obj.optionalStringFieldValue("body"),
+            createdAt = obj.longFieldValue("created_at") ?: currentEventMillis(),
+            artifact = (obj["artifact"] as? JsonObject)?.toRecordingArtifact(),
+        )
+    )
+}
+
+private fun parseLongRecordingAsrStatusFrame(obj: JsonObject): WsMessageEvent.LongRecordingAsrStatusReceived? {
+    val recordingId = obj.stringFieldValue("recording_id").ifBlank { return null }
+    val jobId = obj.stringFieldValue("job_id").ifBlank { return null }
+    val status = obj.stringFieldValue("status")
+    return WsMessageEvent.LongRecordingAsrStatusReceived(
+        recordingId = recordingId,
+        job = RecordingAsrJob(
+            jobId = jobId,
+            status = RecordingAsrJobStatus.fromWireValue(status),
+            progress = obj.doubleFieldValue("progress") ?: if (status == "completed" || status == "failed") 1.0 else 0.0,
+            error = obj.optionalStringFieldValue("error"),
+            updatedAt = obj.longFieldValue("updated_at") ?: currentEventMillis(),
+        ),
+        text = obj.optionalStringFieldValue("text"),
+    )
+}
+
+private fun JsonObject.toRecordingArtifact(): RecordingArtifact =
+    RecordingArtifact(
+        id = optionalStringFieldValue("artifact_id") ?: optionalStringFieldValue("id") ?: "artifact_${randomEventSuffix(stringFieldValue("filename"), stringFieldValue("path"))}",
+        filename = stringFieldValue("filename").ifBlank { "artifact" },
+        mimeType = optionalStringFieldValue("mime_type"),
+        path = optionalStringFieldValue("path"),
+        retrievalRef = optionalStringFieldValue("retrieval_ref"),
+        content = optionalStringFieldValue("content"),
+    )
+
+private fun JsonObject.stringFieldValue(name: String): String =
+    this[name]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+
+private fun JsonObject.optionalStringFieldValue(name: String): String? =
+    stringFieldValue(name).takeIf { it.isNotBlank() }
+
+private fun JsonObject.longFieldValue(name: String): Long? =
+    this[name]?.jsonPrimitive?.longOrNull
+
+private fun JsonObject.doubleFieldValue(name: String): Double? =
+    this[name]?.jsonPrimitive?.doubleOrNull
+
+private fun randomEventSuffix(first: String, second: String): String =
+    "${first.hashCode().toUInt().toString(16)}${second.hashCode().toUInt().toString(16)}".take(12)
+
+private fun currentEventMillis(): Long =
+    System.currentTimeMillis()
+
 internal fun resolveAutoPairBackendId(configuredBackendId: String?, registeredBackendId: String?): String? {
     return registeredBackendId?.takeIf { it.isNotBlank() }
         ?: configuredBackendId?.takeIf { it.isNotBlank() }
@@ -845,12 +932,18 @@ internal fun recoverPairingAfterRouterError(
 ): PairingErrorRecovery =
     if (
         (pairingState == PairingState.PENDING && !pendingPairBackendId.isNullOrBlank()) ||
-        isBackendUnavailableRouterError(code, message)
+        isPairingInvalidatedRouterError(code, message)
     ) {
         PairingErrorRecovery(PairingState.UNPAIRED, null)
     } else {
         PairingErrorRecovery(pairingState, pendingPairBackendId)
     }
+
+internal fun isPairingInvalidatedRouterError(code: String, message: String): Boolean =
+    isNotPairedRouterError(code) || isBackendUnavailableRouterError(code, message)
+
+internal fun isNotPairedRouterError(code: String): Boolean =
+    code.trim().uppercase() == "NOT_PAIRED"
 
 internal fun isBackendUnavailableRouterError(code: String, message: String): Boolean {
     val normalizedCode = code.trim().uppercase()

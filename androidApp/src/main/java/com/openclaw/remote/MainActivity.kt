@@ -37,6 +37,9 @@ import com.openclaw.remote.ui.screen.QRParseResult
 import com.openclaw.remote.ui.screen.SettingsScreen
 import com.openclaw.remote.ui.screen.WalletScreen
 import com.openclaw.remote.ui.screen.QRScannerScreen
+import com.openclaw.remote.ui.screen.AndroidRootTab
+import com.openclaw.remote.ui.screen.RootNavigationState
+import com.openclaw.remote.ui.screen.RootTabsScreen
 import com.openclaw.remote.ui.screen.parseQRPack
 import com.openclaw.remote.ui.theme.MochiTheme
 import com.openclaw.remote.viewmodel.ChatViewModel
@@ -46,6 +49,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import java.util.UUID
 
 class MainActivity : ComponentActivity() {
 
@@ -105,11 +109,13 @@ class MainActivity : ComponentActivity() {
         setContent {
             val systemDark = isSystemInDarkTheme()
             var isDark by rememberSaveable(systemDark) { mutableStateOf(systemDark) }
-            var showSettings by remember { mutableStateOf(false) }
             var showQRScanner by remember { mutableStateOf(false) }
             var showWallet by remember { mutableStateOf(false) }
+            var rootNavigationState by remember { mutableStateOf(RootNavigationState()) }
             var walletNotice by remember { mutableStateOf<String?>(null) }
             var authGateNotice by remember { mutableStateOf<String?>(null) }
+            var workflowActionInProgress by remember { mutableStateOf(false) }
+            var workflowActionError by remember { mutableStateOf<String?>(null) }
             val assistantSpeechTrigger = remember { AssistantSpeechTrigger() }
             val authClient = remember { GatewayAuthClient() }
 
@@ -130,6 +136,7 @@ class MainActivity : ComponentActivity() {
                 val authNotice by viewModel.authNotice.collectAsState()
                 val soundPlaybackEnabled by settingsManager.soundPlaybackEnabledFlow.collectAsState(initial = true)
                 val playbackState by soundPlaybackController.state.collectAsState()
+                val recordingWorkflow by viewModel.latestRecordingWorkflow.collectAsState()
                 val showHeadsetStandbyControl = headsetState.supportsStandbyControl()
                 val showHeadsetLedLightControl = headsetState.supportsLedLightControl()
                 val authenticated = config.accessToken.isNotBlank()
@@ -143,8 +150,8 @@ class MainActivity : ComponentActivity() {
                 LaunchedEffect(authenticated) {
                     if (!authenticated) {
                         showQRScanner = false
-                        showSettings = false
                         showWallet = false
+                        rootNavigationState = RootNavigationState()
                     }
                 }
 
@@ -177,8 +184,8 @@ class MainActivity : ComponentActivity() {
                     viewModel.paymentRequiredRequests.collect { request ->
                         walletNotice = request.message.ifBlank { "余额不足，请开通套餐或充值余额" }
                         showWallet = true
-                        showSettings = false
                         showQRScanner = false
+                        rootNavigationState = RootNavigationState(selectedTab = AndroidRootTab.SETTINGS)
                     }
                 }
 
@@ -216,20 +223,23 @@ class MainActivity : ComponentActivity() {
                     AuthScreen(
                         config = config,
                         notice = authNotice ?: authGateNotice,
-                        onAuthenticated = { session, gatewayUrl ->
+                        onAuthenticated = { payload ->
                             scope.launch {
+                                val session = payload.session
                                 settingsManager.updateConfig(
                                     config.copy(
-                                        gatewayUrl = gatewayUrl,
+                                        gatewayUrl = payload.gatewayUrl,
                                         accountId = session.accountId,
                                         accessToken = session.accessToken,
                                         refreshToken = session.refreshToken,
                                         accessExpiresAt = session.accessExpiresAt,
                                         refreshExpiresAt = session.refreshExpiresAt,
-                                        deviceLabel = config.deviceLabel.ifBlank { "我的设备" },
+                                        deviceLabel = payload.terminalLabel,
+                                        lastLoginMode = payload.loginMode,
+                                        lastPhoneNumber = payload.phoneNumber,
                                     )
                                 )
-                                syncAccountAgentsFromServer(authClient, gatewayUrl, session.accessToken)
+                                syncAccountAgentsFromServer(authClient, payload.gatewayUrl, session.accessToken)
                                 authGateNotice = null
                                 viewModel.clearAuthNotice()
                                 viewModel.connect()
@@ -259,42 +269,19 @@ class MainActivity : ComponentActivity() {
                         },
                         onClose = { showQRScanner = false }
                     )
-                } else if (showSettings) {
-                    SettingsScreen(
-                        settingsManager = settingsManager,
-                        viewModel = viewModel,
-                        connectionState = connectionState,
-                        pairingState = pairingState,
-                        pairedBackendLabel = pairedBackendLabel,
-                        isDark = isDark,
-                        onToggleTheme = { isDark = !isDark },
-                        onRequestPair = { profileId, backendId ->
-                            viewModel.requestPair(profileId, backendId)
-                            showSettings = false
-                        },
-                        onUnpair = {
-                            viewModel.unpair()
-                        },
-                        onBack = { showSettings = false },
-                        onNavigateToQRScanner = { if (authenticated) showQRScanner = true },
-                        onNavigateToWallet = {
-                            showSettings = false
-                            showWallet = true
-                        },
-                    )
                 } else {
-                    MainScreen(
-                        messages = messages,
-                        isRecording = isRecording,
-                        connectionState = connectionState,
-                        pairingState = pairingState,
-                        pairedBackendLabel = pairedBackendLabel,
+                    RootTabsScreen(
+                        navigationState = rootNavigationState,
+                        onNavigationStateChange = { rootNavigationState = it },
+                        settingsManager = settingsManager,
+                        config = config,
+                        authClient = authClient,
                         profiles = profiles,
                         selectedProfileId = selectedProfileId,
                         profileStatuses = profiles.associate { it.id to viewModel.availabilityStatus(it) },
                         isDark = isDark,
-                        isLoadingHistory = isLoadingHistory,
-                        hasMoreHistory = hasMoreHistory,
+                        isRecording = isRecording,
+                        audioRecorder = audioRecorder,
                         headsetStatusLabel = headsetState.label,
                         headsetStandbyMode = headsetStandbyMode,
                         showHeadsetStandbyControl = showHeadsetStandbyControl,
@@ -302,8 +289,6 @@ class MainActivity : ComponentActivity() {
                         showHeadsetLedLightControl = showHeadsetLedLightControl,
                         soundPlaybackEnabled = playbackState.soundPlaybackEnabled,
                         isPlaybackSpeaking = playbackState.isSpeaking,
-                        viewModel = viewModel,
-                        audioRecorder = audioRecorder,
                         onToggleTheme = { isDark = !isDark },
                         onToggleSoundPlayback = {
                             soundPlaybackController.setSoundPlaybackEnabled(!playbackState.soundPlaybackEnabled)
@@ -317,13 +302,167 @@ class MainActivity : ComponentActivity() {
                         onToggleHeadsetLedLight = { enabled ->
                             headsetManager.setLedLightEnabled(enabled)
                         },
-                        onSpeakMessage = { text ->
-                            val apiKey = if (config.ttsEngine == "minimax") config.minimaxApiKey else null
-                            val voiceId = if (config.ttsEngine == "minimax") config.minimaxVoiceId else null
-                            soundPlaybackController.speakManualText(text, apiKey, voiceId)
+                        onOpenQrScanner = { if (authenticated) showQRScanner = true },
+                        onOpenWallet = { showWallet = true },
+                        onSelectProfile = { profileId ->
+                            viewModel.selectProfile(profileId)
+                            scope.launch { settingsManager.selectProfile(profileId) }
                         },
-                        onNavigateToSettings = { showSettings = true },
-                        onSelectProfile = { profileId -> viewModel.selectProfile(profileId) },
+                        onOpenProfileChat = { profileId ->
+                            scope.launch { settingsManager.selectProfile(profileId) }
+                        },
+                        onDeleteProfile = { profileId ->
+                            scope.launch { settingsManager.deleteProfile(profileId) }
+                        },
+                        onToggleProfilePin = { profileId, pinned ->
+                            scope.launch { settingsManager.setProfilePinned(profileId, pinned) }
+                        },
+                        chatContent = {
+                            MainScreen(
+                                messages = messages,
+                                isRecording = isRecording,
+                                connectionState = connectionState,
+                                pairingState = pairingState,
+                                pairedBackendLabel = pairedBackendLabel,
+                                profiles = profiles,
+                                selectedProfileId = selectedProfileId,
+                                profileStatuses = profiles.associate { it.id to viewModel.availabilityStatus(it) },
+                                isDark = isDark,
+                                isLoadingHistory = isLoadingHistory,
+                                hasMoreHistory = hasMoreHistory,
+                                headsetStatusLabel = headsetState.label,
+                                headsetStandbyMode = headsetStandbyMode,
+                                showHeadsetStandbyControl = showHeadsetStandbyControl,
+                                headsetLedLightEnabled = headsetLedLightEnabled,
+                                showHeadsetLedLightControl = showHeadsetLedLightControl,
+                                soundPlaybackEnabled = playbackState.soundPlaybackEnabled,
+                                isPlaybackSpeaking = playbackState.isSpeaking,
+                                recordingWorkflow = recordingWorkflow,
+                                workflowActionInProgress = workflowActionInProgress,
+                                workflowActionError = workflowActionError,
+                                viewModel = viewModel,
+                                audioRecorder = audioRecorder,
+                                onToggleTheme = { isDark = !isDark },
+                                onToggleSoundPlayback = {
+                                    soundPlaybackController.setSoundPlaybackEnabled(!playbackState.soundPlaybackEnabled)
+                                },
+                                onInterruptPlayback = {
+                                    soundPlaybackController.interruptCurrentPlayback()
+                                },
+                                onToggleHeadsetStandbyMode = {
+                                    headsetManager.toggleStandbyMode()
+                                },
+                                onToggleHeadsetLedLight = { enabled ->
+                                    headsetManager.setLedLightEnabled(enabled)
+                                },
+                                onSpeakMessage = { text ->
+                                    val apiKey = if (config.ttsEngine == "minimax") config.minimaxApiKey else null
+                                    val voiceId = if (config.ttsEngine == "minimax") config.minimaxVoiceId else null
+                                    soundPlaybackController.speakManualText(text, apiKey, voiceId)
+                                },
+                                onNavigateToSettings = {
+                                    rootNavigationState = RootNavigationState(selectedTab = AndroidRootTab.SETTINGS)
+                                },
+                                onSelectProfile = { profileId ->
+                                    viewModel.selectProfile(profileId)
+                                    scope.launch { settingsManager.selectProfile(profileId) }
+                                },
+                                onWorkflowAction = { action ->
+                                    recordingWorkflow?.let { workflow ->
+                                        scope.launch {
+                                            workflowActionInProgress = true
+                                            workflowActionError = null
+                                            runCatching {
+                                                authClient.recordingWorkflowAction(
+                                                    gatewayUrl = config.gatewayUrl,
+                                                    accessToken = config.accessToken,
+                                                    workflowId = workflow.workflowId,
+                                                    action = action,
+                                                    expectedRevision = workflow.revision,
+                                                    idempotencyKey = UUID.randomUUID().toString(),
+                                                )
+                                            }.onSuccess(viewModel::applyRecordingWorkflow)
+                                                .onFailure { workflowActionError = it.message ?: "工作流操作失败" }
+                                            workflowActionInProgress = false
+                                        }
+                                    }
+                                },
+                                onWorkflowTaskAction = { taskId, action ->
+                                    recordingWorkflow?.let { workflow ->
+                                        scope.launch {
+                                            workflowActionInProgress = true
+                                            workflowActionError = null
+                                            runCatching {
+                                                authClient.recordingWorkflowTaskAction(
+                                                    gatewayUrl = config.gatewayUrl,
+                                                    accessToken = config.accessToken,
+                                                    workflowId = workflow.workflowId,
+                                                    taskId = taskId,
+                                                    action = if (action == "retry_blockers") "retry-blockers" else action,
+                                                    expectedRevision = workflow.revision,
+                                                    idempotencyKey = UUID.randomUUID().toString(),
+                                                )
+                                            }.onSuccess(viewModel::applyRecordingWorkflow)
+                                                .onFailure { workflowActionError = it.message ?: "任务操作失败" }
+                                            workflowActionInProgress = false
+                                        }
+                                    }
+                                },
+                                onWorkflowTaskUpdate = { taskId, prompt, executor, model, sources, maxAttempts ->
+                                    recordingWorkflow?.let { workflow ->
+                                        scope.launch {
+                                            workflowActionInProgress = true
+                                            workflowActionError = null
+                                            runCatching {
+                                                authClient.updateRecordingWorkflowTask(
+                                                    gatewayUrl = config.gatewayUrl,
+                                                    accessToken = config.accessToken,
+                                                    workflowId = workflow.workflowId,
+                                                    taskId = taskId,
+                                                    expectedRevision = workflow.revision,
+                                                    idempotencyKey = UUID.randomUUID().toString(),
+                                                    prompt = prompt,
+                                                    executorHint = executor,
+                                                    modelHint = model,
+                                                    sourceConstraints = sources,
+                                                    maxAttempts = maxAttempts,
+                                                )
+                                            }.onSuccess(viewModel::applyRecordingWorkflow)
+                                                .onFailure { workflowActionError = it.message ?: "任务编辑失败" }
+                                            workflowActionInProgress = false
+                                        }
+                                    }
+                                },
+                            )
+                        },
+                        settingsContent = {
+                            SettingsScreen(
+                                settingsManager = settingsManager,
+                                viewModel = viewModel,
+                                connectionState = connectionState,
+                                pairingState = pairingState,
+                                pairedBackendLabel = pairedBackendLabel,
+                                isDark = isDark,
+                                onToggleTheme = { isDark = !isDark },
+                                onRequestPair = { profileId, backendId ->
+                                    viewModel.requestPair(profileId, backendId)
+                                    rootNavigationState = RootNavigationState(
+                                        selectedTab = AndroidRootTab.AGENTS,
+                                        openChatProfileId = profileId,
+                                    )
+                                },
+                                onUnpair = {
+                                    viewModel.unpair()
+                                },
+                                onBack = {
+                                    rootNavigationState = RootNavigationState(selectedTab = AndroidRootTab.SETTINGS)
+                                },
+                                onNavigateToQRScanner = { if (authenticated) showQRScanner = true },
+                                onNavigateToWallet = {
+                                    showWallet = true
+                                },
+                            )
+                        },
                     )
                 }
             }
@@ -580,6 +719,8 @@ private fun AccountAgentProfileResult.toAgentProfile(): AgentProfile =
         isPaired = isPaired,
         asrMode = if (asrMode == "backend") "backend" else "router",
         asrProfileId = if (asrMode == "backend") "" else "",
+        isPinned = pinned,
+        sortIndex = sortOrder,
     )
 
 private fun AgentProfile.toAccountAgentProfileResult(): AccountAgentProfileResult =
@@ -592,8 +733,8 @@ private fun AgentProfile.toAccountAgentProfileResult(): AccountAgentProfileResul
         backendLabel = backendLabel ?: resolvedDisplayName,
         isPaired = isPaired,
         asrMode = asrMode,
-        sortOrder = 0,
-        pinned = false,
+        sortOrder = sortIndex,
+        pinned = isPinned,
     )
 
 private data class AuthRefreshOutcome(

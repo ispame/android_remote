@@ -21,7 +21,7 @@ class SettingsManagerAndroidProfilesTest {
     @Before
     fun setUp() = runTest {
         val context = ApplicationProvider.getApplicationContext<Context>()
-        manager = SettingsManagerAndroid(context)
+        manager = SettingsManagerAndroid(context, FakeCredentialVault())
         manager.clearConfig()
     }
 
@@ -160,6 +160,51 @@ class SettingsManagerAndroidProfilesTest {
 
         manager.updatePairedBackend("bk_hermes", "Hermes", hermes.id)
         assertEquals("bk_hermes", manager.configFlow.first().pairedBackendId)
+    }
+
+    @Test
+    fun saveProfileClearsPairingWhenTokenChanges() = runTest {
+        val profile = manager.upsertScannedProfile(
+            gatewayUrl = "wss://boson-tech.top/ws",
+            backendId = "bk_openclaw",
+            token = "good-token",
+            platform = AgentPlatform.OPENCLAW,
+            label = "OpenClaw",
+        )!!
+        manager.updatePairedBackend("bk_openclaw", "OpenClaw", profile.id)
+
+        val pairedProfile = manager.profilesFlow.first().selectedProfile
+        assertTrue(pairedProfile.isPaired)
+
+        val saved = manager.saveProfile(
+            pairedProfile.copy(token = "wrong-token", isPaired = true),
+            select = true,
+        )
+
+        val state = manager.profilesFlow.first()
+        val config = manager.configFlow.first()
+
+        assertTrue(saved)
+        assertEquals("wrong-token", state.selectedProfile.token)
+        assertFalse(state.selectedProfile.isPaired)
+        assertNull(config.pairedBackendId)
+    }
+
+    @Test
+    fun setProfilePinnedPersistsPinStateWithoutChangingSelection() = runTest {
+        val openclaw = manager.upsertScannedProfile("wss://boson-tech.top/ws", "bk_openclaw", "t1", AgentPlatform.OPENCLAW, "OpenClaw")!!
+        val hermes = manager.upsertScannedProfile("wss://boson-tech.top/ws", "bk_hermes", "t2", AgentPlatform.HERMES, "Hermes")!!
+        manager.selectProfile(openclaw.id)
+
+        manager.setProfilePinned(hermes.id, true)
+
+        val state = manager.profilesFlow.first()
+        assertEquals(openclaw.id, state.selectedProfileId)
+        assertEquals(true, state.profiles.first { it.id == hermes.id }.isPinned)
+
+        manager.setProfilePinned(hermes.id, false)
+
+        assertEquals(false, manager.profilesFlow.first().profiles.first { it.id == hermes.id }.isPinned)
     }
 
     @Test

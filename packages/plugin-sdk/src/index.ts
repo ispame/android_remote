@@ -29,7 +29,7 @@
  */
 
 // Core channel
-export { GatewayChannel, type GatewayChannelConfig, type GatewayChannelEventMap } from "./GatewayChannel.js";
+export { GatewayChannel, type GatewayAiChatParams, type GatewayChannelConfig, type GatewayChannelEventMap } from "./GatewayChannel.js";
 export type { ConnectionState } from "./GatewayChannel.js";
 
 // Sub-components (exported for advanced usage / testing)
@@ -79,7 +79,15 @@ export type {
   WsEndpointParams,
 } from "./protocol/types.js";
 
-export type { CommandResultParams as CommandResultPayload, EventPushParams as EventPushPayload } from "./http-client.js";
+export type {
+  AiChatMessage,
+  AiChatParams,
+  AiChatResponse,
+  CommandResultParams as CommandResultPayload,
+  EventPushParams as EventPushPayload,
+  HttpClientConfig,
+  HttpClientError,
+} from "./http-client.js";
 
 // Protocol serialization/parsing
 export { serializeFrame, serializeMessage, serializeAck } from "./protocol/serialize.js";

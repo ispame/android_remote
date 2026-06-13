@@ -14,7 +14,10 @@ import kotlinx.coroutines.flow.map
 
 private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "settings")
 
-class SettingsManagerAndroid(private val context: Context) : SettingsManager {
+class SettingsManagerAndroid(
+    private val context: Context,
+    private val credentialVault: CredentialVault = AndroidCredentialVault(context),
+) : SettingsManager {
 
     companion object {
         private const val LEGACY_PROFILE_ID = "legacy-android-profile"
@@ -33,6 +36,9 @@ class SettingsManagerAndroid(private val context: Context) : SettingsManager {
         private val TTS_ENGINE = stringPreferencesKey("tts_engine")
         private val MINIMAX_API_KEY = stringPreferencesKey("minimax_api_key")
         private val MINIMAX_VOICE_ID = stringPreferencesKey("minimax_voice_id")
+        private val LAST_LOGIN_MODE = stringPreferencesKey("last_login_mode")
+        private val LAST_PHONE_NUMBER = stringPreferencesKey("last_phone_number")
+        private val AI_SERVICE_SETTINGS = stringPreferencesKey("ai_service_settings_v1")
         private val AGENT_PROFILES = stringPreferencesKey("agent_profiles_v1")
         private val SELECTED_AGENT_PROFILE_ID = stringPreferencesKey("selected_agent_profile_id")
         private val SOUND_PLAYBACK_ENABLED = booleanPreferencesKey("sound_playback_enabled_v1")
@@ -46,11 +52,21 @@ class SettingsManagerAndroid(private val context: Context) : SettingsManager {
         prefs[SOUND_PLAYBACK_ENABLED] ?: true
     }
 
+    override val aiSettingsFlow: Flow<AiServiceSettings> = context.dataStore.data.map { prefs ->
+        prefs.toAiSettings()
+    }
+
     override val configFlow: Flow<GatewayConfig> = context.dataStore.data.map { prefs ->
-        prefs.toGatewayConfig()
+        prefs.toGatewayConfig(localMiniMaxApiKey = migrateMiniMaxCredentialIfNeeded(prefs))
     }
 
     override suspend fun updateConfig(config: GatewayConfig) {
+        val localMiniMaxApiKey = config.minimaxApiKey.trim()
+        if (localMiniMaxApiKey.isNotEmpty()) {
+            credentialVault.set(LOCAL_TTS_MINIMAX_CREDENTIAL_ID, localMiniMaxApiKey)
+        } else if (config.ttsEngine == "minimax") {
+            credentialVault.remove(LOCAL_TTS_MINIMAX_CREDENTIAL_ID)
+        }
         context.dataStore.edit { prefs ->
             val previousAccountId = prefs[ACCOUNT_ID].orEmpty()
             val accountChanged = previousAccountId.isNotBlank() && previousAccountId != config.accountId
@@ -90,9 +106,22 @@ class SettingsManagerAndroid(private val context: Context) : SettingsManager {
             prefs[REFRESH_EXPIRES_AT] = config.refreshExpiresAt
             prefs[ASR_MODE] = config.asrMode.normalizedAsrMode()
             prefs[ASR_PROFILE_ID] = if (config.asrMode == "backend") "" else config.asrProfileId
-            prefs[TTS_ENGINE] = config.ttsEngine
-            prefs[MINIMAX_API_KEY] = config.minimaxApiKey
-            prefs[MINIMAX_VOICE_ID] = config.minimaxVoiceId
+            prefs[TTS_ENGINE] = config.ttsEngine.normalizedTtsEngine()
+            prefs.remove(MINIMAX_API_KEY)
+            prefs[MINIMAX_VOICE_ID] = config.minimaxVoiceId.normalizedMiniMaxVoiceId()
+            prefs[LAST_LOGIN_MODE] = config.lastLoginMode
+            prefs[LAST_PHONE_NUMBER] = config.lastPhoneNumber
+            prefs[AI_SERVICE_SETTINGS] = encodeAiServiceSettings(
+                prefs.toAiSettings().copy(
+                    defaults = prefs.toAiSettings().defaults.copy(
+                        asr = AiServiceChoice(
+                            mode = config.asrMode.normalizedAsrMode(),
+                            profileId = if (config.asrMode == "backend") "" else config.asrProfileId,
+                        ),
+                        tts = legacyTtsChoice(config.ttsEngine.normalizedTtsEngine(), config.minimaxVoiceId),
+                    )
+                )
+            )
             persistProfiles(prefs, profiles, profiles[index].id)
         }
     }
@@ -158,14 +187,14 @@ class SettingsManagerAndroid(private val context: Context) : SettingsManager {
             val profiles = state.profiles.toMutableList()
             val existingIndex = profiles.indexOfFirst { it.id == normalized.id }
             if (existingIndex >= 0) {
-                profiles[existingIndex] = normalized
+                profiles[existingIndex] = normalized.clearPairingIfConnectionIdentityChanged(profiles[existingIndex])
                 persistProfiles(prefs, profiles, if (select) normalized.id else state.selectedProfileId)
                 saved = true
             } else if (
                 profiles.size < SettingsManager.MAX_AGENT_PROFILES &&
                 isGatewayCompatible(profiles, normalized.gatewayUrl)
             ) {
-                profiles += normalized
+                profiles += normalized.copy(isPaired = false)
                 persistProfiles(prefs, profiles, if (select) normalized.id else state.selectedProfileId)
                 saved = true
             }
@@ -198,17 +227,21 @@ class SettingsManagerAndroid(private val context: Context) : SettingsManager {
             val targetIndex = existingIndex.takeIf { it >= 0 } ?: emptyInitialIndex
 
             val profile = if (targetIndex != null) {
-                profiles[targetIndex].copy(
+                val previousProfile = profiles[targetIndex]
+                val scannedProfile = previousProfile.copy(
                     platform = platform,
                     displayName = displayName,
                     gatewayUrl = normalizedGateway,
                     backendId = backendId,
                     backendLabel = label ?: backendId,
                     token = token,
-                    isPaired = if (existingIndex >= 0) profiles[targetIndex].isPaired else false,
                     asrMode = prefs.globalAsrMode(),
                     asrProfileId = prefs.globalAsrProfileId(),
                     updatedAt = now,
+                )
+                val preservePairing = existingIndex >= 0 && !connectionIdentityChanged(previousProfile, scannedProfile)
+                scannedProfile.copy(
+                    isPaired = if (preservePairing) previousProfile.isPaired else false,
                 ).also { profiles[targetIndex] = it }
             } else {
                 AgentProfile(
@@ -267,12 +300,70 @@ class SettingsManagerAndroid(private val context: Context) : SettingsManager {
         }
     }
 
+    override suspend fun setProfilePinned(profileId: String, pinned: Boolean) {
+        context.dataStore.edit { prefs ->
+            val state = prefs.toProfilesState()
+            val profiles = state.profiles.map { profile ->
+                if (profile.id == profileId) {
+                    profile.copy(isPinned = pinned, updatedAt = currentTimestampMillis())
+                } else {
+                    profile
+                }
+            }
+            persistProfiles(prefs, profiles, state.selectedProfileId)
+        }
+    }
+
+    override suspend fun updateAiSettings(settings: AiServiceSettings) {
+        val normalized = settings.normalized()
+        context.dataStore.edit { prefs ->
+            prefs[AI_SERVICE_SETTINGS] = encodeAiServiceSettings(normalized)
+            prefs[ASR_MODE] = normalized.defaults.asr.mode.normalizedAsrMode()
+            prefs[ASR_PROFILE_ID] = if (normalized.defaults.asr.mode == "backend") "" else normalized.defaults.asr.profileId
+            prefs[TTS_ENGINE] = normalized.defaults.tts.toLegacyTtsEngine()
+            prefs[MINIMAX_VOICE_ID] = normalized.defaults.tts.voiceId.normalizedMiniMaxVoiceId()
+            prefs.remove(MINIMAX_API_KEY)
+        }
+    }
+
+    override suspend fun updateLocalCredential(id: String, apiKey: String) {
+        val normalizedId = id.trim()
+        if (normalizedId.isBlank()) return
+        val trimmed = apiKey.trim()
+        if (trimmed.isEmpty()) {
+            credentialVault.remove(normalizedId)
+        } else {
+            credentialVault.set(normalizedId, trimmed)
+        }
+        if (normalizedId == LOCAL_TTS_MINIMAX_CREDENTIAL_ID) {
+            context.dataStore.edit { prefs -> prefs.remove(MINIMAX_API_KEY) }
+        }
+    }
+
+    override suspend fun localCredential(id: String): String? =
+        id.trim().takeIf { it.isNotBlank() }?.let { credentialVault.get(it) }
+
+    override suspend fun updateLocalTtsCredential(providerId: String, apiKey: String) {
+        if (providerId != "minimax") return
+        updateLocalCredential(LOCAL_TTS_MINIMAX_CREDENTIAL_ID, apiKey)
+    }
+
+    override suspend fun localTtsCredential(providerId: String): String? =
+        if (providerId == "minimax") localCredential(LOCAL_TTS_MINIMAX_CREDENTIAL_ID) else null
+
     override suspend fun updateGlobalAsr(mode: String, profileId: String) {
         context.dataStore.edit { prefs ->
             val normalizedMode = mode.normalizedAsrMode()
             val normalizedProfileId = if (normalizedMode == "backend") "" else profileId
             prefs[ASR_MODE] = normalizedMode
             prefs[ASR_PROFILE_ID] = normalizedProfileId
+            prefs[AI_SERVICE_SETTINGS] = encodeAiServiceSettings(
+                prefs.toAiSettings().copy(
+                    defaults = prefs.toAiSettings().defaults.copy(
+                        asr = AiServiceChoice(mode = normalizedMode, profileId = normalizedProfileId),
+                    )
+                )
+            )
             val state = prefs.toProfilesState()
             persistProfiles(
                 prefs = prefs,
@@ -348,10 +439,12 @@ class SettingsManagerAndroid(private val context: Context) : SettingsManager {
         return AgentProfilesState(profiles, selectedId)
     }
 
-    private fun Preferences.toGatewayConfig(): GatewayConfig {
+    private fun Preferences.toGatewayConfig(localMiniMaxApiKey: String): GatewayConfig {
         val state = toProfilesState()
         val selected = state.selectedProfile
         val pairedBackendId = selected.backendId.takeIf { selected.isPaired && it.isNotBlank() }
+        val aiSettings = toAiSettings()
+        val ttsChoice = aiSettings.defaults.tts
         return GatewayConfig(
             profileId = selected.id,
             gatewayUrl = selected.gatewayUrl,
@@ -366,9 +459,34 @@ class SettingsManagerAndroid(private val context: Context) : SettingsManager {
             pairedBackendLabel = pairedBackendId?.let { selected.backendLabel ?: selected.resolvedDisplayName },
             asrMode = selected.asrMode.normalizedAsrMode(),
             asrProfileId = selected.asrProfileId,
-            ttsEngine = this[TTS_ENGINE] ?: "system",
-            minimaxApiKey = this[MINIMAX_API_KEY] ?: "",
-            minimaxVoiceId = this[MINIMAX_VOICE_ID] ?: "male-qn-qingse",
+            ttsEngine = ttsChoice.toLegacyTtsEngine(),
+            minimaxApiKey = localMiniMaxApiKey,
+            minimaxVoiceId = ttsChoice.voiceId.normalizedMiniMaxVoiceId(),
+            lastLoginMode = this[LAST_LOGIN_MODE] ?: "",
+            lastPhoneNumber = this[LAST_PHONE_NUMBER] ?: "",
+        )
+    }
+
+    private suspend fun migrateMiniMaxCredentialIfNeeded(prefs: Preferences): String {
+        val legacyPlaintextKey = prefs[MINIMAX_API_KEY].orEmpty().trim()
+        if (legacyPlaintextKey.isNotEmpty()) {
+            credentialVault.set(LOCAL_TTS_MINIMAX_CREDENTIAL_ID, legacyPlaintextKey)
+            context.dataStore.edit { it.remove(MINIMAX_API_KEY) }
+            return legacyPlaintextKey
+        }
+        return credentialVault.get(LOCAL_TTS_MINIMAX_CREDENTIAL_ID).orEmpty()
+    }
+
+    private fun Preferences.toAiSettings(): AiServiceSettings {
+        val saved = this[AI_SERVICE_SETTINGS]
+        if (!saved.isNullOrBlank()) return decodeAiServiceSettings(saved)
+        return aiSettingsFromLegacyConfig(
+            GatewayConfig(
+                asrMode = globalAsrMode(),
+                asrProfileId = globalAsrProfileId(),
+                ttsEngine = (this[TTS_ENGINE] ?: "system").normalizedTtsEngine(),
+                minimaxVoiceId = (this[MINIMAX_VOICE_ID] ?: "male-qn-qingse").normalizedMiniMaxVoiceId(),
+            )
         )
     }
 
@@ -403,6 +521,21 @@ class SettingsManagerAndroid(private val context: Context) : SettingsManager {
             asrProfileId = if (asrMode == "backend") "" else asrProfileId,
             updatedAt = currentTimestampMillis(),
         )
+
+    private fun AgentProfile.clearPairingIfConnectionIdentityChanged(previous: AgentProfile): AgentProfile {
+        if (!connectionIdentityChanged(previous, this)) return this
+        val previousBackendId = previous.backendId.trim()
+        val nextBackendId = backendId.trim()
+        return copy(
+            isPaired = false,
+            backendLabel = if (previousBackendId != nextBackendId) nextBackendId.ifBlank { null } else backendLabel,
+        )
+    }
+
+    private fun connectionIdentityChanged(previous: AgentProfile, next: AgentProfile): Boolean =
+        AgentProfile.normalizedGatewayKey(previous.gatewayUrl) != AgentProfile.normalizedGatewayKey(next.gatewayUrl) ||
+            previous.backendId.trim() != next.backendId.trim() ||
+            previous.token.trim() != next.token.trim()
 
     private fun persistProfiles(
         prefs: MutablePreferences,
@@ -455,4 +588,10 @@ class SettingsManagerAndroid(private val context: Context) : SettingsManager {
 
     private fun String.normalizedAsrMode(): String =
         if (this == "backend") "backend" else "router"
+
+    private fun String.normalizedTtsEngine(): String =
+        if (this == "minimax") "minimax" else "system"
+
+    private fun String.normalizedMiniMaxVoiceId(): String =
+        trim().ifEmpty { "male-qn-qingse" }
 }
