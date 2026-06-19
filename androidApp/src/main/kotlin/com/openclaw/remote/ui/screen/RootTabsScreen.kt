@@ -1,6 +1,7 @@
 package com.openclaw.remote.ui.screen
 
 import android.content.Context
+import android.content.SharedPreferences
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -96,7 +97,9 @@ import com.openclaw.remote.data.AgentProfilesState
 import com.openclaw.remote.data.AiAgentOverride
 import com.openclaw.remote.data.AiProviderCatalog
 import com.openclaw.remote.data.AiProviderDescriptor
+import com.openclaw.remote.data.AiProviderChatSelection
 import com.openclaw.remote.data.AiServiceChoice
+import com.openclaw.remote.data.AiServiceConfig
 import com.openclaw.remote.data.AiServiceDefaults
 import com.openclaw.remote.data.AiServiceSettings
 import com.openclaw.remote.data.GatewayConfig
@@ -109,8 +112,19 @@ import com.openclaw.remote.data.RecordingStore
 import com.openclaw.remote.data.RecordingType
 import com.openclaw.remote.data.SettingsManager
 import com.openclaw.remote.data.decodeRecordings
+import com.openclaw.remote.data.defaultSelectionType
+import com.openclaw.remote.data.asrConfigForRecording
+import com.openclaw.remote.data.isSelectableServiceConfig
+import com.openclaw.remote.data.llmConfigForProviderChat
 import com.openclaw.remote.data.encodeRecordings
+import com.openclaw.remote.data.promptFor
+import com.openclaw.remote.data.preferredBySavedCredential
+import com.openclaw.remote.data.recordingSelectionTypeOptions
+import com.openclaw.remote.data.settingsTypeOptions
 import com.openclaw.remote.data.sortedForAgentList
+import com.openclaw.remote.data.toAiServiceChoice
+import com.openclaw.remote.data.toAiServiceConfig
+import com.openclaw.remote.data.ttsConfigForPlayback
 import com.openclaw.remote.headset.A9UltraStandbyMode
 import com.openclaw.remote.ui.theme.MochiTheme
 import kotlinx.coroutines.launch
@@ -188,6 +202,7 @@ fun RootTabsScreen(
 ) {
     val colors = MochiTheme.colors
     val context = LocalContext.current
+    val aiSettings by settingsManager.aiSettingsFlow.collectAsState(initial = AiServiceSettings())
     val recordingPrefs = remember(context) {
         context.getSharedPreferences("openclaw_recordings", Context.MODE_PRIVATE)
     }
@@ -196,12 +211,21 @@ fun RootTabsScreen(
     }
     var recordings by remember { mutableStateOf(recordingStore.recordings) }
     var selectedRecordingId by remember { mutableStateOf<String?>(null) }
+    var recordingSettings by remember(recordingPrefs) {
+        mutableStateOf(recordingPrefs.readRecordingSettings())
+    }
+    val effectiveRecordingSettings = recordingSettings.withAiAsrConfig(aiSettings.asrConfigForRecording())
 
     fun refreshRecordings() {
         recordings = recordingStore.recordings
         recordingPrefs.edit()
             .putString("recordings_v1", encodeRecordings(recordings))
             .apply()
+    }
+
+    fun updateRecordingSettings(settings: RecordingSettings) {
+        recordingSettings = settings
+        recordingPrefs.writeRecordingSettings(settings)
     }
 
     when {
@@ -328,7 +352,7 @@ fun RootTabsScreen(
                     selectedRecordingId = selectedRecordingId,
                     onSelectRecording = { selectedRecordingId = it },
                     recordingStore = recordingStore,
-                    recordingSettings = RecordingSettings(),
+                    recordingSettings = effectiveRecordingSettings,
                     config = config,
                     authClient = authClient,
                     isRecording = isRecording,
@@ -336,6 +360,7 @@ fun RootTabsScreen(
                     onStoreChanged = ::refreshRecordings,
                 )
                 AndroidRootTab.HEADSET -> HeadsetTabScreen(
+                    settingsManager = settingsManager,
                     headsetStatusLabel = headsetStatusLabel,
                     headsetStandbyMode = headsetStandbyMode,
                     showHeadsetStandbyControl = showHeadsetStandbyControl,
@@ -350,9 +375,11 @@ fun RootTabsScreen(
                 )
                 AndroidRootTab.SETTINGS -> SettingsTabShell(
                     settingsManager = settingsManager,
+                    recordingSettings = recordingSettings,
                     isDark = isDark,
                     onToggleTheme = onToggleTheme,
                     onOpenWallet = onOpenWallet,
+                    onRecordingSettingsChange = ::updateRecordingSettings,
                     aiServiceContent = {
                         AiServiceSettingsScreen(settingsManager = settingsManager)
                     },
@@ -558,7 +585,9 @@ private fun ProviderChatScreen(
     var input by remember { mutableStateOf("") }
     var isSending by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
-    val llmChoice = aiSettings.defaults.llm
+    val selectableLlmConfigs = aiSettings.serviceConfigs.llm.filter { it.isSelectableServiceConfig() }
+    val llmConfig = aiSettings.llmConfigForProviderChat()
+    val llmChoice = llmConfig?.toAiServiceChoice() ?: aiSettings.defaults.llm
     val route = providerChatRouteFor(llmChoice)
 
     LaunchedEffect(messages.size, messages.lastOrNull()?.content) {
@@ -590,7 +619,20 @@ private fun ProviderChatScreen(
         ) {
             item {
                 IosSection(title = "AI Provider") {
-                    IosValueRow("模型服务", providerRouteLabel(route, llmChoice))
+                    IosValueRow("当前使用", providerRouteLabel(route, llmChoice))
+                    if (selectableLlmConfigs.isNotEmpty()) {
+                        IosRowDivider()
+                        ChipChoiceRow(
+                            label = "LLM 场景",
+                            selected = llmConfig?.id ?: aiSettings.sceneSelections.providerChat.llmConfigId,
+                            choices = selectableLlmConfigs.map { it.id },
+                            onSelect = { configId ->
+                                scope.launch {
+                                    settingsManager.updateAiSceneSelection(providerChatLlmConfigId = configId)
+                                }
+                            },
+                        )
+                    }
                     IosRowDivider()
                     IosValueRow(
                         "状态",
@@ -734,7 +776,7 @@ private fun RecordingsTabScreen(
     val scope = rememberCoroutineScope()
     val colors = MochiTheme.colors
     val spec = iosParitySpecFor(AndroidRootTab.RECORDINGS)
-    var selectedType by remember { mutableStateOf(recordingSettings.defaultType) }
+    var selectedType by remember(recordingSettings) { mutableStateOf(recordingSettings.defaultSelectionType()) }
     var showTypeSelection by remember { mutableStateOf(false) }
     var editingAsrRecordingId by remember { mutableStateOf<String?>(null) }
     var editedAsrText by remember { mutableStateOf("") }
@@ -759,6 +801,7 @@ private fun RecordingsTabScreen(
     if (showTypeSelection) {
         RecordingTypeSelectionDialog(
             selectedType = selectedType,
+            recordingSettings = recordingSettings,
             targetAgentName = "当前 Agent",
             onSelect = { selectedType = it },
             onDismiss = { showTypeSelection = false },
@@ -819,6 +862,8 @@ private fun RecordingsTabScreen(
                             sizeBytes = bytes.size.toLong(),
                             recordingType = selected.type.wireValue,
                             asrProfileId = config.asrProfileId.takeIf { config.asrMode != "backend" },
+                            agentPrompt = recordingSettings.promptFor(selected.type)
+                                .takeIf { selected.type != RecordingType.AUDIO_ONLY && it.isNotBlank() },
                         )
                         recordingStore.updateAsrJob(selected.id, created.toRecordingAsrJob())
                         onStoreChanged()
@@ -881,6 +926,7 @@ private fun RecordingsTabScreen(
                     if (isRecording) {
                         stopAndSaveRecording(selectedType)
                     } else {
+                        selectedType = recordingSettings.defaultSelectionType()
                         showTypeSelection = true
                     }
                 },
@@ -1094,6 +1140,7 @@ private fun RecordingDetailScreen(
 
 @Composable
 private fun HeadsetTabScreen(
+    settingsManager: SettingsManager,
     headsetStatusLabel: String?,
     headsetStandbyMode: A9UltraStandbyMode,
     showHeadsetStandbyControl: Boolean,
@@ -1107,6 +1154,9 @@ private fun HeadsetTabScreen(
     onToggleHeadsetLedLight: (Boolean) -> Unit,
 ) {
     val spec = iosParitySpecFor(AndroidRootTab.HEADSET)
+    val scope = rememberCoroutineScope()
+    val aiSettings by settingsManager.aiSettingsFlow.collectAsState(initial = AiServiceSettings())
+    val selectableTtsConfigs = aiSettings.serviceConfigs.tts.filter { it.isSelectableServiceConfig() }
     var page by remember { mutableStateOf("home") }
     var eqPreset by remember { mutableStateOf("均衡") }
     var leftShortcut by remember { mutableStateOf("长按唤醒") }
@@ -1202,6 +1252,16 @@ private fun HeadsetTabScreen(
         item {
             IosSection(title = spec.sections[2].title) {
                 SettingSwitchRow("朗读 Agent 回复", soundPlaybackEnabled, onToggleSoundPlayback)
+                IosRowDivider()
+                ServiceConfigChoiceRow(
+                    label = "播放 TTS",
+                    selectedId = aiSettings.sceneSelections.playback.ttsConfigId,
+                    configs = selectableTtsConfigs,
+                    emptyText = "请先到 AI 服务添加 TTS 配置",
+                    onSelect = { configId ->
+                        scope.launch { settingsManager.updateAiSceneSelection(playbackTtsConfigId = configId) }
+                    },
+                )
                 if (isPlaybackSpeaking) {
                     IosRowDivider()
                     OutlinedButton(onClick = onInterruptPlayback) { Text("停止朗读") }
@@ -1224,9 +1284,11 @@ private fun HeadsetTabScreen(
 @Composable
 private fun SettingsTabShell(
     settingsManager: SettingsManager,
+    recordingSettings: RecordingSettings,
     isDark: Boolean,
     onToggleTheme: () -> Unit,
     onOpenWallet: () -> Unit,
+    onRecordingSettingsChange: (RecordingSettings) -> Unit,
     aiServiceContent: @Composable () -> Unit,
     connectionSettingsContent: @Composable () -> Unit,
 ) {
@@ -1244,7 +1306,12 @@ private fun SettingsTabShell(
             ScreenTopBar(title = "AI 服务", onBack = { page = "home" })
             Box(Modifier.weight(1f)) { aiServiceContent() }
         }
-        "recording" -> RecordingSettingsPage(onBack = { page = "home" })
+        "recording" -> RecordingSettingsPage(
+            settingsManager = settingsManager,
+            settings = recordingSettings,
+            onSettingsChange = onRecordingSettingsChange,
+            onBack = { page = "home" },
+        )
         "headset" -> HeadsetSettingsMenuPage(onBack = { page = "home" })
         "account" -> AccountSecuritySummaryPage(
             accountId = config.accountId,
@@ -1275,7 +1342,7 @@ private fun SettingsTabShell(
                     IosRowDivider()
                     IosNavigationRow("AI 服务", "LLM / ASR / TTS", onClick = { page = "ai" })
                     IosRowDivider()
-                    IosNavigationRow("录音设置", "主 Agent、默认类型、ASR", onClick = { page = "recording" })
+                    IosNavigationRow("录音设置", "主 Agent、录音类型、ASR", onClick = { page = "recording" })
                     IosRowDivider()
                     IosNavigationRow("耳机设置", "EQ、快捷方式、本地能力", onClick = { page = "headset" })
                 }
@@ -1315,14 +1382,56 @@ private fun AiServiceSettingsScreen(settingsManager: SettingsManager) {
     val scope = rememberCoroutineScope()
     val aiSettings by settingsManager.aiSettingsFlow.collectAsState(initial = AiServiceSettings())
     val profilesState by settingsManager.profilesFlow.collectAsState(initial = AgentProfilesState.default())
-    var llm by remember(aiSettings) { mutableStateOf(aiSettings.defaults.llm) }
-    var asr by remember(aiSettings) { mutableStateOf(aiSettings.defaults.asr) }
-    var tts by remember(aiSettings) { mutableStateOf(aiSettings.defaults.tts) }
-    var apiKey by remember(llm.providerId) { mutableStateOf("") }
-    var asrApiKey by remember(asr.providerId) { mutableStateOf("") }
-    var ttsApiKey by remember(tts.providerId) { mutableStateOf("") }
+    val editingLlm = aiSettings.llmConfigForProviderChat()?.toAiServiceChoice() ?: aiSettings.defaults.llm
+    val editingAsr = aiSettings.asrConfigForRecording()?.toAiServiceChoice() ?: aiSettings.defaults.asr
+    val editingTts = aiSettings.ttsConfigForPlayback()?.toAiServiceChoice() ?: aiSettings.defaults.tts
+    var llm by remember(aiSettings.serviceConfigs.llm) { mutableStateOf(editingLlm) }
+    var asr by remember(aiSettings.serviceConfigs.asr) { mutableStateOf(editingAsr) }
+    var tts by remember(aiSettings.serviceConfigs.tts) { mutableStateOf(editingTts) }
+    var apiKey by remember { mutableStateOf("") }
+    var asrApiKey by remember { mutableStateOf("") }
+    var ttsApiKey by remember { mutableStateOf("") }
     var notice by remember { mutableStateOf<String?>(null) }
     var editingOverrideProfileId by remember { mutableStateOf<String?>(null) }
+    val selectableLlmConfigs = aiSettings.serviceConfigs.llm.filter { it.isSelectableServiceConfig() }
+    val selectableAsrConfigs = aiSettings.serviceConfigs.asr.filter { it.isSelectableServiceConfig() }
+    val selectableTtsConfigs = aiSettings.serviceConfigs.tts.filter { it.isSelectableServiceConfig() }
+
+    LaunchedEffect(editingLlm) {
+        val credentials = AiProviderCatalog.llmProviders.credentialPresence(settingsManager)
+        val preferred = if (editingLlm.mode == "byok") {
+            AiProviderCatalog.llmProviders.preferredBySavedCredential(editingLlm.providerId) { credentials[it] == true }
+        } else {
+            null
+        }
+        val next = preferred?.toChoice(includeVoice = false, currentVoiceId = editingLlm.voiceId) ?: editingLlm
+        llm = next
+        apiKey = next.credentialId.takeIf { it.isNotBlank() }?.let { settingsManager.localCredential(it).orEmpty() }.orEmpty()
+    }
+
+    LaunchedEffect(editingAsr) {
+        val credentials = AiProviderCatalog.asrProviders.credentialPresence(settingsManager)
+        val preferred = if (editingAsr.mode == "byok") {
+            AiProviderCatalog.asrProviders.preferredBySavedCredential(editingAsr.providerId) { credentials[it] == true }
+        } else {
+            null
+        }
+        val next = preferred?.toChoice(includeVoice = false, currentVoiceId = editingAsr.voiceId) ?: editingAsr
+        asr = next
+        asrApiKey = next.credentialId.takeIf { it.isNotBlank() }?.let { settingsManager.localCredential(it).orEmpty() }.orEmpty()
+    }
+
+    LaunchedEffect(editingTts) {
+        val credentials = AiProviderCatalog.ttsProviders.credentialPresence(settingsManager)
+        val preferred = if (editingTts.mode == "byok") {
+            AiProviderCatalog.ttsProviders.preferredBySavedCredential(editingTts.providerId) { credentials[it] == true }
+        } else {
+            null
+        }
+        val next = preferred?.toChoice(includeVoice = true, currentVoiceId = editingTts.voiceId) ?: editingTts
+        tts = next
+        ttsApiKey = next.credentialId.takeIf { it.isNotBlank() }?.let { settingsManager.localCredential(it).orEmpty() }.orEmpty()
+    }
 
     val editingProfile = profilesState.profiles.firstOrNull { it.id == editingOverrideProfileId }
     if (editingProfile != null) {
@@ -1348,40 +1457,105 @@ private fun AiServiceSettingsScreen(settingsManager: SettingsManager) {
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         item {
-            IosSection(title = "权益与钱包") {
-                IosValueRow("钱包余额", "在钱包与套餐中查看")
+            IosSection(title = "服务配置库") {
+                IosValueRow("LLM 配置", "${aiSettings.serviceConfigs.llm.size} 个")
                 IosRowDivider()
-                IosValueRow("当前权益", "Router / BYOK 可配置")
+                IosValueRow("ASR 配置", "${aiSettings.serviceConfigs.asr.size} 个")
+                IosRowDivider()
+                IosValueRow("TTS 配置", "${aiSettings.serviceConfigs.tts.size} 个")
             }
         }
         item {
-            IosSection(title = "LLM") {
+            IosSection(title = "业务场景") {
+                ServiceConfigChoiceRow(
+                    label = "Provider Chat",
+                    selectedId = aiSettings.sceneSelections.providerChat.llmConfigId,
+                    configs = selectableLlmConfigs,
+                    emptyText = "无可用 LLM 配置",
+                    onSelect = { configId ->
+                        scope.launch { settingsManager.updateAiSceneSelection(providerChatLlmConfigId = configId) }
+                    },
+                )
+                IosRowDivider()
+                ServiceConfigChoiceRow(
+                    label = "录音 ASR",
+                    selectedId = aiSettings.sceneSelections.recording.asrConfigId,
+                    configs = selectableAsrConfigs,
+                    emptyText = "无可用 ASR 配置",
+                    onSelect = { configId ->
+                        scope.launch { settingsManager.updateAiSceneSelection(recordingAsrConfigId = configId) }
+                    },
+                )
+                IosRowDivider()
+                ServiceConfigChoiceRow(
+                    label = "播放 TTS",
+                    selectedId = aiSettings.sceneSelections.playback.ttsConfigId,
+                    configs = selectableTtsConfigs,
+                    emptyText = "无可用 TTS 配置",
+                    onSelect = { configId ->
+                        scope.launch { settingsManager.updateAiSceneSelection(playbackTtsConfigId = configId) }
+                    },
+                )
+            }
+        }
+        item {
+            IosSection(title = "LLM 配置") {
                 AiChoiceEditor(
-                    label = "模型服务",
+                    label = "服务类型",
                     choice = llm,
                     providers = AiProviderCatalog.llmProviders,
                     apiKey = apiKey,
                     onChoiceChange = { llm = it },
                     onApiKeyChange = { apiKey = it },
                 )
+                IosRowDivider()
+                OutlinedButton(
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = {
+                        scope.launch {
+                            if (llm.credentialId.isNotBlank() && apiKey.isNotBlank()) {
+                                settingsManager.updateLocalCredential(llm.credentialId, apiKey)
+                            }
+                            settingsManager.upsertAiServiceConfig(llm.toAiServiceConfig("llm"))
+                            notice = "LLM 配置已保存"
+                        }
+                    },
+                ) {
+                    Text("保存 LLM 配置")
+                }
             }
         }
         item {
-            IosSection(title = "ASR") {
+            IosSection(title = "ASR 配置") {
                 AiChoiceEditor(
-                    label = "ASR 服务",
+                    label = "服务类型",
                     choice = asr,
                     providers = AiProviderCatalog.asrProviders,
                     apiKey = asrApiKey,
                     onChoiceChange = { asr = it },
                     onApiKeyChange = { asrApiKey = it },
                 )
+                IosRowDivider()
+                OutlinedButton(
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = {
+                        scope.launch {
+                            if (asr.credentialId.isNotBlank() && asrApiKey.isNotBlank()) {
+                                settingsManager.updateLocalCredential(asr.credentialId, asrApiKey)
+                            }
+                            settingsManager.upsertAiServiceConfig(asr.toAiServiceConfig("asr"))
+                            notice = "ASR 配置已保存"
+                        }
+                    },
+                ) {
+                    Text("保存 ASR 配置")
+                }
             }
         }
         item {
-            IosSection(title = "TTS 引擎") {
+            IosSection(title = "TTS 配置") {
                 AiChoiceEditor(
-                    label = "TTS 引擎",
+                    label = "服务类型",
                     choice = tts,
                     providers = AiProviderCatalog.ttsProviders,
                     apiKey = ttsApiKey,
@@ -1389,6 +1563,21 @@ private fun AiServiceSettingsScreen(settingsManager: SettingsManager) {
                     onApiKeyChange = { ttsApiKey = it },
                     includeVoice = true,
                 )
+                IosRowDivider()
+                OutlinedButton(
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = {
+                        scope.launch {
+                            if (tts.credentialId.isNotBlank() && ttsApiKey.isNotBlank()) {
+                                settingsManager.updateLocalCredential(tts.credentialId, ttsApiKey)
+                            }
+                            settingsManager.upsertAiServiceConfig(tts.toAiServiceConfig("tts"))
+                            notice = "TTS 配置已保存"
+                        }
+                    },
+                ) {
+                    Text("保存 TTS 配置")
+                }
             }
         }
         item {
@@ -1407,32 +1596,10 @@ private fun AiServiceSettingsScreen(settingsManager: SettingsManager) {
             }
         }
         item {
-            IosSection {
-                Button(
-                    onClick = {
-                    scope.launch {
-                        if (llm.credentialId.isNotBlank() && apiKey.isNotBlank()) {
-                            settingsManager.updateLocalCredential(llm.credentialId, apiKey)
-                        }
-                        if (asr.credentialId.isNotBlank() && asrApiKey.isNotBlank()) {
-                            settingsManager.updateLocalCredential(asr.credentialId, asrApiKey)
-                        }
-                        if (tts.credentialId.isNotBlank() && ttsApiKey.isNotBlank()) {
-                            settingsManager.updateLocalCredential(tts.credentialId, ttsApiKey)
-                        }
-                        settingsManager.updateAiSettings(
-                            aiSettings.copy(defaults = AiServiceDefaults(llm = llm, asr = asr, tts = tts))
-                        )
-                        notice = "已保存"
-                    }
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Icon(Icons.Filled.Save, contentDescription = null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("保存 AI 服务")
+            notice?.let {
+                IosSection {
+                    Text(it, fontSize = 13.sp, color = MochiTheme.colors.textSecondary)
                 }
-                notice?.let { Text(it, fontSize = 13.sp, color = MochiTheme.colors.textSecondary) }
             }
         }
     }
@@ -1783,25 +1950,27 @@ private fun BatteryPill(label: String, value: String) {
 @Composable
 private fun RecordingTypeSelectionDialog(
     selectedType: RecordingType,
+    recordingSettings: RecordingSettings,
     targetAgentName: String,
     onSelect: (RecordingType) -> Unit,
     onDismiss: () -> Unit,
     onConfirm: () -> Unit,
 ) {
+    val typeOptions = recordingSettings.recordingSelectionTypeOptions()
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("录音类型") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 IosSection(title = "录音类型") {
-                    RecordingType.entries.forEachIndexed { index, type ->
+                    typeOptions.forEachIndexed { index, type ->
                         IosPlainRow(onClick = { onSelect(type) }) {
                             Text(type.label, modifier = Modifier.weight(1f))
                             if (selectedType == type) {
                                 Text("已选", color = MaterialTheme.colorScheme.primary, fontSize = 13.sp)
                             }
                         }
-                        if (index != RecordingType.entries.lastIndex) IosRowDivider()
+                        if (index != typeOptions.lastIndex) IosRowDivider()
                     }
                 }
                 if (selectedType != RecordingType.AUDIO_ONLY) {
@@ -1934,12 +2103,21 @@ private fun LocalPlaceholderPage(title: String, rows: List<Pair<String, String>>
 }
 
 @Composable
-private fun RecordingSettingsPage(onBack: () -> Unit) {
-    var defaultType by remember { mutableStateOf(RecordingType.MEETING) }
+private fun RecordingSettingsPage(
+    settingsManager: SettingsManager,
+    settings: RecordingSettings,
+    onSettingsChange: (RecordingSettings) -> Unit,
+    onBack: () -> Unit,
+) {
+    val scope = rememberCoroutineScope()
+    val aiSettings by settingsManager.aiSettingsFlow.collectAsState(initial = AiServiceSettings())
+    val selectableAsrConfigs = aiSettings.serviceConfigs.asr.filter { it.isSelectableServiceConfig() }
+    var draft by remember(settings) { mutableStateOf(settings) }
     var localDefault by remember { mutableStateOf(true) }
-    var prompt by remember { mutableStateOf("") }
-    var asrProvider by remember { mutableStateOf("router") }
-    var asrModel by remember { mutableStateOf("router-default") }
+    fun updateDraft(next: RecordingSettings) {
+        draft = next
+        onSettingsChange(next)
+    }
     LazyColumn(
         modifier = Modifier.fillMaxSize().background(MochiTheme.colors.background),
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
@@ -1952,8 +2130,8 @@ private fun RecordingSettingsPage(onBack: () -> Unit) {
                 IosRowDivider()
                 SettingSwitchRow("本机录音默认执行", localDefault) { localDefault = !localDefault }
                 IosRowDivider()
-                ChipChoiceRow("默认录音类型", defaultType.label, RecordingType.entries.map { it.label }) { label ->
-                    defaultType = RecordingType.entries.first { it.label == label }
+                ChipChoiceRow("录音类型", draft.defaultType.label, draft.settingsTypeOptions().map { it.label }) { label ->
+                    updateDraft(draft.copy(defaultType = draft.settingsTypeOptions().first { it.label == label }))
                 }
             }
         }
@@ -1961,25 +2139,51 @@ private fun RecordingSettingsPage(onBack: () -> Unit) {
             IosSection(title = "自定义提示词") {
                 IosPlainRow {
                     OutlinedTextField(
-                        value = prompt,
-                        onValueChange = { prompt = it },
+                        value = draft.customPrompt,
+                        onValueChange = { updateDraft(draft.copy(customPrompt = it)) },
                         modifier = Modifier.fillMaxWidth(),
                         minLines = 3,
-                        placeholder = { Text("录音处理提示词") },
+                        placeholder = { Text("自定义录音 Prompt") },
                     )
                 }
             }
         }
         item {
-            IosSection(title = "ASR 模型") {
-                ChipChoiceRow("Provider", asrProvider, AiProviderCatalog.asrProviders.map { it.id }) { asrProvider = it }
+            IosSection(title = "ASR") {
+                ServiceConfigChoiceRow(
+                    label = "当前使用",
+                    selectedId = aiSettings.sceneSelections.recording.asrConfigId,
+                    configs = selectableAsrConfigs,
+                    emptyText = "请先到 AI 服务添加 ASR 配置",
+                    onSelect = { configId ->
+                        selectableAsrConfigs.firstOrNull { it.id == configId }?.let { config ->
+                            scope.launch {
+                                settingsManager.updateAiSceneSelection(recordingAsrConfigId = configId)
+                            }
+                            updateDraft(
+                                draft.copy(
+                                    asrMode = if (config.mode == "backend" || config.mode == "agent") "backend" else "router",
+                                    asrProfileId = if (config.mode == "router") config.profileId else null,
+                                )
+                            )
+                        }
+                    },
+                )
+                IosRowDivider()
+                IosValueRow(
+                    "链路",
+                    when (aiSettings.asrConfigForRecording()?.mode) {
+                        "backend", "agent" -> "Agent"
+                        "byok" -> "BYOK"
+                        else -> "Router"
+                    }
+                )
                 IosRowDivider()
                 IosPlainRow {
-                    OutlinedTextField(
-                        value = asrModel,
-                        onValueChange = { asrModel = it },
-                        modifier = Modifier.fillMaxWidth(),
-                        label = { Text("Model") },
+                    Text(
+                        "ASR 配置在 AI 服务中维护，本页只选择录音场景使用哪一个配置。",
+                        fontSize = 13.sp,
+                        color = MochiTheme.colors.textSecondary,
                     )
                 }
             }
@@ -2032,6 +2236,41 @@ private fun AccountSecuritySummaryPage(
 }
 
 @Composable
+private fun ServiceConfigChoiceRow(
+    label: String,
+    selectedId: String,
+    configs: List<AiServiceConfig>,
+    emptyText: String,
+    onSelect: (String) -> Unit,
+) {
+    if (configs.isEmpty()) {
+        IosValueRow(label, emptyText)
+        return
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        IosValueRow(label, configs.firstOrNull { it.id == selectedId }?.serviceConfigLabel() ?: "未选择")
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            configs.forEach { config ->
+                FilterChip(
+                    selected = selectedId == config.id,
+                    onClick = { onSelect(config.id) },
+                    label = { Text(config.serviceConfigLabel()) },
+                )
+            }
+        }
+    }
+}
+
+private fun AiServiceConfig.serviceConfigLabel(): String =
+    when (mode) {
+        "router" -> "Router ${profileId.ifBlank { "default" }}"
+        "byok" -> "BYOK ${providerId.ifBlank { displayName.ifBlank { "Custom" } }}"
+        "backend", "agent" -> "Agent"
+        "system" -> "System"
+        else -> displayName.ifBlank { id }
+    }
+
+@Composable
 private fun AiChoiceEditor(
     label: String,
     choice: AiServiceChoice,
@@ -2048,18 +2287,7 @@ private fun AiChoiceEditor(
         choices = providers.map { it.id },
         onSelect = { providerId ->
             val provider = providers.first { it.id == providerId }
-            onChoiceChange(
-                AiServiceChoice(
-                    mode = provider.mode,
-                    providerId = provider.id,
-                    profileId = if (provider.mode == "router") "default" else "",
-                    baseUrl = provider.baseUrl,
-                    model = provider.defaultModel,
-                    credentialId = provider.credentialId,
-                    displayName = provider.displayName,
-                    voiceId = if (includeVoice && provider.id == "minimax") "male-qn-qingse" else choice.voiceId,
-                )
-            )
+            onChoiceChange(provider.toChoice(includeVoice = includeVoice, currentVoiceId = choice.voiceId))
         },
     )
     if (choice.mode == "router") {
@@ -2117,6 +2345,24 @@ private fun AiChoiceEditor(
         }
     }
 }
+
+private suspend fun List<AiProviderDescriptor>.credentialPresence(settingsManager: SettingsManager): Map<String, Boolean> =
+    filter { it.credentialId.isNotBlank() }
+        .associate { provider ->
+            provider.credentialId to !settingsManager.localCredential(provider.credentialId).isNullOrBlank()
+        }
+
+private fun AiProviderDescriptor.toChoice(includeVoice: Boolean, currentVoiceId: String): AiServiceChoice =
+    AiServiceChoice(
+        mode = mode,
+        providerId = id,
+        profileId = if (mode == "router") "default" else "",
+        baseUrl = baseUrl,
+        model = defaultModel,
+        credentialId = credentialId,
+        displayName = displayName,
+        voiceId = if (includeVoice && id == "minimax") currentVoiceId.ifBlank { "male-qn-qingse" } else currentVoiceId,
+    )
 
 @Composable
 private fun AgentAiOverrideEditorPage(
@@ -2282,6 +2528,23 @@ private fun encodeProviderChatHistory(messages: List<AiChatMessage>): String {
     return array.toString()
 }
 
+private fun SharedPreferences.readRecordingSettings(): RecordingSettings =
+    RecordingSettings(
+        defaultType = RecordingType.fromWireValue(getString("recording_default_type", null)),
+        asrMode = getString("recording_asr_mode", null)?.ifBlank { "router" } ?: "router",
+        asrProfileId = getString("recording_asr_profile_id", null)?.takeIf { it.isNotBlank() },
+        customPrompt = getString("recording_custom_prompt", null).orEmpty(),
+    )
+
+private fun SharedPreferences.writeRecordingSettings(settings: RecordingSettings) {
+    edit()
+        .putString("recording_default_type", settings.defaultType.wireValue)
+        .putString("recording_asr_mode", settings.asrMode.ifBlank { "router" })
+        .putString("recording_asr_profile_id", settings.asrProfileId.orEmpty())
+        .putString("recording_custom_prompt", settings.customPrompt)
+        .apply()
+}
+
 private fun Long.recordingTimeText(): String =
     SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()).format(Date(this))
 
@@ -2309,6 +2572,13 @@ private fun providerRouteLabel(route: ProviderChatRoute, choice: AiServiceChoice
         ProviderChatRoute.ANTHROPIC -> "Claude · ${choice.model.ifBlank { "model" }}"
         ProviderChatRoute.AGENT_DISABLED -> "Agent 模式不可用于 Provider Chat"
         ProviderChatRoute.UNSUPPORTED -> "未支持模式"
+    }
+
+private fun RecordingSettings.withAiAsrConfig(config: AiServiceConfig?): RecordingSettings =
+    when (config?.mode) {
+        "backend", "agent" -> copy(asrMode = "backend", asrProfileId = null)
+        "router" -> copy(asrMode = "router", asrProfileId = config.profileId.takeIf { it.isNotBlank() })
+        else -> this
     }
 
 private fun com.openclaw.remote.auth.LongRecordingAsrJobResult.toRecordingAsrJob(): RecordingAsrJob =

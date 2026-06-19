@@ -32,6 +32,7 @@ struct EarphoneLocalModelsTests {
         try testIdeaRecordingPromptRequiresResearchReport()
         try testRecordingChatContentFormatsPromptAndTranscript()
         try testRecordingSettingsDefaultToFirstConfiguredAgent()
+        try testRecordingSettingsShowCustomInSettingsButHideBlankCustomWhenSelectingRecording()
         try testRecordingSettingsFallbackWhenPrimaryAgentIsDeleted()
         try testRecordingAsrPayloadIncludesRecordingContext()
         try testChatAsrPayloadOmitsRecordingContext()
@@ -725,6 +726,19 @@ struct EarphoneLocalModelsTests {
         try expect(settings.primaryRecordingProfile?.id == "pinned", "primary recording profile should resolve to the default primary agent")
         try expect(settings.recordingSettings.defaultRecordingType == .audioOnly, "recordings should default to audio-only")
         try expect(settings.recordingSettings.customPrompt.isEmpty, "custom recording prompt should default to empty")
+    }
+
+    private static func testRecordingSettingsShowCustomInSettingsButHideBlankCustomWhenSelectingRecording() throws {
+        let emptyCustom = RecordingSettings(defaultRecordingType: .custom, customPrompt: "  ")
+
+        try expect(emptyCustom.settingsTypeOptions == RecordingType.allCases, "recording settings should always expose custom type")
+        try expect(emptyCustom.recordingSelectionTypeOptions == [.audioOnly, .meeting, .idea], "blank custom prompt should hide custom when choosing a finished recording type")
+        try expect(emptyCustom.defaultSelectionType == .audioOnly, "blank custom default should fall back to a visible system type")
+
+        let configuredCustom = RecordingSettings(defaultRecordingType: .custom, customPrompt: "请按我的模板处理录音")
+
+        try expect(configuredCustom.recordingSelectionTypeOptions == RecordingType.allCases, "configured custom prompt should show custom when choosing a finished recording type")
+        try expect(configuredCustom.defaultSelectionType == .custom, "configured custom default should remain selectable")
     }
 
     private static func testRecordingSettingsFallbackWhenPrimaryAgentIsDeleted() throws {

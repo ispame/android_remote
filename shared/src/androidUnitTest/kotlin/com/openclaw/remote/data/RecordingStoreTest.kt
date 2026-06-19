@@ -88,6 +88,23 @@ class RecordingStoreTest {
     }
 
     @Test
+    fun recordingSettingsShowCustomInSettingsButHideBlankCustomWhenSelectingRecording() {
+        val emptyCustom = RecordingSettings(defaultType = RecordingType.CUSTOM, customPrompt = "  ")
+
+        assertEquals(RecordingType.entries.toList(), emptyCustom.settingsTypeOptions())
+        assertEquals(
+            listOf(RecordingType.AUDIO_ONLY, RecordingType.MEETING, RecordingType.IDEA),
+            emptyCustom.recordingSelectionTypeOptions(),
+        )
+        assertEquals(RecordingType.AUDIO_ONLY, emptyCustom.defaultSelectionType())
+
+        val configuredCustom = emptyCustom.copy(customPrompt = "请按我的模板处理录音")
+
+        assertEquals(RecordingType.entries.toList(), configuredCustom.recordingSelectionTypeOptions())
+        assertEquals(RecordingType.CUSTOM, configuredCustom.defaultSelectionType())
+    }
+
+    @Test
     fun encodesAndDecodesRecordingSnapshots() {
         val store = RecordingStore()
         val recording = store.createRecording("周会", RecordingType.MEETING, "/tmp/meeting.wav", 3_000, nowMillis = 1_000)

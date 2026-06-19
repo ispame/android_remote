@@ -16,7 +16,7 @@ struct TtsBehaviorTests {
         try testMiniMaxResponseParserRejectsProviderErrors()
         try testMiniMaxVoiceCatalogBuildsSelectableVoices()
         try testSettingsManagerPersistsTtsDefaultsAndSoundPlaybackPreference()
-        try testSettingsManagerPreservesRouterTtsModeForUnifiedSettings()
+        try testSettingsManagerNormalizesRouterTtsToSystem()
         try testSettingsManagerMigratesOldMiniMaxLlmHost()
         try testAgentProfileTtsDefaultsAndLegacyDecode()
         try testSettingsManagerMigratesLegacyGlobalTtsToAgentProfilesOnce()
@@ -271,7 +271,7 @@ struct TtsBehaviorTests {
         try expect(!reloaded.soundPlaybackEnabled, "sound playback preference should persist")
     }
 
-    private static func testSettingsManagerPreservesRouterTtsModeForUnifiedSettings() throws {
+    private static func testSettingsManagerNormalizesRouterTtsToSystem() throws {
         let suiteName = "TtsBehaviorTests-\(UUID().uuidString)"
         let defaults = try expectNotNil(UserDefaults(suiteName: suiteName), "test defaults suite should be available")
         let vault = FakeCredentialVault()
@@ -291,9 +291,10 @@ struct TtsBehaviorTests {
             )
         ))
 
-        try expect(manager.aiSettings.defaults.tts.mode == "router", "unified AI settings should preserve Router TTS mode")
-        try expect(manager.aiSettings.defaults.tts.providerId == "router", "Router TTS settings should keep router provider id")
-        try expect(manager.config.ttsEngine == "system", "legacy playback projection should stay system until Router TTS playback is implemented")
+        try expect(manager.aiSettings.defaults.tts.mode == "system", "Router TTS should normalize to system TTS")
+        try expect(manager.aiSettings.defaults.tts.providerId == "system", "Router TTS should not remain the default provider")
+        try expect(manager.aiSettings.sceneSelections.playback.ttsConfigId == "tts-system", "Router TTS scene selection should fall back to system TTS")
+        try expect(manager.config.ttsEngine == "system", "legacy playback projection should stay system")
     }
 
     private static func testSettingsManagerMigratesOldMiniMaxLlmHost() throws {

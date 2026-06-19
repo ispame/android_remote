@@ -158,6 +158,7 @@ class GatewayAuthClientTest {
             sizeBytes = 1024,
             recordingType = "meeting",
             asrProfileId = "volcengine-bigmodel",
+            agentPrompt = "请整理会议纪要",
         )
 
         assertEquals("recording-1", payload["recording_id"]?.jsonPrimitive?.content)
@@ -166,6 +167,7 @@ class GatewayAuthClientTest {
         assertEquals("1024", payload["size_bytes"]?.jsonPrimitive?.content)
         assertEquals("meeting", payload["recording_type"]?.jsonPrimitive?.content)
         assertEquals("volcengine-bigmodel", payload["asr_profile_id"]?.jsonPrimitive?.content)
+        assertEquals("请整理会议纪要", payload["agent_prompt"]?.jsonPrimitive?.content)
     }
 
     @Test

@@ -303,12 +303,119 @@ final class SoundPlaybackController: ObservableObject {
 
 typealias MessageSpeechController = SoundPlaybackController
 
+struct TtsAudioSessionConfiguration: Equatable {
+    let categoryName: String
+    let modeName: String
+    let optionNames: Set<String>
+    let shouldOverrideToSpeaker: Bool
+}
+
+enum TtsAudioSessionPolicy {
+    static let categoryName = mediaPlaybackConfiguration.categoryName
+    static let modeName = mediaPlaybackConfiguration.modeName
+    static let optionNames = mediaPlaybackConfiguration.optionNames
+
+    private static let hfpOutputPortTypes: Set<String> = ["BluetoothHFP"]
+
+    private static let mediaPlaybackConfiguration = TtsAudioSessionConfiguration(
+        categoryName: "playback",
+        modeName: "spokenAudio",
+        optionNames: ["allowBluetoothA2DP"],
+        shouldOverrideToSpeaker: false
+    )
+
+    private static let headsetDuplexConfiguration = TtsAudioSessionConfiguration(
+        categoryName: "playAndRecord",
+        modeName: "voiceChat",
+        optionNames: ["allowBluetoothHFP", "allowBluetoothA2DP"],
+        shouldOverrideToSpeaker: false
+    )
+
+    static func configuration(outputPortTypes: [String]) -> TtsAudioSessionConfiguration {
+        if outputPortTypes.contains(where: { hfpOutputPortTypes.contains($0) }) {
+            return headsetDuplexConfiguration
+        }
+        return mediaPlaybackConfiguration
+    }
+
+    static func shouldOverrideToSpeaker(outputPortTypes: [String]) -> Bool {
+        configuration(outputPortTypes: outputPortTypes).shouldOverrideToSpeaker
+    }
+
+    #if os(iOS)
+    private static let hfpOutputPorts: Set<AVAudioSession.Port> = [.bluetoothHFP]
+
+    static func configuration(outputPorts: [AVAudioSession.Port]) -> TtsAudioSessionConfiguration {
+        if outputPorts.contains(where: { hfpOutputPorts.contains($0) }) {
+            return headsetDuplexConfiguration
+        }
+        return mediaPlaybackConfiguration
+    }
+    #endif
+
+    static func activateForPlayback() {
+        #if os(iOS)
+        let session = AVAudioSession.sharedInstance()
+        do {
+            let outputPorts = session.currentRoute.outputs.map(\.portType)
+            let config = configuration(outputPorts: outputPorts)
+            try session.setCategory(
+                avCategory(for: config),
+                mode: avMode(for: config),
+                options: avOptions(for: config)
+            )
+            try session.setActive(true)
+
+            if config.shouldOverrideToSpeaker {
+                try? session.overrideOutputAudioPort(.speaker)
+            } else {
+                try? session.overrideOutputAudioPort(.none)
+            }
+        } catch {
+            // Preserve the playback attempt if iOS rejects a transient session change.
+        }
+        #endif
+    }
+
+    #if os(iOS)
+    private static func avCategory(for config: TtsAudioSessionConfiguration) -> AVAudioSession.Category {
+        config.categoryName == "playAndRecord" ? .playAndRecord : .playback
+    }
+
+    private static func avMode(for config: TtsAudioSessionConfiguration) -> AVAudioSession.Mode {
+        switch config.modeName {
+        case "voiceChat":
+            return .voiceChat
+        case "spokenAudio":
+            return .spokenAudio
+        default:
+            return .default
+        }
+    }
+
+    private static func avOptions(for config: TtsAudioSessionConfiguration) -> AVAudioSession.CategoryOptions {
+        var options: AVAudioSession.CategoryOptions = []
+        if config.optionNames.contains("allowBluetoothHFP") {
+            options.insert(.allowBluetoothHFP)
+        }
+        if config.optionNames.contains("allowBluetoothA2DP") {
+            options.insert(.allowBluetoothA2DP)
+        }
+        if config.optionNames.contains("defaultToSpeaker") {
+            options.insert(.defaultToSpeaker)
+        }
+        return options
+    }
+    #endif
+}
+
 final class SystemTtsEngine: NSObject, TtsEngine, AVSpeechSynthesizerDelegate {
     var onSpeakStart: (() -> Void)?
     var onSpeakDone: (() -> Void)?
     var onSpeakError: ((Error) -> Void)?
 
     private let synthesizer = AVSpeechSynthesizer()
+    private var activeSpeechId: UUID?
 
     override init() {
         super.init()
@@ -318,16 +425,21 @@ final class SystemTtsEngine: NSObject, TtsEngine, AVSpeechSynthesizerDelegate {
     func speak(text: String, apiKey _: String?, voiceId _: String?) -> Bool {
         guard let spokenText = SoundPlaybackController.normalizedText(text) else { return false }
         configureAudioSession()
+        invalidateActiveSpeech()
         synthesizer.stopSpeaking(at: .immediate)
+        let speechId = UUID()
+        activeSpeechId = speechId
         let utterance = AVSpeechUtterance(string: spokenText)
         utterance.voice = AVSpeechSynthesisVoice(language: "zh-CN") ?? AVSpeechSynthesisVoice(language: Locale.current.identifier)
         utterance.rate = 0.48
         utterance.pitchMultiplier = 1.0
         synthesizer.speak(utterance)
+        scheduleCompletionWatchdog(for: speechId)
         return true
     }
 
     func stop() {
+        invalidateActiveSpeech()
         synthesizer.stopSpeaking(at: .immediate)
     }
 
@@ -341,19 +453,37 @@ final class SystemTtsEngine: NSObject, TtsEngine, AVSpeechSynthesizerDelegate {
     }
 
     func speechSynthesizer(_: AVSpeechSynthesizer, didFinish _: AVSpeechUtterance) {
-        onSpeakDone?()
+        completeSpeech()
     }
 
     func speechSynthesizer(_: AVSpeechSynthesizer, didCancel _: AVSpeechUtterance) {
-        onSpeakDone?()
+        completeSpeech()
     }
 
     private func configureAudioSession() {
-        #if os(iOS)
-        let session = AVAudioSession.sharedInstance()
-        try? session.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetoothHFP, .allowBluetoothA2DP])
-        try? session.setActive(true)
-        #endif
+        TtsAudioSessionPolicy.activateForPlayback()
+    }
+
+    private func scheduleCompletionWatchdog(for speechId: UUID) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+            guard let self, self.activeSpeechId == speechId else { return }
+            if self.synthesizer.isSpeaking {
+                self.scheduleCompletionWatchdog(for: speechId)
+            } else {
+                self.completeSpeech(speechId: speechId)
+            }
+        }
+    }
+
+    private func completeSpeech(speechId: UUID? = nil) {
+        if let speechId, activeSpeechId != speechId { return }
+        guard activeSpeechId != nil else { return }
+        activeSpeechId = nil
+        onSpeakDone?()
+    }
+
+    private func invalidateActiveSpeech() {
+        activeSpeechId = nil
     }
 }
 
@@ -364,6 +494,7 @@ final class MiniMaxTtsEngine: NSObject, TtsEngine, AVAudioPlayerDelegate {
 
     private var speakTask: Task<Void, Never>?
     private var audioPlayer: AVAudioPlayer?
+    private var activePlaybackId: UUID?
 
     func speak(text: String, apiKey: String?, voiceId: String?) -> Bool {
         guard let spokenText = SoundPlaybackController.normalizedText(text) else { return false }
@@ -373,18 +504,20 @@ final class MiniMaxTtsEngine: NSObject, TtsEngine, AVAudioPlayerDelegate {
 
         stop()
         onSpeakStart?()
+        let playbackId = UUID()
+        activePlaybackId = playbackId
         let resolvedVoiceId = voiceId?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty ?? MiniMaxVoiceCatalog.defaultVoiceId
         speakTask = Task { [weak self] in
             guard let self else { return }
             do {
                 let audioData = try await MiniMaxTtsEngine.fetchTtsAudio(text: spokenText, apiKey: apiKey, voiceId: resolvedVoiceId)
                 try Task.checkCancellation()
-                try await self.playMp3Audio(audioData)
+                try await self.playMp3Audio(audioData, playbackId: playbackId)
             } catch is CancellationError {
                 return
             } catch {
                 await MainActor.run {
-                    self.onSpeakError?(error)
+                    self.completePlayback(playbackId: playbackId, error: error)
                 }
             }
         }
@@ -392,6 +525,7 @@ final class MiniMaxTtsEngine: NSObject, TtsEngine, AVAudioPlayerDelegate {
     }
 
     func stop() {
+        activePlaybackId = nil
         speakTask?.cancel()
         speakTask = nil
         audioPlayer?.stop()
@@ -403,17 +537,15 @@ final class MiniMaxTtsEngine: NSObject, TtsEngine, AVAudioPlayerDelegate {
     }
 
     func audioPlayerDidFinishPlaying(_: AVAudioPlayer, successfully flag: Bool) {
-        audioPlayer = nil
         if flag {
-            onSpeakDone?()
+            completePlayback()
         } else {
-            onSpeakError?(TtsPlaybackError.audioPlaybackFailed)
+            completePlayback(error: TtsPlaybackError.audioPlaybackFailed)
         }
     }
 
     func audioPlayerDecodeErrorDidOccur(_: AVAudioPlayer, error: Error?) {
-        audioPlayer = nil
-        onSpeakError?(error ?? TtsPlaybackError.audioPlaybackFailed)
+        completePlayback(error: error ?? TtsPlaybackError.audioPlaybackFailed)
     }
 
     private static func fetchTtsAudio(text: String, apiKey: String, voiceId: String) async throws -> Data {
@@ -437,12 +569,9 @@ final class MiniMaxTtsEngine: NSObject, TtsEngine, AVAudioPlayerDelegate {
     }
 
     @MainActor
-    private func playMp3Audio(_ mp3Data: Data) throws {
-        #if os(iOS)
-        let session = AVAudioSession.sharedInstance()
-        try? session.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetoothHFP, .allowBluetoothA2DP])
-        try? session.setActive(true)
-        #endif
+    private func playMp3Audio(_ mp3Data: Data, playbackId: UUID) throws {
+        guard activePlaybackId == playbackId else { throw CancellationError() }
+        TtsAudioSessionPolicy.activateForPlayback()
 
         let player = try AVAudioPlayer(data: mp3Data)
         player.delegate = self
@@ -451,6 +580,30 @@ final class MiniMaxTtsEngine: NSObject, TtsEngine, AVAudioPlayerDelegate {
         guard player.play() else {
             audioPlayer = nil
             throw TtsPlaybackError.audioPlaybackFailed
+        }
+        scheduleCompletionWatchdog(for: playbackId, delay: max(0.35, player.duration + 0.35))
+    }
+
+    private func scheduleCompletionWatchdog(for playbackId: UUID, delay: TimeInterval) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self, self.activePlaybackId == playbackId else { return }
+            if self.audioPlayer?.isPlaying == true {
+                self.scheduleCompletionWatchdog(for: playbackId, delay: 0.25)
+            } else {
+                self.completePlayback(playbackId: playbackId)
+            }
+        }
+    }
+
+    private func completePlayback(playbackId: UUID? = nil, error: Error? = nil) {
+        if let playbackId, activePlaybackId != playbackId { return }
+        guard activePlaybackId != nil else { return }
+        activePlaybackId = nil
+        audioPlayer = nil
+        if let error {
+            onSpeakError?(error)
+        } else {
+            onSpeakDone?()
         }
     }
 }

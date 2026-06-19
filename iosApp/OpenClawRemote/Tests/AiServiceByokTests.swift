@@ -6,13 +6,17 @@ struct AiServiceByokTests {
         try testByokProviderCatalogFiltersCapabilities()
         try testByokProviderTemplatesDeclareCapabilitiesAndAdapters()
         try testByokProviderTemplatesAutofillDefaults()
+        try testByokProviderSelectionPrefersSavedCredential()
         try testAiServiceChoicePersistsByokMetadataWithoutSecrets()
+        try testAiServiceSettingsDecodeV2ServiceLibrary()
+        try testAiServiceSettingsMigrateLegacyDefaultsToServiceLibrary()
         try testAgentOverrideResolvesByokChoices()
         try testOpenAICompatibleChatRequestShape()
         try testOpenAICompatibleChatClientExposesConversationCall()
         try testAnthropicChatRequestShape()
         try testAnthropicChatClientExposesConversationCall()
         try testOpenAICompatibleAsrRequestShape()
+        try testVolcengineAsrCredentialAndRequestShape()
         try testSilentWavFixtureIsValidForAsrValidation()
         print("AiServiceByokTests passed")
     }
@@ -24,7 +28,7 @@ struct AiServiceByokTests {
         }
 
         let asrIds = AiProviderCatalog.asrByokProviders.map(\.id)
-        try expect(asrIds == ["openai-compatible"], "ASR BYOK providers should only include Whisper-compatible providers")
+        try expect(asrIds == ["openai-compatible", "volcengine"], "ASR BYOK providers should include Whisper-compatible and Volcengine providers")
 
         let ttsIds = AiProviderCatalog.ttsByokProviders.map(\.id)
         try expect(ttsIds == ["minimax"], "TTS BYOK providers should only include providers with implemented local TTS")
@@ -38,10 +42,14 @@ struct AiServiceByokTests {
         try expect(AiProviderCatalog.llmProvider(id: "claude")?.adapter == "anthropic-messages", "Claude should use the Anthropic Messages adapter")
         try expect(AiProviderCatalog.llmProvider(id: "kimi")?.adapter == "openai-compatible-chat", "Kimi should use OpenAI-compatible chat")
 
-        for provider in AiProviderCatalog.asrByokProviders {
-            try expect(provider.capabilities == ["asr"], "\(provider.id) should declare ASR capability")
-            try expect(provider.adapter == "openai-whisper", "\(provider.id) should use the Whisper-compatible adapter")
-        }
+        let whisperAsr = try unwrap(AiProviderCatalog.asrProvider(id: "openai-compatible"), "Whisper ASR provider should exist")
+        try expect(whisperAsr.capabilities == ["asr"], "Whisper ASR should declare ASR capability")
+        try expect(whisperAsr.adapter == "openai-whisper", "Whisper ASR should use the Whisper-compatible adapter")
+
+        let volcengineAsr = try unwrap(AiProviderCatalog.asrProvider(id: "volcengine"), "Volcengine ASR provider should exist")
+        try expect(volcengineAsr.capabilities == ["asr"], "Volcengine ASR should declare ASR capability")
+        try expect(volcengineAsr.adapter == "volcengine-asr", "Volcengine ASR should declare the Volcengine adapter")
+        try expect(volcengineAsr.credentialId == localAsrVolcengineCredentialId, "Volcengine ASR should use a dedicated ASR credential id")
 
         for provider in AiProviderCatalog.ttsByokProviders {
             try expect(provider.capabilities == ["tts"], "\(provider.id) should declare TTS capability")
@@ -62,6 +70,11 @@ struct AiServiceByokTests {
         try expect(minimaxTts.baseUrlDefault == "https://api.minimaxi.com/v1", "MiniMax TTS should fill its API base URL")
         try expect(minimaxTts.credentialId == localMiniMaxCredentialId, "MiniMax TTS should keep the existing credential id")
 
+        let volcengineAsr = try unwrap(AiProviderCatalog.asrProvider(id: "volcengine"), "Volcengine ASR provider should exist")
+        try expect(volcengineAsr.label == "豆包火山云 ASR", "Volcengine ASR should be labeled as Doubao Volcengine ASR")
+        try expect(!volcengineAsr.baseUrlDefault.isEmpty, "Volcengine ASR should provide a configurable base URL default")
+        try expect(!volcengineAsr.modelDefault.isEmpty, "Volcengine ASR should provide a configurable model/app id default")
+
         let choice = AiProviderCatalog.choice(
             mode: "byok",
             provider: minimaxTts,
@@ -71,6 +84,24 @@ struct AiServiceByokTests {
         try expect(choice.providerId == "minimax", "provider choice should persist provider id")
         try expect(choice.baseUrl == "https://api.minimaxi.com/v1", "provider choice should autofill base URL")
         try expect(choice.voiceId == "voice-a", "provider choice should preserve voice id")
+    }
+
+    private static func testByokProviderSelectionPrefersSavedCredential() throws {
+        let preferred = AiProviderCatalog.preferredProvider(
+            in: AiProviderCatalog.llmByokProviders,
+            currentProviderId: "openai-compatible",
+            hasCredential: { $0 == localLlmKimiCredentialId }
+        )
+
+        try expect(preferred.id == "kimi", "BYOK provider draft should prefer the provider with a saved API key")
+
+        let fallback = AiProviderCatalog.preferredProvider(
+            in: AiProviderCatalog.llmByokProviders,
+            currentProviderId: "claude",
+            hasCredential: { _ in false }
+        )
+
+        try expect(fallback.id == "claude", "BYOK provider draft should keep the current provider when no saved API key exists")
     }
 
     private static func testAiServiceChoicePersistsByokMetadataWithoutSecrets() throws {
@@ -116,6 +147,121 @@ struct AiServiceByokTests {
         try expect(decoded.defaults.llm.credentialId == localLlmOpenAICompatibleCredentialId, "LLM credential id should round-trip")
         try expect(decoded.defaults.asr.model == "whisper-test", "ASR model should round-trip")
         try expect(decoded.defaults.tts.credentialId == localMiniMaxCredentialId, "TTS credential id should round-trip")
+    }
+
+    private static func testAiServiceSettingsDecodeV2ServiceLibrary() throws {
+        let json = """
+        {
+          "version": 2,
+          "serviceConfigs": {
+            "llm": [
+              {
+                "id": "llm-router-default",
+                "capability": "llm",
+                "mode": "router",
+                "providerId": "router",
+                "profileId": "default",
+                "apiKey": "must-not-persist"
+              },
+              {
+                "id": "llm-byok-openai",
+                "capability": "llm",
+                "mode": "byok",
+                "providerId": "openai-compatible",
+                "baseUrl": "https://api.example.com/v1/",
+                "model": "gpt-test",
+                "credentialId": "llm:openai-compatible",
+                "apiKey": "must-not-persist"
+              }
+            ],
+            "asr": [
+              {
+                "id": "asr-agent-backend",
+                "capability": "asr",
+                "mode": "backend",
+                "providerId": "agent"
+              }
+            ],
+            "tts": [
+              {
+                "id": "tts-system",
+                "capability": "tts",
+                "mode": "system",
+                "providerId": "system"
+              },
+              {
+                "id": "tts-router-coming-soon",
+                "capability": "tts",
+                "mode": "router",
+                "providerId": "router",
+                "enabled": true,
+                "status": "available"
+              }
+            ]
+          },
+          "sceneSelections": {
+            "providerChat": { "llmConfigId": "llm-byok-openai" },
+            "recording": { "asrConfigId": "asr-agent-backend" },
+            "playback": { "ttsConfigId": "tts-router-coming-soon" },
+            "agentOverrides": {
+              "profile-openclaw": {
+                "inherit": false,
+                "llmConfigId": "llm-router-default",
+                "asrConfigId": "asr-agent-backend",
+                "ttsConfigId": "tts-system"
+              }
+            }
+          }
+        }
+        """
+
+        let settings = try JSONDecoder().decode(AiServiceSettings.self, from: Data(json.utf8))
+
+        try expect(settings.version == 2, "settings should decode v2")
+        try expect(settings.sceneSelections.providerChat.llmConfigId == "llm-byok-openai", "Provider Chat should keep its LLM scene selection")
+        try expect(settings.sceneSelections.recording.asrConfigId == "asr-agent-backend", "Recording should keep its ASR scene selection")
+        try expect(settings.sceneSelections.playback.ttsConfigId == "tts-system", "Router TTS selection should fall back to system TTS")
+        try expect(settings.defaults.llm.mode == "byok", "legacy defaults projection should follow Provider Chat")
+        try expect(settings.defaults.llm.baseUrl == "https://api.example.com/v1", "BYOK base URL should normalize trailing slash")
+        try expect(settings.defaults.asr.mode == "backend", "recording ASR should project Agent backend")
+        let routerTts = try unwrap(settings.serviceConfigs.tts.first { $0.id == "tts-router-coming-soon" }, "Router TTS config should exist")
+        try expect(routerTts.enabled == false, "Router TTS should not remain selectable")
+        try expect(routerTts.status == "coming_soon", "Router TTS should stay disabled when decoded from old settings")
+        try expect(settings.sceneSelections.agentOverrides["profile-openclaw"]?.llmConfigId == "llm-router-default", "Agent scene override should persist config ids")
+
+        let encoded = try JSONEncoder().encode(settings)
+        let raw = try unwrap(String(data: encoded, encoding: .utf8), "encoded v2 settings should be readable")
+        try expect(raw.contains("serviceConfigs"), "encoded settings should include service configs")
+        try expect(raw.contains("sceneSelections"), "encoded settings should include scene selections")
+        try expect(!raw.contains("must-not-persist"), "encoded settings should not include raw keys")
+        try expect(!raw.lowercased().contains("apikey"), "encoded settings should not include api key fields")
+    }
+
+    private static func testAiServiceSettingsMigrateLegacyDefaultsToServiceLibrary() throws {
+        let json = """
+        {
+          "defaults": {
+            "llm": {
+              "mode": "byok",
+              "providerId": "minimax",
+              "baseUrl": "https://api.minimax.com/v1/",
+              "model": "MiniMax-M2.7",
+              "credentialId": "llm:minimax"
+            },
+            "asr": { "mode": "router", "profileId": "volcengine-streaming" },
+            "tts": { "mode": "system", "providerId": "system" }
+          }
+        }
+        """
+
+        let settings = try JSONDecoder().decode(AiServiceSettings.self, from: Data(json.utf8))
+
+        try expect(settings.version == 2, "legacy settings should migrate to v2")
+        try expect(settings.sceneSelections.providerChat.llmConfigId == "llm-byok-minimax", "legacy LLM should become Provider Chat scene selection")
+        try expect(settings.sceneSelections.recording.asrConfigId == "asr-router-volcengine-streaming", "legacy ASR should become recording scene selection")
+        try expect(settings.sceneSelections.playback.ttsConfigId == "tts-system", "legacy TTS should become playback scene selection")
+        try expect(settings.serviceConfigs.llm.contains { $0.id == "llm-byok-minimax" }, "legacy LLM should create a service config")
+        try expect(settings.defaults.llm.baseUrl == "https://api.minimaxi.com/v1", "MiniMax legacy host should migrate")
     }
 
     private static func testAgentOverrideResolvesByokChoices() throws {
@@ -229,6 +375,31 @@ struct AiServiceByokTests {
         try expect(body.contains("whisper-test"), "ASR request should include model value")
         try expect(body.contains("name=\"file\"; filename=\"sample.wav\""), "ASR request should include audio file")
         try expect(body.contains("audio/wav"), "ASR request should mark audio as WAV")
+    }
+
+    private static func testVolcengineAsrCredentialAndRequestShape() throws {
+        let credential = try VolcengineAsrClient.parseCredential("app-key-test:access-key-test")
+        try expect(credential.appKey == "app-key-test", "Volcengine ASR credential should parse the app key")
+        try expect(credential.accessKey == "access-key-test", "Volcengine ASR credential should parse the access key")
+
+        let request = try VolcengineAsrClient.makeWebSocketRequest(
+            endpoint: "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel",
+            credential: credential,
+            resourceId: "volc.bigasr.sauc.duration",
+            connectId: "connect-test"
+        )
+        try expect(request.url?.absoluteString == "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel", "Volcengine ASR should use the configured websocket endpoint")
+        try expect(request.value(forHTTPHeaderField: "X-Api-App-Key") == "app-key-test", "Volcengine ASR should send app key header")
+        try expect(request.value(forHTTPHeaderField: "X-Api-Access-Key") == "access-key-test", "Volcengine ASR should send access key header")
+        try expect(request.value(forHTTPHeaderField: "X-Api-Resource-Id") == "volc.bigasr.sauc.duration", "Volcengine ASR should send resource id header")
+        try expect(request.value(forHTTPHeaderField: "X-Api-Connect-Id") == "connect-test", "Volcengine ASR should send connect id header")
+
+        let wav = OpenAICompatibleAsrClient.silentWav16kMono(durationMilliseconds: 20)
+        let audio = try VolcengineAsrClient.extractPcmAudio(from: wav)
+        try expect(audio.sampleRate == 16_000, "Volcengine ASR should read sample rate from WAV")
+        try expect(audio.channels == 1, "Volcengine ASR should read channel count from WAV")
+        try expect(audio.bits == 16, "Volcengine ASR should read bit depth from WAV")
+        try expect(!audio.payload.isEmpty, "Volcengine ASR should extract PCM payload from WAV")
     }
 
     private static func testSilentWavFixtureIsValidForAsrValidation() throws {

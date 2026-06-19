@@ -445,7 +445,6 @@ struct SettingsScreenView: View {
         }
         let tts: String
         switch resolved.tts.mode {
-        case "router": tts = "Router TTS"
         case "byok": tts = providerLabel(resolved.tts)
         default: tts = "系统 TTS"
         }

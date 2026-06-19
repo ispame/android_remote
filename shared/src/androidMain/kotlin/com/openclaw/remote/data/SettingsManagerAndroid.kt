@@ -326,6 +326,28 @@ class SettingsManagerAndroid(
         }
     }
 
+    override suspend fun upsertAiServiceConfig(config: AiServiceConfig) {
+        updateAiSettings(aiSettingsFlow.first().upsertingServiceConfig(config))
+    }
+
+    override suspend fun deleteAiServiceConfig(configId: String) {
+        updateAiSettings(aiSettingsFlow.first().deletingServiceConfig(configId))
+    }
+
+    override suspend fun updateAiSceneSelection(
+        providerChatLlmConfigId: String?,
+        recordingAsrConfigId: String?,
+        playbackTtsConfigId: String?,
+    ) {
+        updateAiSettings(
+            aiSettingsFlow.first().updatingSceneSelection(
+                providerChatLlmConfigId = providerChatLlmConfigId,
+                recordingAsrConfigId = recordingAsrConfigId,
+                playbackTtsConfigId = playbackTtsConfigId,
+            )
+        )
+    }
+
     override suspend fun updateLocalCredential(id: String, apiKey: String) {
         val normalizedId = id.trim()
         if (normalizedId.isBlank()) return

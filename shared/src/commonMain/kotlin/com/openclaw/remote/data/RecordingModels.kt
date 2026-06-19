@@ -31,7 +31,34 @@ data class RecordingSettings(
     val defaultType: RecordingType = RecordingType.MEETING,
     val asrMode: String = "router",
     val asrProfileId: String? = null,
+    val customPrompt: String = "",
 )
+
+fun RecordingSettings.settingsTypeOptions(): List<RecordingType> =
+    RecordingType.entries.toList()
+
+fun RecordingSettings.recordingSelectionTypeOptions(): List<RecordingType> =
+    settingsTypeOptions().filter { type ->
+        type != RecordingType.CUSTOM || customPrompt.isNotBlank()
+    }
+
+fun RecordingSettings.defaultSelectionType(): RecordingType {
+    val options = recordingSelectionTypeOptions()
+    return defaultType.takeIf { it in options } ?: options.first()
+}
+
+fun RecordingSettings.promptFor(type: RecordingType): String =
+    when (type) {
+        RecordingType.AUDIO_ONLY -> ""
+        RecordingType.MEETING -> RecordingPrompts.meeting
+        RecordingType.IDEA -> RecordingPrompts.idea
+        RecordingType.CUSTOM -> customPrompt.trim()
+    }
+
+object RecordingPrompts {
+    const val meeting: String = "以下是会议录音。请根据录音整理会议纪要、Agent 可承接的待办、需要人完成的待办，并输出后续执行计划。"
+    const val idea: String = "以下是灵感记录。请整理为研究型灵感报告，补充背景、风险、方案和行动项。"
+}
 
 enum class RecordingAsrJobStatus {
     QUEUED,

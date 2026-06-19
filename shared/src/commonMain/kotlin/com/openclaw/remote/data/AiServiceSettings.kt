@@ -2,10 +2,13 @@ package com.openclaw.remote.data
 
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
@@ -19,6 +22,55 @@ data class AiServiceChoice(
     val model: String = "",
     val credentialId: String = "",
     val displayName: String = "",
+)
+
+data class AiServiceConfig(
+    val id: String,
+    val capability: String,
+    val mode: String,
+    val profileId: String = "",
+    val providerId: String = "",
+    val voiceId: String = "",
+    val baseUrl: String = "",
+    val model: String = "",
+    val credentialId: String = "",
+    val displayName: String = "",
+    val enabled: Boolean = true,
+    val status: String = "available",
+)
+
+data class AiServiceLibrary(
+    val llm: List<AiServiceConfig> = emptyList(),
+    val asr: List<AiServiceConfig> = emptyList(),
+    val tts: List<AiServiceConfig> = emptyList(),
+) {
+    fun isEmpty(): Boolean = llm.isEmpty() && asr.isEmpty() && tts.isEmpty()
+}
+
+data class AiProviderChatSelection(
+    val llmConfigId: String = "",
+)
+
+data class AiRecordingSelection(
+    val asrConfigId: String = "",
+)
+
+data class AiPlaybackSelection(
+    val ttsConfigId: String = "",
+)
+
+data class AiSceneAgentOverride(
+    val inherit: Boolean = true,
+    val llmConfigId: String = "",
+    val asrConfigId: String = "",
+    val ttsConfigId: String = "",
+)
+
+data class AiSceneSelections(
+    val providerChat: AiProviderChatSelection = AiProviderChatSelection(),
+    val recording: AiRecordingSelection = AiRecordingSelection(),
+    val playback: AiPlaybackSelection = AiPlaybackSelection(),
+    val agentOverrides: Map<String, AiSceneAgentOverride> = emptyMap(),
 )
 
 data class AiServiceDefaults(
@@ -35,6 +87,9 @@ data class AiAgentOverride(
 )
 
 data class AiServiceSettings(
+    val version: Int = 2,
+    val serviceConfigs: AiServiceLibrary = AiServiceLibrary(),
+    val sceneSelections: AiSceneSelections = AiSceneSelections(),
     val defaults: AiServiceDefaults = AiServiceDefaults(),
     val agentOverrides: Map<String, AiAgentOverride> = emptyMap(),
 ) {
@@ -86,16 +141,16 @@ object AiProviderCatalog {
             id = "minimax",
             displayName = "MiniMax",
             mode = "byok",
-            baseUrl = "https://api.minimax.chat/v1",
-            defaultModel = "MiniMax-Text-01",
+            baseUrl = "https://api.minimaxi.com/v1",
+            defaultModel = "MiniMax-M2.7",
             credentialId = "llm:minimax",
         ),
         AiProviderDescriptor(
             id = "kimi",
             displayName = "Kimi",
             mode = "byok",
-            baseUrl = "https://api.moonshot.cn/v1",
-            defaultModel = "kimi-k2-0711-preview",
+            baseUrl = "https://api.moonshot.ai/v1",
+            defaultModel = "moonshot-v1-8k",
             credentialId = "llm:kimi",
         ),
         AiProviderDescriptor(
@@ -111,7 +166,7 @@ object AiProviderCatalog {
             displayName = "Doubao",
             mode = "byok",
             baseUrl = "https://ark.cn-beijing.volces.com/api/v3",
-            defaultModel = "doubao-seed-1-6-250615",
+            defaultModel = "doubao-seed-2-0-lite-260215",
             credentialId = "llm:doubao",
         ),
     )
@@ -135,8 +190,8 @@ object AiProviderCatalog {
             id = "minimax",
             displayName = "MiniMax",
             mode = "byok",
-            baseUrl = "https://api.minimax.chat/v1",
-            defaultModel = "speech-02-hd",
+            baseUrl = "https://api.minimaxi.com/v1",
+            defaultModel = "speech-2.8-hd",
             credentialId = LOCAL_TTS_MINIMAX_CREDENTIAL_ID,
         ),
     )
@@ -159,22 +214,11 @@ fun decodeAiServiceSettings(raw: String?): AiServiceSettings =
     }.getOrDefault(AiServiceSettings())
 
 fun AiServiceSettings.normalized(): AiServiceSettings =
-    copy(
-        defaults = AiServiceDefaults(
-            llm = defaults.llm.normalized(fallback = AiServiceDefaults().llm),
-            asr = defaults.asr.normalized(fallback = AiServiceDefaults().asr),
-            tts = defaults.tts.normalized(fallback = AiServiceDefaults().tts),
-        ),
-        agentOverrides = agentOverrides
-            .filterKeys { it.isNotBlank() }
-            .mapValues { (_, value) ->
-                value.copy(
-                    llm = value.llm?.normalized(defaults.llm),
-                    asr = value.asr?.normalized(defaults.asr),
-                    tts = value.tts?.normalized(defaults.tts),
-                )
-            },
-    )
+    if (serviceConfigs.isEmpty()) {
+        migrateLegacyAiSettings(defaults, agentOverrides)
+    } else {
+        normalizeV2AiSettings(this)
+    }
 
 fun aiSettingsFromLegacyConfig(config: GatewayConfig): AiServiceSettings =
     AiServiceSettings(
@@ -204,20 +248,439 @@ fun legacyTtsChoice(engine: String, voiceId: String): AiServiceChoice =
 fun AiServiceChoice.toLegacyTtsEngine(): String =
     if (mode == "byok" && providerId == "minimax") "minimax" else "system"
 
+fun AiServiceSettings.llmConfigForProviderChat(): AiServiceConfig? =
+    serviceConfigs.llm.configById(sceneSelections.providerChat.llmConfigId)
+        ?: serviceConfigs.llm.firstSelectable()
+
+fun AiServiceSettings.asrConfigForRecording(): AiServiceConfig? =
+    serviceConfigs.asr.configById(sceneSelections.recording.asrConfigId)
+        ?: serviceConfigs.asr.firstSelectable()
+
+fun AiServiceSettings.ttsConfigForPlayback(): AiServiceConfig? =
+    serviceConfigs.tts.configById(sceneSelections.playback.ttsConfigId)
+        ?: serviceConfigs.tts.firstSelectable()
+
+fun AiServiceConfig.toAiServiceChoice(): AiServiceChoice = toChoice()
+
+fun AiServiceChoice.toAiServiceConfig(capability: String, id: String = ""): AiServiceConfig =
+    toServiceConfig(capability.normalizedCapability())
+        .copy(id = id.ifBlank { configIdForChoice(capability.normalizedCapability(), this) })
+        .normalized(capability.normalizedCapability())
+
+fun AiServiceConfig.isSelectableServiceConfig(): Boolean = isSelectable()
+
+fun List<AiProviderDescriptor>.preferredBySavedCredential(
+    currentProviderId: String,
+    hasCredential: (String) -> Boolean,
+): AiProviderDescriptor? {
+    firstOrNull { provider ->
+        provider.credentialId.isNotBlank() && hasCredential(provider.credentialId)
+    }?.let { return it }
+    return firstOrNull { it.id == currentProviderId } ?: firstOrNull()
+}
+
+fun AiServiceSettings.upsertingServiceConfig(config: AiServiceConfig): AiServiceSettings {
+    val normalizedConfig = config.normalized(config.capability.normalizedCapability())
+    val nextLibrary = when (normalizedConfig.capability) {
+        "asr" -> serviceConfigs.copy(asr = serviceConfigs.asr.upsertById(normalizedConfig))
+        "tts" -> serviceConfigs.copy(tts = serviceConfigs.tts.upsertById(normalizedConfig))
+        else -> serviceConfigs.copy(llm = serviceConfigs.llm.upsertById(normalizedConfig))
+    }
+    return copy(serviceConfigs = nextLibrary).normalized()
+}
+
+fun AiServiceSettings.deletingServiceConfig(configId: String): AiServiceSettings {
+    val nextLibrary = serviceConfigs.copy(
+        llm = serviceConfigs.llm.filterNot { it.id == configId },
+        asr = serviceConfigs.asr.filterNot { it.id == configId },
+        tts = serviceConfigs.tts.filterNot { it.id == configId },
+    )
+    val nextSelections = sceneSelections.copy(
+        providerChat = if (sceneSelections.providerChat.llmConfigId == configId) AiProviderChatSelection() else sceneSelections.providerChat,
+        recording = if (sceneSelections.recording.asrConfigId == configId) AiRecordingSelection() else sceneSelections.recording,
+        playback = if (sceneSelections.playback.ttsConfigId == configId) AiPlaybackSelection() else sceneSelections.playback,
+        agentOverrides = sceneSelections.agentOverrides.mapValues { (_, override) ->
+            override.copy(
+                llmConfigId = override.llmConfigId.takeIf { it != configId }.orEmpty(),
+                asrConfigId = override.asrConfigId.takeIf { it != configId }.orEmpty(),
+                ttsConfigId = override.ttsConfigId.takeIf { it != configId }.orEmpty(),
+            )
+        },
+    )
+    return copy(serviceConfigs = nextLibrary, sceneSelections = nextSelections).normalized()
+}
+
+fun AiServiceSettings.updatingSceneSelection(
+    providerChatLlmConfigId: String? = null,
+    recordingAsrConfigId: String? = null,
+    playbackTtsConfigId: String? = null,
+): AiServiceSettings =
+    copy(
+        sceneSelections = sceneSelections.copy(
+            providerChat = providerChatLlmConfigId?.let { AiProviderChatSelection(it) } ?: sceneSelections.providerChat,
+            recording = recordingAsrConfigId?.let { AiRecordingSelection(it) } ?: sceneSelections.recording,
+            playback = playbackTtsConfigId?.let { AiPlaybackSelection(it) } ?: sceneSelections.playback,
+        )
+    ).normalized()
+
+private fun normalizeV2AiSettings(settings: AiServiceSettings): AiServiceSettings {
+    val library = AiServiceLibrary(
+        llm = settings.serviceConfigs.llm.map { it.normalized("llm") }.distinctById(),
+        asr = settings.serviceConfigs.asr.map { it.normalized("asr") }.distinctById(),
+        tts = settings.serviceConfigs.tts.map { it.normalized("tts") }.distinctById(),
+    ).withCoreConfigs()
+    val selections = settings.sceneSelections.normalized(library)
+    return AiServiceSettings(
+        version = 2,
+        serviceConfigs = library,
+        sceneSelections = selections,
+        defaults = library.projectDefaults(selections),
+        agentOverrides = library.projectAgentOverrides(selections),
+    )
+}
+
+private fun migrateLegacyAiSettings(
+    defaults: AiServiceDefaults,
+    agentOverrides: Map<String, AiAgentOverride>,
+): AiServiceSettings {
+    val library = MutableAiServiceLibrary()
+    val normalizedDefaults = AiServiceDefaults(
+        llm = defaults.llm.normalized(AiServiceDefaults().llm),
+        asr = defaults.asr.normalized(AiServiceDefaults().asr),
+        tts = defaults.tts.normalized(AiServiceDefaults().tts),
+    )
+    val llmConfigId = library.add("llm", normalizedDefaults.llm)
+    val asrConfigId = library.add("asr", normalizedDefaults.asr)
+    val ttsConfigId = library.add("tts", normalizedDefaults.tts)
+    val sceneOverrides = agentOverrides
+        .filterKeys { it.isNotBlank() }
+        .mapValues { (_, override) ->
+            AiSceneAgentOverride(
+                inherit = override.inherit,
+                llmConfigId = override.llm?.let { library.add("llm", it.normalized(normalizedDefaults.llm)) }.orEmpty(),
+                asrConfigId = override.asr?.let { library.add("asr", it.normalized(normalizedDefaults.asr)) }.orEmpty(),
+                ttsConfigId = override.tts?.let { library.add("tts", it.normalized(normalizedDefaults.tts)) }.orEmpty(),
+            )
+        }
+    return normalizeV2AiSettings(
+        AiServiceSettings(
+            version = 2,
+            serviceConfigs = library.toLibrary(),
+            sceneSelections = AiSceneSelections(
+                providerChat = AiProviderChatSelection(llmConfigId),
+                recording = AiRecordingSelection(asrConfigId),
+                playback = AiPlaybackSelection(ttsConfigId),
+                agentOverrides = sceneOverrides,
+            ),
+        )
+    )
+}
+
+private class MutableAiServiceLibrary {
+    private val llm = linkedMapOf<String, AiServiceConfig>()
+    private val asr = linkedMapOf<String, AiServiceConfig>()
+    private val tts = linkedMapOf<String, AiServiceConfig>()
+
+    fun add(capability: String, choice: AiServiceChoice): String {
+        val normalizedCapability = capability.normalizedCapability()
+        val config = choice.toServiceConfig(normalizedCapability).normalized(normalizedCapability)
+        when (normalizedCapability) {
+            "asr" -> asr[config.id] = config
+            "tts" -> tts[config.id] = config
+            else -> llm[config.id] = config
+        }
+        return config.id
+    }
+
+    fun toLibrary(): AiServiceLibrary =
+        AiServiceLibrary(llm = llm.values.toList(), asr = asr.values.toList(), tts = tts.values.toList())
+}
+
+private fun AiServiceChoice.toServiceConfig(capability: String): AiServiceConfig =
+    AiServiceConfig(
+        id = configIdForChoice(capability, this),
+        capability = capability,
+        mode = mode,
+        profileId = profileId,
+        providerId = providerId,
+        voiceId = voiceId,
+        baseUrl = baseUrl,
+        model = model,
+        credentialId = credentialId,
+        displayName = displayName,
+    )
+
+private fun AiServiceConfig.normalized(expectedCapability: String): AiServiceConfig {
+    val capability = expectedCapability.normalizedCapability()
+    val normalizedMode = mode.normalizedMode(capability)
+    var nextProviderId = providerId.trim()
+    var nextProfileId = profileId.trim()
+    var nextVoiceId = voiceId.trim()
+    var nextBaseUrl = baseUrl.trim().trimEnd('/')
+    var nextModel = model.trim()
+    var nextCredentialId = credentialId.trim()
+    var nextEnabled = enabled
+    var nextStatus = status.trim().ifBlank { "available" }
+
+    when (normalizedMode) {
+        "router" -> {
+            nextProviderId = "router"
+            nextBaseUrl = ""
+            nextModel = ""
+            nextCredentialId = ""
+            if (capability == "tts") {
+                nextEnabled = false
+                nextStatus = "coming_soon"
+            }
+        }
+        "byok" -> {
+            nextProviderId = nextProviderId.ifBlank { capability.defaultByokProviderId() }
+            nextBaseUrl = normalizeProviderBaseUrl(capability, nextProviderId, nextBaseUrl)
+            nextModel = nextModel.ifBlank { defaultModel(capability, nextProviderId) }
+            nextCredentialId = nextCredentialId.ifBlank { "$capability:$nextProviderId" }
+        }
+        "backend", "agent" -> {
+            nextProviderId = "agent"
+            nextProfileId = ""
+            nextBaseUrl = ""
+            nextModel = ""
+            nextCredentialId = ""
+        }
+        "system" -> {
+            nextProviderId = "system"
+            nextProfileId = ""
+            nextBaseUrl = ""
+            nextModel = ""
+            nextCredentialId = ""
+        }
+    }
+    if (nextStatus != "coming_soon" && nextStatus != "disabled") {
+        nextStatus = if (nextEnabled) "available" else "disabled"
+    }
+    return copy(
+        id = id.ifBlank {
+            configIdForChoice(
+                capability,
+                AiServiceChoice(
+                    mode = normalizedMode,
+                    profileId = nextProfileId,
+                    providerId = nextProviderId,
+                    baseUrl = nextBaseUrl,
+                    model = nextModel,
+                    credentialId = nextCredentialId,
+                )
+            )
+        },
+        capability = capability,
+        mode = if (normalizedMode == "agent") "backend" else normalizedMode,
+        profileId = nextProfileId,
+        providerId = nextProviderId,
+        voiceId = nextVoiceId,
+        baseUrl = nextBaseUrl,
+        model = nextModel,
+        credentialId = nextCredentialId,
+        displayName = displayName.ifBlank { inferDisplayName(capability, normalizedMode, nextProviderId) },
+        enabled = nextEnabled,
+        status = nextStatus,
+    )
+}
+
+private fun AiSceneSelections.normalized(library: AiServiceLibrary): AiSceneSelections =
+    AiSceneSelections(
+        providerChat = AiProviderChatSelection(
+            library.llm.validSelectableId(providerChat.llmConfigId).ifBlank { library.llm.firstSelectableId() }
+        ),
+        recording = AiRecordingSelection(
+            library.asr.validSelectableId(recording.asrConfigId).ifBlank { library.asr.firstSelectableId() }
+        ),
+        playback = AiPlaybackSelection(
+            library.tts.validSelectableId(playback.ttsConfigId).ifBlank { library.tts.firstSelectableId() }
+        ),
+        agentOverrides = agentOverrides
+            .filterKeys { it.isNotBlank() }
+            .mapValues { (_, override) ->
+                AiSceneAgentOverride(
+                    inherit = override.inherit,
+                    llmConfigId = library.llm.validSelectableId(override.llmConfigId),
+                    asrConfigId = library.asr.validSelectableId(override.asrConfigId),
+                    ttsConfigId = library.tts.validSelectableId(override.ttsConfigId),
+                )
+            },
+    )
+
+private fun AiServiceLibrary.withCoreConfigs(): AiServiceLibrary =
+    if (tts.any { it.id == "tts-system" }) {
+        this
+    } else {
+        copy(
+            tts = listOf(
+                AiServiceConfig(
+                    id = "tts-system",
+                    capability = "tts",
+                    mode = "system",
+                    providerId = "system",
+                    displayName = "System TTS",
+                ).normalized("tts")
+            ) + tts
+        )
+    }
+
+private fun AiServiceLibrary.projectDefaults(selections: AiSceneSelections): AiServiceDefaults =
+    AiServiceDefaults(
+        llm = llm.configById(selections.providerChat.llmConfigId)?.toChoice() ?: AiServiceDefaults().llm,
+        asr = asr.configById(selections.recording.asrConfigId)?.toChoice() ?: AiServiceDefaults().asr,
+        tts = tts.configById(selections.playback.ttsConfigId)?.toChoice() ?: AiServiceDefaults().tts,
+    )
+
+private fun AiServiceLibrary.projectAgentOverrides(selections: AiSceneSelections): Map<String, AiAgentOverride> =
+    selections.agentOverrides.mapValues { (_, override) ->
+        AiAgentOverride(
+            inherit = override.inherit,
+            llm = llm.configById(override.llmConfigId)?.toChoice(),
+            asr = asr.configById(override.asrConfigId)?.toChoice(),
+            tts = tts.configById(override.ttsConfigId)?.toChoice(),
+        )
+    }
+
+private fun AiServiceConfig.toChoice(): AiServiceChoice =
+    when (mode) {
+        "router" -> AiServiceChoice(
+            mode = "router",
+            profileId = profileId,
+            providerId = "router",
+            displayName = displayName,
+        )
+        "backend", "agent" -> AiServiceChoice(
+            mode = "backend",
+            providerId = "agent",
+            displayName = displayName,
+        )
+        "system" -> AiServiceChoice(
+            mode = "system",
+            providerId = "system",
+            voiceId = voiceId,
+            displayName = displayName,
+        )
+        else -> AiServiceChoice(
+            mode = mode,
+            profileId = profileId,
+            providerId = providerId,
+            voiceId = voiceId,
+            baseUrl = baseUrl,
+            model = model,
+            credentialId = credentialId,
+            displayName = displayName,
+        )
+    }
+
+private fun List<AiServiceConfig>.configById(id: String): AiServiceConfig? =
+    firstOrNull { it.id == id }
+
+private fun List<AiServiceConfig>.firstSelectable(): AiServiceConfig? =
+    firstOrNull { it.isSelectable() }
+
+private fun List<AiServiceConfig>.firstSelectableId(): String =
+    firstSelectable()?.id ?: firstOrNull()?.id.orEmpty()
+
+private fun List<AiServiceConfig>.validSelectableId(id: String): String =
+    id.takeIf { candidate -> any { it.id == candidate && it.isSelectable() } }.orEmpty()
+
+private fun List<AiServiceConfig>.distinctById(): List<AiServiceConfig> =
+    fold(linkedMapOf<String, AiServiceConfig>()) { acc, config ->
+        acc[config.id] = config
+        acc
+    }.values.toList()
+
+private fun List<AiServiceConfig>.upsertById(config: AiServiceConfig): List<AiServiceConfig> =
+    (filterNot { it.id == config.id } + config).distinctById()
+
+private fun AiServiceConfig.isSelectable(): Boolean =
+    enabled && status != "coming_soon" && status != "disabled"
+
+private fun String.normalizedCapability(): String =
+    when (this) {
+        "asr" -> "asr"
+        "tts" -> "tts"
+        else -> "llm"
+    }
+
+private fun String.normalizedMode(capability: String): String =
+    when (this) {
+        "router", "byok", "backend", "agent", "system" -> this
+        else -> if (capability == "tts") "system" else "router"
+    }
+
+private fun String.defaultByokProviderId(): String =
+    if (this == "tts") "minimax" else "openai-compatible"
+
+private fun configIdForChoice(capability: String, choice: AiServiceChoice): String {
+    val mode = choice.mode.normalizedMode(capability)
+    return when (mode) {
+        "router" -> "$capability-router-${slug(choice.profileId.ifBlank { "default" })}"
+        "byok" -> "$capability-byok-${slug(choice.providerId.ifBlank { "custom" })}"
+        "system" -> "$capability-system"
+        else -> "$capability-agent-backend"
+    }
+}
+
+private fun normalizeProviderBaseUrl(capability: String, providerId: String, baseUrl: String): String {
+    val fallback = baseUrl.ifBlank { defaultBaseUrl(capability, providerId) }
+    return if (providerId == "minimax" && fallback == "https://api.minimax.com/v1") {
+        "https://api.minimaxi.com/v1"
+    } else {
+        fallback
+    }
+}
+
+private fun defaultBaseUrl(capability: String, providerId: String): String =
+    when {
+        providerId == "minimax" -> "https://api.minimaxi.com/v1"
+        providerId == "kimi" -> "https://api.moonshot.ai/v1"
+        providerId == "claude" -> "https://api.anthropic.com/v1"
+        providerId == "doubao" -> "https://ark.cn-beijing.volces.com/api/v3"
+        capability == "asr" -> "https://api.openai.com/v1"
+        else -> "https://api.openai.com/v1"
+    }
+
+private fun defaultModel(capability: String, providerId: String): String =
+    when {
+        capability == "tts" && providerId == "minimax" -> "speech-2.8-hd"
+        capability == "asr" -> "whisper-1"
+        providerId == "minimax" -> "MiniMax-M2.7"
+        providerId == "kimi" -> "moonshot-v1-8k"
+        providerId == "claude" -> "claude-sonnet-4-20250514"
+        providerId == "doubao" -> "doubao-seed-2-0-lite-260215"
+        else -> "gpt-4o-mini"
+    }
+
+private fun inferDisplayName(capability: String, mode: String, providerId: String): String =
+    when (mode) {
+        "router" -> if (capability == "tts") "Router TTS" else "Router ${capability.uppercase()}"
+        "backend", "agent" -> "Agent 后端识别"
+        "system" -> "System TTS"
+        else -> providerId.ifBlank { "BYOK" }
+    }
+
+private fun slug(value: String): String =
+    value.trim().lowercase().replace(Regex("[^a-z0-9]+"), "-").trim('-').ifBlank { "default" }
+
 private fun AiServiceChoice.normalized(fallback: AiServiceChoice): AiServiceChoice =
     AiServiceChoice(
         mode = mode.ifBlank { fallback.mode },
         profileId = profileId,
-        providerId = providerId.ifBlank { fallback.providerId },
+        providerId = if (mode == "router") "router" else providerId.ifBlank { fallback.providerId },
         voiceId = voiceId.ifBlank { fallback.voiceId },
-        baseUrl = baseUrl.ifBlank { fallback.baseUrl },
+        baseUrl = if (mode == "router") "" else normalizeProviderBaseUrl("llm", providerId, baseUrl.ifBlank { fallback.baseUrl }),
         model = model.ifBlank { fallback.model },
-        credentialId = credentialId.ifBlank { fallback.credentialId },
+        credentialId = if (mode == "router") "" else credentialId.ifBlank { fallback.credentialId },
         displayName = displayName.ifBlank { fallback.displayName },
     )
 
 private fun encodeSettings(settings: AiServiceSettings): JsonObject =
     buildJsonObject {
+        put("version", 2)
+        put("serviceConfigs", encodeServiceLibrary(settings.serviceConfigs))
+        put("sceneSelections", encodeSceneSelections(settings.sceneSelections))
         put("defaults", encodeDefaults(settings.defaults))
         put(
             "agentOverrides",
@@ -230,6 +693,73 @@ private fun encodeSettings(settings: AiServiceSettings): JsonObject =
                             override.llm?.let { put("llm", encodeChoice(it)) }
                             override.asr?.let { put("asr", encodeChoice(it)) }
                             override.tts?.let { put("tts", encodeChoice(it)) }
+                        }
+                    )
+                }
+            }
+        )
+    }
+
+private fun encodeServiceLibrary(library: AiServiceLibrary): JsonObject =
+    buildJsonObject {
+        put("llm", encodeConfigList(library.llm))
+        put("asr", encodeConfigList(library.asr))
+        put("tts", encodeConfigList(library.tts))
+    }
+
+private fun encodeConfigList(configs: List<AiServiceConfig>): JsonArray =
+    buildJsonArray {
+        configs.forEach { config ->
+            add(
+                buildJsonObject {
+                    put("id", config.id)
+                    put("capability", config.capability)
+                    put("mode", config.mode)
+                    put("profileId", config.profileId)
+                    put("providerId", config.providerId)
+                    put("voiceId", config.voiceId)
+                    put("baseUrl", config.baseUrl)
+                    put("model", config.model)
+                    put("credentialId", config.credentialId)
+                    put("displayName", config.displayName)
+                    put("enabled", config.enabled)
+                    put("status", config.status)
+                }
+            )
+        }
+    }
+
+private fun encodeSceneSelections(selections: AiSceneSelections): JsonObject =
+    buildJsonObject {
+        put(
+            "providerChat",
+            buildJsonObject {
+                put("llmConfigId", selections.providerChat.llmConfigId)
+            }
+        )
+        put(
+            "recording",
+            buildJsonObject {
+                put("asrConfigId", selections.recording.asrConfigId)
+            }
+        )
+        put(
+            "playback",
+            buildJsonObject {
+                put("ttsConfigId", selections.playback.ttsConfigId)
+            }
+        )
+        put(
+            "agentOverrides",
+            buildJsonObject {
+                selections.agentOverrides.forEach { (profileId, override) ->
+                    put(
+                        profileId,
+                        buildJsonObject {
+                            put("inherit", override.inherit)
+                            put("llmConfigId", override.llmConfigId)
+                            put("asrConfigId", override.asrConfigId)
+                            put("ttsConfigId", override.ttsConfigId)
                         }
                     )
                 }
@@ -258,11 +788,69 @@ private fun encodeChoice(choice: AiServiceChoice): JsonObject =
 
 private fun decodeSettings(obj: JsonObject): AiServiceSettings =
     AiServiceSettings(
+        version = obj["version"]?.jsonPrimitive?.intOrNull ?: 2,
+        serviceConfigs = decodeServiceLibrary(obj["serviceConfigs"]?.jsonObjectOrNull()),
+        sceneSelections = decodeSceneSelections(obj["sceneSelections"]?.jsonObjectOrNull()),
         defaults = decodeDefaults(obj["defaults"]?.jsonObjectOrNull()),
         agentOverrides = obj["agentOverrides"]
             ?.jsonObjectOrNull()
             ?.mapValues { (_, value) -> decodeOverride(value.jsonObjectOrNull()) }
             .orEmpty(),
+    )
+
+private fun decodeServiceLibrary(obj: JsonObject?): AiServiceLibrary =
+    AiServiceLibrary(
+        llm = decodeConfigList(obj?.get("llm"), "llm"),
+        asr = decodeConfigList(obj?.get("asr"), "asr"),
+        tts = decodeConfigList(obj?.get("tts"), "tts"),
+    )
+
+private fun decodeConfigList(element: JsonElement?, capability: String): List<AiServiceConfig> =
+    (element as? JsonArray)
+        ?.mapNotNull { value ->
+            value.jsonObjectOrNull()?.let { decodeConfig(it, capability) }
+        }
+        .orEmpty()
+
+private fun decodeConfig(obj: JsonObject, fallbackCapability: String): AiServiceConfig =
+    AiServiceConfig(
+        id = obj.stringValue("id"),
+        capability = obj.stringValue("capability").ifBlank { fallbackCapability },
+        mode = obj.stringValue("mode"),
+        profileId = obj.stringValue("profileId"),
+        providerId = obj.stringValue("providerId"),
+        voiceId = obj.stringValue("voiceId"),
+        baseUrl = obj.stringValue("baseUrl"),
+        model = obj.stringValue("model"),
+        credentialId = obj.stringValue("credentialId"),
+        displayName = obj.stringValue("displayName"),
+        enabled = obj["enabled"]?.jsonPrimitive?.booleanOrNull ?: true,
+        status = obj.stringValue("status"),
+    )
+
+private fun decodeSceneSelections(obj: JsonObject?): AiSceneSelections =
+    AiSceneSelections(
+        providerChat = AiProviderChatSelection(
+            obj?.get("providerChat")?.jsonObjectOrNull().stringValue("llmConfigId")
+        ),
+        recording = AiRecordingSelection(
+            obj?.get("recording")?.jsonObjectOrNull().stringValue("asrConfigId")
+        ),
+        playback = AiPlaybackSelection(
+            obj?.get("playback")?.jsonObjectOrNull().stringValue("ttsConfigId")
+        ),
+        agentOverrides = obj?.get("agentOverrides")
+            ?.jsonObjectOrNull()
+            ?.mapValues { (_, value) -> decodeSceneOverride(value.jsonObjectOrNull()) }
+            .orEmpty(),
+    )
+
+private fun decodeSceneOverride(obj: JsonObject?): AiSceneAgentOverride =
+    AiSceneAgentOverride(
+        inherit = obj?.get("inherit")?.jsonPrimitive?.booleanOrNull ?: true,
+        llmConfigId = obj.stringValue("llmConfigId"),
+        asrConfigId = obj.stringValue("asrConfigId"),
+        ttsConfigId = obj.stringValue("ttsConfigId"),
     )
 
 private fun decodeDefaults(obj: JsonObject?): AiServiceDefaults =

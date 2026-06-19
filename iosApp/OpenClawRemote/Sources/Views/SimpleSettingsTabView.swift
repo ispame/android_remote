@@ -181,7 +181,6 @@ struct SimpleSettingsTabView: View {
         let tts = settingsManager.aiSettings.defaults.tts
         let ttsLabel: String
         switch tts.mode {
-        case "router": ttsLabel = "Router TTS"
         case "byok": ttsLabel = providerLabel(tts)
         default: ttsLabel = "系统"
         }
@@ -569,6 +568,7 @@ struct AIServiceNavigationLink: View {
 
 struct AiServiceSettingsView: View {
     @ObservedObject var settingsManager: SettingsManager
+    @StateObject private var asrTestRecorder = AudioRecorder()
     let colors: MochiColors
 
     @State private var billingSummary: GatewayBillingSummaryResponse?
@@ -593,6 +593,7 @@ struct AiServiceSettingsView: View {
     @State private var fetchedMiniMaxVoices: [MiniMaxVoiceOption] = []
     @State private var isTestingLlm = false
     @State private var isTestingAsr = false
+    @State private var hasStartedAsrTestGesture = false
     @State private var isRefreshingMiniMaxVoices = false
     @State private var isLoadingBilling = false
     @State private var didLoadDraft = false
@@ -620,7 +621,34 @@ struct AiServiceSettingsView: View {
                 .disabled(isLoadingBilling)
             }
 
-            Section("LLM") {
+            Section("业务场景") {
+                serviceConfigPicker(
+                    title: "Provider Chat LLM",
+                    selectedId: settingsManager.aiSettings.sceneSelections.providerChat.llmConfigId,
+                    configs: selectableLlmConfigs,
+                    emptyText: "请先保存 LLM 配置"
+                ) { configId in
+                    settingsManager.updateAiSceneSelection(providerChatLlmConfigId: configId)
+                }
+                serviceConfigPicker(
+                    title: "录音 ASR",
+                    selectedId: settingsManager.aiSettings.sceneSelections.recording.asrConfigId,
+                    configs: selectableAsrConfigs,
+                    emptyText: "请先保存 ASR 配置"
+                ) { configId in
+                    settingsManager.updateAiSceneSelection(recordingAsrConfigId: configId)
+                }
+                serviceConfigPicker(
+                    title: "播放 TTS",
+                    selectedId: settingsManager.aiSettings.sceneSelections.playback.ttsConfigId,
+                    configs: selectableTtsConfigs,
+                    emptyText: "请先保存 TTS 配置"
+                ) { configId in
+                    settingsManager.updateAiSceneSelection(playbackTtsConfigId: configId)
+                }
+            }
+
+            Section("LLM 配置") {
                 Picker("模型服务", selection: $draftLlmMode) {
                     Text("Router").tag("router")
                     Text("BYOK").tag("byok")
@@ -656,13 +684,23 @@ struct AiServiceSettingsView: View {
                         Label(isTestingLlm ? "正在测试 LLM..." : "测试 LLM", systemImage: "bolt.horizontal.circle")
                     }
                     .disabled(isTestingLlm)
+                    Button {
+                        saveLlmKey()
+                    } label: {
+                        Label("保存 LLM Key", systemImage: "key.fill")
+                    }
                 } else {
                     Text("LLM 由当前 Agent 后端自行配置，本机不保存 Key。")
                         .foregroundColor(.secondary)
                 }
+                Button {
+                    saveLlmConfig()
+                } label: {
+                    Label("保存 LLM 配置", systemImage: "tray.and.arrow.down.fill")
+                }
             }
 
-            Section("ASR") {
+            Section("ASR 配置") {
                 Picker("识别服务", selection: $draftAsrMode) {
                     Text("Router").tag("router")
                     Text("BYOK").tag("byok")
@@ -688,35 +726,68 @@ struct AiServiceSettingsView: View {
                     TextField("Model", text: $draftAsrModel)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
+                    if draftAsrProviderId == "volcengine" {
+                        Text("火山云 ASR：API Key 填 appKey:accessKey；Base URL 填 wss endpoint；Model 填 Resource ID。")
+                            .font(.system(size: 12))
+                            .foregroundColor(.secondary)
+                    }
                     AiSettingsInfoRow(label: "本机 Key", value: asrApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "未保存" : "已保存")
                     SecureField("ASR API Key", text: $asrApiKey)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
-                    Button {
-                        Task { await testAsr() }
-                    } label: {
-                        Label(isTestingAsr ? "正在测试 ASR..." : "测试 ASR", systemImage: "waveform.badge.magnifyingglass")
+                    HStack {
+                        Label(
+                            isTestingAsr
+                                ? (asrTestRecorder.isRecording ? "松开测试 ASR" : "正在测试 ASR...")
+                                : "按住测试 ASR",
+                            systemImage: asrTestRecorder.isRecording ? "mic.fill" : "waveform.badge.magnifyingglass"
+                        )
+                        Spacer()
+                        Text(asrTestRecorder.isRecording ? "录音中" : "按住说话")
+                            .font(.system(size: 12))
+                            .foregroundColor(.secondary)
                     }
-                    .disabled(isTestingAsr)
+                    .contentShape(Rectangle())
+                    .gesture(
+                        DragGesture(minimumDistance: 0)
+                            .onChanged { _ in
+                                if !hasStartedAsrTestGesture {
+                                    hasStartedAsrTestGesture = true
+                                    startAsrTestRecording()
+                                }
+                            }
+                            .onEnded { _ in
+                                hasStartedAsrTestGesture = false
+                                finishAsrTestRecording()
+                            }
+                    )
+                    .allowsHitTesting(!isTestingAsr || asrTestRecorder.isRecording)
+                    .opacity(isTestingAsr && !asrTestRecorder.isRecording ? 0.6 : 1)
+                    .accessibilityAddTraits(.isButton)
+                    Button {
+                        saveAsrKey()
+                    } label: {
+                        Label("保存 ASR Key", systemImage: "key.fill")
+                    }
                 } else {
                     Text("录音或语音识别交给当前 Agent 后端处理")
                         .foregroundColor(.secondary)
+                }
+                Button {
+                    saveAsrConfig()
+                } label: {
+                    Label("保存 ASR 配置", systemImage: "tray.and.arrow.down.fill")
                 }
             }
 
             Section {
                 Picker("TTS 引擎", selection: $draftTtsMode) {
-                    Text("Router").tag("router")
                     Text("BYOK").tag("byok")
                     Text("系统 TTS").tag("system")
                 }
                 .pickerStyle(.segmented)
 
-                if draftTtsMode == "router" {
-                    AiSettingsInfoRow(label: "模式", value: "Router TTS")
-                    Text("Router TTS 统一能力入口已预留；当前 Router catalog 暂未返回可用 TTS profile 时，实际朗读仍使用系统 TTS。")
-                        .foregroundColor(.secondary)
-                } else if draftTtsMode == "byok" {
+                if draftTtsMode == "byok" {
                     Picker("Provider", selection: $draftTtsProviderId) {
                         ForEach(AiProviderCatalog.ttsByokProviders) { provider in
                             Text(provider.label).tag(provider.id)
@@ -746,12 +817,22 @@ struct AiServiceSettingsView: View {
                         Label(isRefreshingMiniMaxVoices ? "正在刷新音色..." : "从 MiniMax 刷新可用音色", systemImage: "arrow.clockwise")
                     }
                     .disabled(isRefreshingMiniMaxVoices)
+                    Button {
+                        saveTtsKey()
+                    } label: {
+                        Label("保存 TTS Key", systemImage: "key.fill")
+                    }
                 } else {
                     Text("使用 iOS 系统语音合成，不需要 API Key")
                         .foregroundColor(.secondary)
                 }
+                Button {
+                    saveTtsConfig()
+                } label: {
+                    Label("保存 TTS 配置", systemImage: "tray.and.arrow.down.fill")
+                }
             } header: {
-                Text("TTS 引擎")
+                Text("TTS 配置")
             } footer: {
                 Text("MiniMax API Key 只保存在本机 Keychain，不会写入 UserDefaults 或同步到 Router。")
             }
@@ -759,22 +840,16 @@ struct AiServiceSettingsView: View {
             Section("Agent 覆盖") {
                 ForEach(settingsManager.profiles) { profile in
                     let resolved = settingsManager.aiSettings.resolved(for: profile.id)
-                    NavigationLink {
-                        AgentAiOverrideEditorView(
-                            settingsManager: settingsManager,
-                            profile: profile,
-                            colors: colors
-                        )
-                        .navigationTitle(profile.resolvedDisplayName)
-                    } label: {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(profile.resolvedDisplayName)
-                            Text(agentOverrideSummary(resolved))
-                                .font(.system(size: 12))
-                                .foregroundColor(.secondary)
-                        }
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(profile.resolvedDisplayName)
+                        Text(agentOverrideSummary(resolved))
+                            .font(.system(size: 12))
+                            .foregroundColor(.secondary)
                     }
                 }
+                Text("Agent 级 ASR/TTS 覆盖请在对应 Agent 右上角配置页直接下拉修改。")
+                    .font(.system(size: 12))
+                    .foregroundColor(.secondary)
             }
 
             if let statusMessage {
@@ -792,24 +867,9 @@ struct AiServiceSettingsView: View {
         .task(id: settingsManager.config.accessToken) {
             await loadBillingSummary()
         }
-        .onChange(of: draftLlmMode) { _ in saveDraft() }
-        .onChange(of: draftLlmProfileId) { _ in saveDraft() }
         .onChange(of: draftLlmProviderId) { _ in applyLlmProviderDefaults() }
-        .onChange(of: draftLlmBaseUrl) { _ in saveDraft() }
-        .onChange(of: draftLlmModel) { _ in saveDraft() }
-        .onChange(of: llmApiKey) { _ in saveDraft() }
-        .onChange(of: draftAsrMode) { _ in saveDraft() }
-        .onChange(of: draftAsrProfileId) { _ in saveDraft() }
         .onChange(of: draftAsrProviderId) { _ in applyAsrProviderDefaults() }
-        .onChange(of: draftAsrBaseUrl) { _ in saveDraft() }
-        .onChange(of: draftAsrModel) { _ in saveDraft() }
-        .onChange(of: asrApiKey) { _ in saveDraft() }
-        .onChange(of: draftTtsMode) { _ in saveDraft() }
         .onChange(of: draftTtsProviderId) { _ in applyTtsProviderDefaults() }
-        .onChange(of: draftTtsBaseUrl) { _ in saveDraft() }
-        .onChange(of: draftTtsModel) { _ in saveDraft() }
-        .onChange(of: minimaxApiKey) { _ in saveDraft() }
-        .onChange(of: minimaxVoiceId) { _ in saveDraft() }
     }
 
     private var currentPlanText: String {
@@ -832,6 +892,55 @@ struct AiServiceSettingsView: View {
         )
     }
 
+    private var selectableLlmConfigs: [AiServiceConfig] {
+        settingsManager.aiSettings.serviceConfigs.llm.filter(\.isSelectable)
+    }
+
+    private var selectableAsrConfigs: [AiServiceConfig] {
+        settingsManager.aiSettings.serviceConfigs.asr.filter(\.isSelectable)
+    }
+
+    private var selectableTtsConfigs: [AiServiceConfig] {
+        settingsManager.aiSettings.serviceConfigs.tts.filter(\.isSelectable)
+    }
+
+    @ViewBuilder
+    private func serviceConfigPicker(
+        title: String,
+        selectedId: String,
+        configs: [AiServiceConfig],
+        emptyText: String,
+        onSelect: @escaping (String) -> Void
+    ) -> some View {
+        if configs.isEmpty {
+            AiSettingsInfoRow(label: title, value: emptyText)
+        } else {
+            Picker(title, selection: Binding(
+                get: { selectedId },
+                set: { onSelect($0) }
+            )) {
+                ForEach(configs) { config in
+                    Text(serviceConfigLabel(config)).tag(config.id)
+                }
+            }
+        }
+    }
+
+    private func serviceConfigLabel(_ config: AiServiceConfig) -> String {
+        switch config.mode {
+        case "router":
+            return "Router \(config.profileId.isEmpty ? "default" : config.profileId)"
+        case "byok":
+            return "BYOK \(config.providerId.isEmpty ? config.displayName : config.providerId)"
+        case "backend", "agent":
+            return "Agent"
+        case "system":
+            return "System"
+        default:
+            return config.displayName.isEmpty ? config.id : config.displayName
+        }
+    }
+
     private var selectedLlmProvider: AiByokProviderTemplate {
         AiProviderCatalog.llmProvider(id: draftLlmProviderId) ?? AiProviderCatalog.llmByokProviders[0]
     }
@@ -847,27 +956,39 @@ struct AiServiceSettingsView: View {
     private func syncDraftFromSettings() {
         didLoadDraft = false
         let defaults = settingsManager.aiSettings.defaults
-        let llm = defaults.llm
+        let llm = settingsManager.aiSettings.llmConfigForProviderChat()?.toChoice() ?? defaults.llm
         draftLlmMode = llm.mode == "byok" || llm.mode == "agent" ? llm.mode : "router"
         draftLlmProfileId = llm.profileId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "default" : llm.profileId
-        let llmProvider = AiProviderCatalog.llmProvider(id: llm.providerId) ?? AiProviderCatalog.llmByokProviders[0]
+        let llmProvider = AiProviderCatalog.preferredProvider(
+            in: AiProviderCatalog.llmByokProviders,
+            currentProviderId: llm.providerId,
+            hasCredential: hasLocalCredential
+        )
         draftLlmProviderId = llmProvider.id
         draftLlmBaseUrl = llm.baseUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? llmProvider.baseUrlDefault : llm.baseUrl
         draftLlmModel = llm.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? llmProvider.modelDefault : llm.model
         llmApiKey = settingsManager.localCredential(id: llmProvider.credentialId) ?? ""
 
-        let asr = defaults.asr
+        let asr = settingsManager.aiSettings.asrConfigForRecording()?.toChoice() ?? defaults.asr
         draftAsrMode = asr.mode == "backend" || asr.mode == "byok" ? asr.mode : "router"
         draftAsrProfileId = draftAsrMode == "router" ? asr.profileId : ""
-        let asrProvider = AiProviderCatalog.asrProvider(id: asr.providerId) ?? AiProviderCatalog.asrByokProviders[0]
+        let asrProvider = AiProviderCatalog.preferredProvider(
+            in: AiProviderCatalog.asrByokProviders,
+            currentProviderId: asr.providerId,
+            hasCredential: hasLocalCredential
+        )
         draftAsrProviderId = asrProvider.id
         draftAsrBaseUrl = asr.baseUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? asrProvider.baseUrlDefault : asr.baseUrl
         draftAsrModel = asr.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? asrProvider.modelDefault : asr.model
         asrApiKey = settingsManager.localCredential(id: asrProvider.credentialId) ?? ""
 
-        let tts = defaults.tts
-        draftTtsMode = tts.mode == "router" || tts.mode == "byok" ? tts.mode : "system"
-        let ttsProvider = AiProviderCatalog.ttsProvider(id: tts.providerId) ?? AiProviderCatalog.ttsByokProviders[0]
+        let tts = settingsManager.aiSettings.ttsConfigForPlayback()?.toChoice() ?? defaults.tts
+        draftTtsMode = tts.mode == "byok" ? "byok" : "system"
+        let ttsProvider = AiProviderCatalog.preferredProvider(
+            in: AiProviderCatalog.ttsByokProviders,
+            currentProviderId: tts.providerId,
+            hasCredential: hasLocalCredential
+        )
         draftTtsProviderId = ttsProvider.id
         draftTtsBaseUrl = tts.baseUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? ttsProvider.baseUrlDefault : tts.baseUrl
         draftTtsModel = tts.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? ttsProvider.modelDefault : tts.model
@@ -878,60 +999,77 @@ struct AiServiceSettingsView: View {
         }
     }
 
-    private func saveDraft() {
-        guard didLoadDraft else { return }
-        let normalizedVoiceId = normalizedMiniMaxVoiceId(minimaxVoiceId)
-        let llmProvider = selectedLlmProvider
-        let asrProvider = selectedAsrProvider
-        let ttsProvider = selectedTtsProvider
-        settingsManager.updateLocalCredential(id: llmProvider.credentialId, apiKey: llmApiKey)
-        settingsManager.updateLocalCredential(id: asrProvider.credentialId, apiKey: asrApiKey)
-        settingsManager.updateLocalCredential(id: ttsProvider.credentialId, apiKey: minimaxApiKey)
-        settingsManager.updateAiSettings(
-            AiServiceSettings(
-                defaults: AiServiceDefaults(
-                    llm: AiServiceChoice(
-                        mode: draftLlmMode,
-                        profileId: draftLlmMode == "router" ? draftLlmProfileId.trimmingCharacters(in: .whitespacesAndNewlines) : "",
-                        providerId: llmProvider.id,
-                        baseUrl: draftLlmBaseUrl.trimmingCharacters(in: .whitespacesAndNewlines),
-                        model: draftLlmModel.trimmingCharacters(in: .whitespacesAndNewlines),
-                        credentialId: llmProvider.credentialId,
-                        displayName: llmProvider.label
-                    ),
-                    asr: AiServiceChoice(
-                        mode: draftAsrMode,
-                        profileId: draftAsrMode == "router" ? draftAsrProfileId.trimmingCharacters(in: .whitespacesAndNewlines) : "",
-                        providerId: asrProvider.id,
-                        baseUrl: draftAsrBaseUrl.trimmingCharacters(in: .whitespacesAndNewlines),
-                        model: draftAsrModel.trimmingCharacters(in: .whitespacesAndNewlines),
-                        credentialId: asrProvider.credentialId,
-                        displayName: asrProvider.label
-                    ),
-                    tts: draftTtsMode == "router"
-                        ? AiServiceChoice(
-                            mode: "router",
-                            providerId: "router",
-                            voiceId: normalizedVoiceId,
-                            credentialId: ttsProvider.credentialId,
-                            displayName: "Router TTS"
-                        )
-                        : (draftTtsMode == "byok"
-                            ? AiServiceChoice(
-                            mode: "byok",
-                            providerId: ttsProvider.id,
-                            voiceId: normalizedVoiceId,
-                            baseUrl: draftTtsBaseUrl.trimmingCharacters(in: .whitespacesAndNewlines),
-                            model: draftTtsModel.trimmingCharacters(in: .whitespacesAndNewlines),
-                            credentialId: ttsProvider.credentialId,
-                            displayName: ttsProvider.label
-                        )
-                            : AiServiceChoice(mode: "system", providerId: "system", voiceId: normalizedVoiceId, credentialId: ttsProvider.credentialId))
-                ),
-                agentOverrides: settingsManager.aiSettings.agentOverrides
-            )
+    private func saveLlmConfig() {
+        settingsManager.upsertAiServiceConfig(llmDraftChoice.toServiceConfig(capability: "llm"))
+        statusMessage = "LLM 配置已保存"
+    }
+
+    private func saveAsrConfig() {
+        settingsManager.upsertAiServiceConfig(asrDraftChoice.toServiceConfig(capability: "asr"))
+        statusMessage = "ASR 配置已保存"
+    }
+
+    private func saveTtsConfig() {
+        settingsManager.upsertAiServiceConfig(ttsDraftChoice.toServiceConfig(capability: "tts"))
+        statusMessage = "TTS 配置已保存"
+    }
+
+    private func saveLlmKey() {
+        settingsManager.updateLocalCredential(id: selectedLlmProvider.credentialId, apiKey: llmApiKey)
+        statusMessage = "LLM Key 已保存到本机 Keychain"
+    }
+
+    private func saveAsrKey() {
+        settingsManager.updateLocalCredential(id: selectedAsrProvider.credentialId, apiKey: asrApiKey)
+        statusMessage = "ASR Key 已保存到本机 Keychain"
+    }
+
+    private func saveTtsKey() {
+        settingsManager.updateLocalCredential(id: selectedTtsProvider.credentialId, apiKey: minimaxApiKey)
+        statusMessage = "TTS Key 已保存到本机 Keychain"
+    }
+
+    private var llmDraftChoice: AiServiceChoice {
+        let provider = selectedLlmProvider
+        return AiServiceChoice(
+            mode: draftLlmMode,
+            profileId: draftLlmMode == "router" ? draftLlmProfileId.trimmingCharacters(in: .whitespacesAndNewlines) : "",
+            providerId: draftLlmMode == "router" ? "router" : provider.id,
+            baseUrl: draftLlmMode == "byok" ? draftLlmBaseUrl.trimmingCharacters(in: .whitespacesAndNewlines) : "",
+            model: draftLlmMode == "byok" ? draftLlmModel.trimmingCharacters(in: .whitespacesAndNewlines) : "",
+            credentialId: draftLlmMode == "byok" ? provider.credentialId : "",
+            displayName: draftLlmMode == "byok" ? provider.label : "Router LLM"
         )
-        statusMessage = "AI 服务设置已保存"
+    }
+
+    private var asrDraftChoice: AiServiceChoice {
+        let provider = selectedAsrProvider
+        return AiServiceChoice(
+            mode: draftAsrMode,
+            profileId: draftAsrMode == "router" ? draftAsrProfileId.trimmingCharacters(in: .whitespacesAndNewlines) : "",
+            providerId: draftAsrMode == "router" ? "router" : (draftAsrMode == "backend" ? "agent" : provider.id),
+            baseUrl: draftAsrMode == "byok" ? draftAsrBaseUrl.trimmingCharacters(in: .whitespacesAndNewlines) : "",
+            model: draftAsrMode == "byok" ? draftAsrModel.trimmingCharacters(in: .whitespacesAndNewlines) : "",
+            credentialId: draftAsrMode == "byok" ? provider.credentialId : "",
+            displayName: draftAsrMode == "backend" ? "Agent 后端识别" : (draftAsrMode == "byok" ? provider.label : "Router ASR")
+        )
+    }
+
+    private var ttsDraftChoice: AiServiceChoice {
+        let provider = selectedTtsProvider
+        let normalizedVoiceId = normalizedMiniMaxVoiceId(minimaxVoiceId)
+        if draftTtsMode == "byok" {
+            return AiServiceChoice(
+                mode: "byok",
+                providerId: provider.id,
+                voiceId: normalizedVoiceId,
+                baseUrl: draftTtsBaseUrl.trimmingCharacters(in: .whitespacesAndNewlines),
+                model: draftTtsModel.trimmingCharacters(in: .whitespacesAndNewlines),
+                credentialId: provider.credentialId,
+                displayName: provider.label
+            )
+        }
+        return AiServiceChoice(mode: "system", providerId: "system", voiceId: normalizedVoiceId, displayName: "系统 TTS")
     }
 
     private func applyLlmProviderDefaults() {
@@ -940,7 +1078,6 @@ struct AiServiceSettingsView: View {
         draftLlmBaseUrl = provider.baseUrlDefault
         draftLlmModel = provider.modelDefault
         llmApiKey = settingsManager.localCredential(id: provider.credentialId) ?? ""
-        saveDraft()
     }
 
     private func applyAsrProviderDefaults() {
@@ -949,7 +1086,6 @@ struct AiServiceSettingsView: View {
         draftAsrBaseUrl = provider.baseUrlDefault
         draftAsrModel = provider.modelDefault
         asrApiKey = settingsManager.localCredential(id: provider.credentialId) ?? ""
-        saveDraft()
     }
 
     private func applyTtsProviderDefaults() {
@@ -958,7 +1094,6 @@ struct AiServiceSettingsView: View {
         draftTtsBaseUrl = provider.baseUrlDefault
         draftTtsModel = provider.modelDefault
         minimaxApiKey = settingsManager.localCredential(id: provider.credentialId) ?? ""
-        saveDraft()
     }
 
     @MainActor
@@ -1012,22 +1147,55 @@ struct AiServiceSettingsView: View {
     }
 
     @MainActor
-    private func testAsr() async {
+    private func startAsrTestRecording() {
         guard !asrApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             statusMessage = "请先填写 ASR API Key"
             return
         }
+        guard !isTestingAsr else { return }
         isTestingAsr = true
+        statusMessage = "正在录音，松开后测试 ASR"
+        asrTestRecorder.startRecording()
+    }
+
+    @MainActor
+    private func finishAsrTestRecording() {
+        guard asrTestRecorder.isRecording else { return }
+        asrTestRecorder.stopRecording { data in
+            Task { await testAsr(audioData: data) }
+        }
+    }
+
+    @MainActor
+    private func testAsr(audioData: Data) async {
         defer { isTestingAsr = false }
+        guard !asrApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            statusMessage = "请先填写 ASR API Key"
+            return
+        }
+        guard audioData.count > 44 else {
+            statusMessage = "ASR 测试失败：请按住按钮说一句话后松开"
+            return
+        }
         do {
-            let transcript = try await OpenAICompatibleAsrClient().testTranscription(
-                baseUrl: draftAsrBaseUrl,
+            let transcript = try await ByokAsrTranscriptionClient.transcribe(
+                choice: asrDraftChoice,
                 apiKey: asrApiKey,
-                model: draftAsrModel
+                audioData: audioData
             )
-            statusMessage = "ASR 测试成功：\(transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "已连接" : String(transcript.prefix(80)))"
+            let text = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else {
+                statusMessage = "ASR 测试没有识别到文本，请按住按钮说一句话后松开"
+                return
+            }
+            statusMessage = "ASR 测试成功：\(String(text.prefix(80)))"
         } catch {
-            statusMessage = "ASR 测试失败：\(error.localizedDescription)"
+            let message = error.localizedDescription
+            if message.contains("缺少识别文本") {
+                statusMessage = "ASR 测试没有识别到文本，请按住按钮说一句话后松开"
+            } else {
+                statusMessage = "ASR 测试失败：\(message)"
+            }
         }
     }
 
@@ -1062,11 +1230,15 @@ struct AiServiceSettingsView: View {
         }
         let tts: String
         switch defaults.tts.mode {
-        case "router": tts = "Router TTS"
         case "byok": tts = providerLabel(defaults.tts)
         default: tts = "系统 TTS"
         }
         return "\(llm) · \(asr) · \(tts)"
+    }
+
+    private func hasLocalCredential(_ credentialId: String) -> Bool {
+        guard let value = settingsManager.localCredential(id: credentialId) else { return false }
+        return !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private func providerLabel(_ choice: AiServiceChoice) -> String {
@@ -1091,7 +1263,7 @@ struct AiServiceSettingsView: View {
     }
 }
 
-private struct AgentAiOverrideEditorView: View {
+struct AgentAiOverrideEditorView: View {
     @ObservedObject var settingsManager: SettingsManager
     let profile: AgentProfile
     let colors: MochiColors
@@ -1185,15 +1357,11 @@ private struct AgentAiOverrideEditorView: View {
 
                 Section("TTS 引擎") {
                     Picker("TTS 引擎", selection: $ttsMode) {
-                        Text("Router").tag("router")
                         Text("BYOK").tag("byok")
                         Text("系统 TTS").tag("system")
                     }
                     .pickerStyle(.segmented)
-                    if ttsMode == "router" {
-                        Text("Router TTS 作为统一能力入口预留；当前未接入 Router TTS profile 时会回落到系统朗读。")
-                            .foregroundColor(.secondary)
-                    } else if ttsMode == "byok" {
+                    if ttsMode == "byok" {
                         Picker("Provider", selection: $ttsProviderId) {
                             ForEach(AiProviderCatalog.ttsByokProviders) { provider in
                                 Text(provider.label).tag(provider.id)
@@ -1250,8 +1418,15 @@ private struct AgentAiOverrideEditorView: View {
         asrProviderId = asrProvider.id
         asrBaseUrl = resolved.asr.baseUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? asrProvider.baseUrlDefault : resolved.asr.baseUrl
         asrModel = resolved.asr.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? asrProvider.modelDefault : resolved.asr.model
-        ttsMode = resolved.tts.mode == "router" || resolved.tts.mode == "byok" ? resolved.tts.mode : "system"
-        let ttsProvider = AiProviderCatalog.ttsProvider(id: resolved.tts.providerId) ?? AiProviderCatalog.ttsByokProviders[0]
+        ttsMode = resolved.tts.mode == "byok" ? "byok" : "system"
+        let ttsProvider = AiProviderCatalog.preferredProvider(
+            in: AiProviderCatalog.ttsByokProviders,
+            currentProviderId: resolved.tts.providerId,
+            hasCredential: { credentialId in
+                guard let value = settingsManager.localCredential(id: credentialId) else { return false }
+                return !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            }
+        )
         ttsProviderId = ttsProvider.id
         ttsBaseUrl = resolved.tts.baseUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? ttsProvider.baseUrlDefault : resolved.tts.baseUrl
         ttsModel = resolved.tts.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? ttsProvider.modelDefault : resolved.tts.model
@@ -1290,15 +1465,7 @@ private struct AgentAiOverrideEditorView: View {
                     credentialId: asrProvider.credentialId,
                     displayName: asrProvider.label
                 ),
-                tts: ttsMode == "router"
-                    ? AiServiceChoice(
-                        mode: "router",
-                        providerId: "router",
-                        voiceId: minimaxVoiceId,
-                        credentialId: ttsProvider.credentialId,
-                        displayName: "Router TTS"
-                    )
-                    : (ttsMode == "byok"
+                tts: ttsMode == "byok"
                         ? AiServiceChoice(
                         mode: "byok",
                         providerId: ttsProvider.id,
@@ -1308,7 +1475,7 @@ private struct AgentAiOverrideEditorView: View {
                         credentialId: ttsProvider.credentialId,
                         displayName: ttsProvider.label
                     )
-                        : AiServiceChoice(mode: "system", providerId: "system", voiceId: minimaxVoiceId, credentialId: ttsProvider.credentialId))
+                        : AiServiceChoice(mode: "system", providerId: "system", voiceId: minimaxVoiceId, credentialId: ttsProvider.credentialId)
             )
         }
         settingsManager.updateAiSettings(settings)
@@ -1625,12 +1792,7 @@ private struct RecordingSettingsView: View {
     }
 
     private var availableRecordingTypes: [RecordingType] {
-        RecordingType.allCases.filter { type in
-            if type == .custom {
-                return !draft.customPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            }
-            return true
-        }
+        draft.settingsTypeOptions
     }
 
     private var promptPreviewText: String {
@@ -1664,11 +1826,11 @@ private struct RecordingSettingsView: View {
             Section {
                 Toggle("本机录音默认执行", isOn: $draft.defaultDeliverToAgent)
             } footer: {
-                Text("本机录音后，直接以默认录音类型发送给主 Agent 处理")
+                Text("本机录音后，直接以录音类型发送给主 Agent 处理")
             }
 
             Section {
-                Picker("默认录音类型", selection: $draft.defaultRecordingType) {
+                Picker("录音类型", selection: $draft.defaultRecordingType) {
                     ForEach(availableRecordingTypes) { type in
                         Text(type.label).tag(type)
                     }
@@ -1705,7 +1867,7 @@ private struct RecordingSettingsView: View {
                     }
                 }
             } header: {
-                Text("默认录音类型")
+                Text("录音类型")
             } footer: {
                 if draft.defaultRecordingType == .audioOnly {
                     Text("耳机录音后，仅保存录音文件")

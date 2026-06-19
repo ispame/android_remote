@@ -768,6 +768,16 @@ enum AiProviderCatalog {
             apiStyle: "openai-whisper",
             capabilities: ["asr"],
             adapter: "openai-whisper"
+        ),
+        AiByokProviderTemplate(
+            id: "volcengine",
+            label: "豆包火山云 ASR",
+            baseUrlDefault: "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel",
+            modelDefault: "volc.bigasr.sauc.duration",
+            credentialId: localAsrVolcengineCredentialId,
+            apiStyle: "volcengine-bigmodel-asr",
+            capabilities: ["asr"],
+            adapter: "volcengine-asr"
         )
     ]
 
@@ -794,6 +804,20 @@ enum AiProviderCatalog {
 
     static func ttsProvider(id: String) -> AiByokProviderTemplate? {
         provider(in: ttsByokProviders, id: id)
+    }
+
+    static func preferredProvider(
+        in providers: [AiByokProviderTemplate],
+        currentProviderId: String,
+        hasCredential: (String) -> Bool
+    ) -> AiByokProviderTemplate {
+        if let providerWithKey = providers.first(where: { provider in
+            let credentialId = provider.credentialId.trimmingCharacters(in: .whitespacesAndNewlines)
+            return !credentialId.isEmpty && hasCredential(credentialId)
+        }) {
+            return providerWithKey
+        }
+        return provider(in: providers, id: currentProviderId) ?? providers[0]
     }
 
     static func choice(
@@ -824,25 +848,60 @@ struct AiServiceDefaults: Codable, Equatable {
     var llm = AiServiceChoice(
         mode: "router",
         profileId: "default",
-        providerId: "openai-compatible",
-        baseUrl: "https://api.openai.com/v1",
-        model: "gpt-4o-mini",
-        credentialId: localLlmOpenAICompatibleCredentialId,
-        displayName: "OpenAI-compatible"
+        providerId: "router",
+        displayName: "Router LLM"
     )
     var asr = AiServiceChoice(
         mode: "router",
-        providerId: "openai-compatible",
-        baseUrl: "https://api.openai.com/v1",
-        model: "whisper-1",
-        credentialId: localAsrOpenAICompatibleCredentialId,
-        displayName: "OpenAI-compatible"
+        providerId: "router",
+        displayName: "Router ASR"
     )
     var tts = AiServiceChoice(
         mode: "system",
         providerId: "system",
         voiceId: "male-qn-qingse",
-        credentialId: localMiniMaxCredentialId
+        displayName: "系统 TTS"
+    )
+
+    enum CodingKeys: String, CodingKey {
+        case llm
+        case asr
+        case tts
+    }
+
+    init(
+        llm: AiServiceChoice = AiServiceDefaults.defaultLlm,
+        asr: AiServiceChoice = AiServiceDefaults.defaultAsr,
+        tts: AiServiceChoice = AiServiceDefaults.defaultTts
+    ) {
+        self.llm = llm
+        self.asr = asr
+        self.tts = tts
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        llm = try container.decodeIfPresent(AiServiceChoice.self, forKey: .llm) ?? Self.defaultLlm
+        asr = try container.decodeIfPresent(AiServiceChoice.self, forKey: .asr) ?? Self.defaultAsr
+        tts = try container.decodeIfPresent(AiServiceChoice.self, forKey: .tts) ?? Self.defaultTts
+    }
+
+    private static let defaultLlm = AiServiceChoice(
+        mode: "router",
+        profileId: "default",
+        providerId: "router",
+        displayName: "Router LLM"
+    )
+    private static let defaultAsr = AiServiceChoice(
+        mode: "router",
+        providerId: "router",
+        displayName: "Router ASR"
+    )
+    private static let defaultTts = AiServiceChoice(
+        mode: "system",
+        providerId: "system",
+        voiceId: "male-qn-qingse",
+        displayName: "系统 TTS"
     )
 }
 
@@ -851,11 +910,260 @@ struct AiAgentOverride: Codable, Equatable {
     var llm: AiServiceChoice?
     var asr: AiServiceChoice?
     var tts: AiServiceChoice?
+
+    enum CodingKeys: String, CodingKey {
+        case inherit
+        case llm
+        case asr
+        case tts
+    }
+
+    init(
+        inherit: Bool = true,
+        llm: AiServiceChoice? = nil,
+        asr: AiServiceChoice? = nil,
+        tts: AiServiceChoice? = nil
+    ) {
+        self.inherit = inherit
+        self.llm = llm
+        self.asr = asr
+        self.tts = tts
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        inherit = try container.decodeIfPresent(Bool.self, forKey: .inherit) ?? true
+        llm = try container.decodeIfPresent(AiServiceChoice.self, forKey: .llm)
+        asr = try container.decodeIfPresent(AiServiceChoice.self, forKey: .asr)
+        tts = try container.decodeIfPresent(AiServiceChoice.self, forKey: .tts)
+    }
+}
+
+struct AiServiceConfig: Codable, Equatable, Identifiable {
+    var id: String
+    var capability: String
+    var mode: String
+    var profileId: String
+    var providerId: String
+    var voiceId: String
+    var baseUrl: String
+    var model: String
+    var credentialId: String
+    var displayName: String
+    var enabled: Bool
+    var status: String
+
+    init(
+        id: String,
+        capability: String,
+        mode: String,
+        profileId: String = "",
+        providerId: String = "",
+        voiceId: String = "",
+        baseUrl: String = "",
+        model: String = "",
+        credentialId: String = "",
+        displayName: String = "",
+        enabled: Bool = true,
+        status: String = "available"
+    ) {
+        self.id = id
+        self.capability = capability
+        self.mode = mode
+        self.profileId = profileId
+        self.providerId = providerId
+        self.voiceId = voiceId
+        self.baseUrl = baseUrl
+        self.model = model
+        self.credentialId = credentialId
+        self.displayName = displayName
+        self.enabled = enabled
+        self.status = status
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case capability
+        case mode
+        case profileId
+        case providerId
+        case voiceId
+        case baseUrl
+        case model
+        case credentialId
+        case displayName
+        case enabled
+        case status
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(String.self, forKey: .id) ?? ""
+        capability = try container.decodeIfPresent(String.self, forKey: .capability) ?? "llm"
+        mode = try container.decodeIfPresent(String.self, forKey: .mode) ?? ""
+        profileId = try container.decodeIfPresent(String.self, forKey: .profileId) ?? ""
+        providerId = try container.decodeIfPresent(String.self, forKey: .providerId) ?? ""
+        voiceId = try container.decodeIfPresent(String.self, forKey: .voiceId) ?? ""
+        baseUrl = try container.decodeIfPresent(String.self, forKey: .baseUrl) ?? ""
+        model = try container.decodeIfPresent(String.self, forKey: .model) ?? ""
+        credentialId = try container.decodeIfPresent(String.self, forKey: .credentialId) ?? ""
+        displayName = try container.decodeIfPresent(String.self, forKey: .displayName) ?? ""
+        enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
+        status = try container.decodeIfPresent(String.self, forKey: .status) ?? "available"
+    }
+}
+
+struct AiServiceConfigLibrary: Codable, Equatable {
+    var llm: [AiServiceConfig] = []
+    var asr: [AiServiceConfig] = []
+    var tts: [AiServiceConfig] = []
+
+    var isEmpty: Bool { llm.isEmpty && asr.isEmpty && tts.isEmpty }
+
+    init(
+        llm: [AiServiceConfig] = [],
+        asr: [AiServiceConfig] = [],
+        tts: [AiServiceConfig] = []
+    ) {
+        self.llm = llm
+        self.asr = asr
+        self.tts = tts
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case llm
+        case asr
+        case tts
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        llm = try container.decodeIfPresent([AiServiceConfig].self, forKey: .llm) ?? []
+        asr = try container.decodeIfPresent([AiServiceConfig].self, forKey: .asr) ?? []
+        tts = try container.decodeIfPresent([AiServiceConfig].self, forKey: .tts) ?? []
+    }
+}
+
+struct AiProviderChatSelection: Codable, Equatable {
+    var llmConfigId = ""
+}
+
+struct AiRecordingSelection: Codable, Equatable {
+    var asrConfigId = ""
+}
+
+struct AiPlaybackSelection: Codable, Equatable {
+    var ttsConfigId = ""
+}
+
+struct AiSceneAgentOverride: Codable, Equatable {
+    var inherit = true
+    var llmConfigId = ""
+    var asrConfigId = ""
+    var ttsConfigId = ""
+}
+
+struct AiSceneSelections: Codable, Equatable {
+    var providerChat = AiProviderChatSelection()
+    var recording = AiRecordingSelection()
+    var playback = AiPlaybackSelection()
+    var agentOverrides: [String: AiSceneAgentOverride] = [:]
+
+    enum CodingKeys: String, CodingKey {
+        case providerChat
+        case recording
+        case playback
+        case agentOverrides
+    }
+
+    init(
+        providerChat: AiProviderChatSelection = AiProviderChatSelection(),
+        recording: AiRecordingSelection = AiRecordingSelection(),
+        playback: AiPlaybackSelection = AiPlaybackSelection(),
+        agentOverrides: [String: AiSceneAgentOverride] = [:]
+    ) {
+        self.providerChat = providerChat
+        self.recording = recording
+        self.playback = playback
+        self.agentOverrides = agentOverrides
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        providerChat = try container.decodeIfPresent(AiProviderChatSelection.self, forKey: .providerChat) ?? AiProviderChatSelection()
+        recording = try container.decodeIfPresent(AiRecordingSelection.self, forKey: .recording) ?? AiRecordingSelection()
+        playback = try container.decodeIfPresent(AiPlaybackSelection.self, forKey: .playback) ?? AiPlaybackSelection()
+        agentOverrides = try container.decodeIfPresent([String: AiSceneAgentOverride].self, forKey: .agentOverrides) ?? [:]
+    }
 }
 
 struct AiServiceSettings: Codable, Equatable {
+    var version = 2
+    var serviceConfigs = AiServiceConfigLibrary()
+    var sceneSelections = AiSceneSelections()
     var defaults = AiServiceDefaults()
     var agentOverrides: [String: AiAgentOverride] = [:]
+
+    enum CodingKeys: String, CodingKey {
+        case version
+        case serviceConfigs
+        case sceneSelections
+        case defaults
+        case agentOverrides
+    }
+
+    init(
+        version: Int = 2,
+        serviceConfigs: AiServiceConfigLibrary = AiServiceConfigLibrary(),
+        sceneSelections: AiSceneSelections = AiSceneSelections(),
+        defaults: AiServiceDefaults = AiServiceDefaults(),
+        agentOverrides: [String: AiAgentOverride] = [:]
+    ) {
+        self.init(
+            rawVersion: version,
+            rawServiceConfigs: serviceConfigs,
+            rawSceneSelections: sceneSelections,
+            rawDefaults: defaults,
+            rawAgentOverrides: agentOverrides
+        )
+        self = normalizedRaw()
+    }
+
+    private init(
+        rawVersion: Int,
+        rawServiceConfigs: AiServiceConfigLibrary,
+        rawSceneSelections: AiSceneSelections,
+        rawDefaults: AiServiceDefaults,
+        rawAgentOverrides: [String: AiAgentOverride]
+    ) {
+        version = rawVersion
+        serviceConfigs = rawServiceConfigs
+        sceneSelections = rawSceneSelections
+        defaults = rawDefaults
+        agentOverrides = rawAgentOverrides
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            rawVersion: try container.decodeIfPresent(Int.self, forKey: .version) ?? 2,
+            rawServiceConfigs: try container.decodeIfPresent(AiServiceConfigLibrary.self, forKey: .serviceConfigs) ?? AiServiceConfigLibrary(),
+            rawSceneSelections: try container.decodeIfPresent(AiSceneSelections.self, forKey: .sceneSelections) ?? AiSceneSelections(),
+            rawDefaults: try container.decodeIfPresent(AiServiceDefaults.self, forKey: .defaults) ?? AiServiceDefaults(),
+            rawAgentOverrides: try container.decodeIfPresent([String: AiAgentOverride].self, forKey: .agentOverrides) ?? [:]
+        )
+        self = normalizedRaw()
+    }
+
+    func encode(to encoder: Encoder) throws {
+        let normalized = normalizedRaw()
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(2, forKey: .version)
+        try container.encode(normalized.serviceConfigs, forKey: .serviceConfigs)
+        try container.encode(normalized.sceneSelections, forKey: .sceneSelections)
+        try container.encode(normalized.defaults, forKey: .defaults)
+        try container.encode(normalized.agentOverrides, forKey: .agentOverrides)
+    }
 
     func resolved(for profileId: String) -> AiServiceDefaults {
         guard let override = agentOverrides[profileId], !override.inherit else {
@@ -866,6 +1174,519 @@ struct AiServiceSettings: Codable, Equatable {
             asr: override.asr ?? defaults.asr,
             tts: override.tts ?? defaults.tts
         )
+    }
+
+    func llmConfigForProviderChat() -> AiServiceConfig? {
+        serviceConfigs.llm.config(id: sceneSelections.providerChat.llmConfigId)
+            ?? serviceConfigs.llm.firstSelectable
+    }
+
+    func asrConfigForRecording() -> AiServiceConfig? {
+        serviceConfigs.asr.config(id: sceneSelections.recording.asrConfigId)
+            ?? serviceConfigs.asr.firstSelectable
+    }
+
+    func ttsConfigForPlayback() -> AiServiceConfig? {
+        serviceConfigs.tts.config(id: sceneSelections.playback.ttsConfigId)
+            ?? serviceConfigs.tts.firstSelectable
+    }
+
+    func upsertingServiceConfig(_ config: AiServiceConfig) -> AiServiceSettings {
+        let normalizedConfig = config.normalized(capability: config.capability.normalizedCapability)
+        var nextLibrary = serviceConfigs
+        switch normalizedConfig.capability {
+        case "asr":
+            nextLibrary.asr = nextLibrary.asr.upserting(normalizedConfig)
+        case "tts":
+            nextLibrary.tts = nextLibrary.tts.upserting(normalizedConfig)
+        default:
+            nextLibrary.llm = nextLibrary.llm.upserting(normalizedConfig)
+        }
+        return AiServiceSettings(
+            version: 2,
+            serviceConfigs: nextLibrary,
+            sceneSelections: sceneSelections,
+            defaults: defaults,
+            agentOverrides: agentOverrides
+        )
+    }
+
+    func updatingSceneSelection(
+        providerChatLlmConfigId: String? = nil,
+        recordingAsrConfigId: String? = nil,
+        playbackTtsConfigId: String? = nil
+    ) -> AiServiceSettings {
+        AiServiceSettings(
+            version: 2,
+            serviceConfigs: serviceConfigs,
+            sceneSelections: AiSceneSelections(
+                providerChat: AiProviderChatSelection(llmConfigId: providerChatLlmConfigId ?? sceneSelections.providerChat.llmConfigId),
+                recording: AiRecordingSelection(asrConfigId: recordingAsrConfigId ?? sceneSelections.recording.asrConfigId),
+                playback: AiPlaybackSelection(ttsConfigId: playbackTtsConfigId ?? sceneSelections.playback.ttsConfigId),
+                agentOverrides: sceneSelections.agentOverrides
+            ),
+            defaults: defaults,
+            agentOverrides: agentOverrides
+        )
+    }
+
+    private func normalizedRaw() -> AiServiceSettings {
+        if serviceConfigs.isEmpty {
+            return Self.migrateLegacy(defaults: defaults, agentOverrides: agentOverrides)
+        }
+        let library = serviceConfigs.normalizedWithCoreConfigs()
+        let selections = sceneSelections.normalized(library: library)
+        return AiServiceSettings(
+            rawVersion: 2,
+            rawServiceConfigs: library,
+            rawSceneSelections: selections,
+            rawDefaults: library.projectDefaults(selections: selections),
+            rawAgentOverrides: library.projectAgentOverrides(selections: selections)
+        )
+    }
+
+    private static func migrateLegacy(
+        defaults: AiServiceDefaults,
+        agentOverrides: [String: AiAgentOverride]
+    ) -> AiServiceSettings {
+        var library = MutableAiServiceConfigLibrary()
+        let normalizedDefaults = AiServiceDefaults(
+            llm: defaults.llm.normalized(fallback: AiServiceDefaults().llm, capability: "llm"),
+            asr: defaults.asr.normalized(fallback: AiServiceDefaults().asr, capability: "asr"),
+            tts: defaults.tts.normalized(fallback: AiServiceDefaults().tts, capability: "tts")
+        )
+        let llmConfigId = library.add(capability: "llm", choice: normalizedDefaults.llm)
+        let asrConfigId = library.add(capability: "asr", choice: normalizedDefaults.asr)
+        let ttsConfigId = library.add(capability: "tts", choice: normalizedDefaults.tts)
+        var sceneOverrides: [String: AiSceneAgentOverride] = [:]
+        for (profileId, override) in agentOverrides where !profileId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            sceneOverrides[profileId] = AiSceneAgentOverride(
+                inherit: override.inherit,
+                llmConfigId: override.llm.map { library.add(capability: "llm", choice: $0.normalized(fallback: normalizedDefaults.llm, capability: "llm")) } ?? "",
+                asrConfigId: override.asr.map { library.add(capability: "asr", choice: $0.normalized(fallback: normalizedDefaults.asr, capability: "asr")) } ?? "",
+                ttsConfigId: override.tts.map { library.add(capability: "tts", choice: $0.normalized(fallback: normalizedDefaults.tts, capability: "tts")) } ?? ""
+            )
+        }
+        return AiServiceSettings(
+            rawVersion: 2,
+            rawServiceConfigs: library.library,
+            rawSceneSelections: AiSceneSelections(
+                providerChat: AiProviderChatSelection(llmConfigId: llmConfigId),
+                recording: AiRecordingSelection(asrConfigId: asrConfigId),
+                playback: AiPlaybackSelection(ttsConfigId: ttsConfigId),
+                agentOverrides: sceneOverrides
+            ),
+            rawDefaults: normalizedDefaults,
+            rawAgentOverrides: agentOverrides
+        ).normalizedRaw()
+    }
+}
+
+private struct MutableAiServiceConfigLibrary {
+    private var llm: [String: AiServiceConfig] = [:]
+    private var asr: [String: AiServiceConfig] = [:]
+    private var tts: [String: AiServiceConfig] = [:]
+    private var llmOrder: [String] = []
+    private var asrOrder: [String] = []
+    private var ttsOrder: [String] = []
+
+    mutating func add(capability: String, choice: AiServiceChoice) -> String {
+        let normalizedCapability = capability.normalizedCapability
+        let config = choice.toServiceConfig(capability: normalizedCapability).normalized(capability: normalizedCapability)
+        switch normalizedCapability {
+        case "asr":
+            if asr[config.id] == nil { asrOrder.append(config.id) }
+            asr[config.id] = config
+        case "tts":
+            if tts[config.id] == nil { ttsOrder.append(config.id) }
+            tts[config.id] = config
+        default:
+            if llm[config.id] == nil { llmOrder.append(config.id) }
+            llm[config.id] = config
+        }
+        return config.id
+    }
+
+    var library: AiServiceConfigLibrary {
+        AiServiceConfigLibrary(
+            llm: llmOrder.compactMap { llm[$0] },
+            asr: asrOrder.compactMap { asr[$0] },
+            tts: ttsOrder.compactMap { tts[$0] }
+        )
+    }
+}
+
+extension AiServiceConfig {
+    var isSelectable: Bool {
+        enabled && status != "coming_soon" && status != "disabled"
+    }
+
+    func toChoice() -> AiServiceChoice {
+        switch mode {
+        case "router":
+            return AiServiceChoice(
+                mode: "router",
+                profileId: profileId,
+                providerId: "router",
+                displayName: displayName
+            )
+        case "backend", "agent":
+            return AiServiceChoice(
+                mode: "backend",
+                providerId: "agent",
+                displayName: displayName
+            )
+        case "system":
+            return AiServiceChoice(
+                mode: "system",
+                providerId: "system",
+                voiceId: voiceId,
+                displayName: displayName
+            )
+        default:
+            return AiServiceChoice(
+                mode: mode,
+                profileId: profileId,
+                providerId: providerId,
+                voiceId: voiceId,
+                baseUrl: baseUrl,
+                model: model,
+                credentialId: credentialId,
+                displayName: displayName
+            )
+        }
+    }
+
+    func normalized(capability expectedCapability: String) -> AiServiceConfig {
+        let nextCapability = expectedCapability.normalizedCapability
+        let nextMode = mode.normalizedMode(capability: nextCapability)
+        var nextProviderId = providerId.trimmed
+        var nextProfileId = profileId.trimmed
+        let nextVoiceId = voiceId.trimmed
+        var nextBaseUrl = baseUrl.trimmed.trimmedTrailingSlash
+        var nextModel = model.trimmed
+        var nextCredentialId = credentialId.trimmed
+        var nextEnabled = enabled
+        var nextStatus = status.trimmed.isEmpty ? "available" : status.trimmed
+
+        switch nextMode {
+        case "router":
+            nextProviderId = "router"
+            nextBaseUrl = ""
+            nextModel = ""
+            nextCredentialId = ""
+            if nextCapability == "tts" {
+                nextEnabled = false
+                nextStatus = "coming_soon"
+            }
+        case "byok":
+            nextProviderId = nextProviderId.isEmpty ? nextCapability.defaultByokProviderId : nextProviderId
+            nextBaseUrl = normalizeProviderBaseUrl(capability: nextCapability, providerId: nextProviderId, baseUrl: nextBaseUrl)
+            nextModel = nextModel.isEmpty ? defaultModel(capability: nextCapability, providerId: nextProviderId) : nextModel
+            nextCredentialId = nextCredentialId.isEmpty ? "\(nextCapability):\(nextProviderId)" : nextCredentialId
+        case "backend", "agent":
+            nextProviderId = "agent"
+            nextProfileId = ""
+            nextBaseUrl = ""
+            nextModel = ""
+            nextCredentialId = ""
+        case "system":
+            nextProviderId = "system"
+            nextProfileId = ""
+            nextBaseUrl = ""
+            nextModel = ""
+            nextCredentialId = ""
+        default:
+            break
+        }
+        if nextStatus != "coming_soon" && nextStatus != "disabled" {
+            nextStatus = nextEnabled ? "available" : "disabled"
+        }
+        let choice = AiServiceChoice(
+            mode: nextMode,
+            profileId: nextProfileId,
+            providerId: nextProviderId,
+            baseUrl: nextBaseUrl,
+            model: nextModel,
+            credentialId: nextCredentialId
+        )
+        return AiServiceConfig(
+            id: id.trimmed.isEmpty ? configId(capability: nextCapability, choice: choice) : id.trimmed,
+            capability: nextCapability,
+            mode: nextMode == "agent" ? "backend" : nextMode,
+            profileId: nextProfileId,
+            providerId: nextProviderId,
+            voiceId: nextVoiceId,
+            baseUrl: nextBaseUrl,
+            model: nextModel,
+            credentialId: nextCredentialId,
+            displayName: displayName.trimmed.isEmpty ? inferDisplayName(capability: nextCapability, mode: nextMode, providerId: nextProviderId) : displayName.trimmed,
+            enabled: nextEnabled,
+            status: nextStatus
+        )
+    }
+}
+
+extension AiServiceChoice {
+    func toServiceConfig(capability: String, id: String = "") -> AiServiceConfig {
+        let normalizedCapability = capability.normalizedCapability
+        return AiServiceConfig(
+            id: id.isEmpty ? configId(capability: normalizedCapability, choice: self) : id,
+            capability: normalizedCapability,
+            mode: mode,
+            profileId: profileId,
+            providerId: providerId,
+            voiceId: voiceId,
+            baseUrl: baseUrl,
+            model: model,
+            credentialId: credentialId,
+            displayName: displayName
+        ).normalized(capability: normalizedCapability)
+    }
+
+    fileprivate func normalized(fallback: AiServiceChoice, capability: String) -> AiServiceChoice {
+        let nextMode = mode.isEmpty ? fallback.mode : mode
+        if nextMode == "router" {
+            return AiServiceChoice(
+                mode: "router",
+                profileId: profileId.isEmpty ? fallback.profileId : profileId,
+                providerId: "router",
+                displayName: displayName.isEmpty ? fallback.displayName : displayName
+            )
+        }
+        return AiServiceChoice(
+            mode: nextMode,
+            profileId: profileId,
+            providerId: providerId.isEmpty ? fallback.providerId : providerId,
+            voiceId: voiceId.isEmpty ? fallback.voiceId : voiceId,
+            baseUrl: normalizeProviderBaseUrl(capability: capability, providerId: providerId.isEmpty ? fallback.providerId : providerId, baseUrl: baseUrl.isEmpty ? fallback.baseUrl : baseUrl),
+            model: model.isEmpty ? fallback.model : model,
+            credentialId: credentialId.isEmpty ? fallback.credentialId : credentialId,
+            displayName: displayName.isEmpty ? fallback.displayName : displayName
+        )
+    }
+}
+
+extension AiServiceConfigLibrary {
+    fileprivate func normalizedWithCoreConfigs() -> AiServiceConfigLibrary {
+        var library = AiServiceConfigLibrary(
+            llm: llm.map { $0.normalized(capability: "llm") }.distinctById,
+            asr: asr.map { $0.normalized(capability: "asr") }.distinctById,
+            tts: tts.map { $0.normalized(capability: "tts") }.distinctById
+        )
+        if !library.tts.contains(where: { $0.id == "tts-system" }) {
+            library.tts.insert(
+                AiServiceConfig(
+                    id: "tts-system",
+                    capability: "tts",
+                    mode: "system",
+                    providerId: "system",
+                    displayName: "系统 TTS"
+                ).normalized(capability: "tts"),
+                at: 0
+            )
+        }
+        return library
+    }
+
+    fileprivate func projectDefaults(selections: AiSceneSelections) -> AiServiceDefaults {
+        AiServiceDefaults(
+            llm: llm.config(id: selections.providerChat.llmConfigId)?.toChoice() ?? AiServiceDefaults().llm,
+            asr: asr.config(id: selections.recording.asrConfigId)?.toChoice() ?? AiServiceDefaults().asr,
+            tts: tts.config(id: selections.playback.ttsConfigId)?.toChoice() ?? AiServiceDefaults().tts
+        )
+    }
+
+    fileprivate func projectAgentOverrides(selections: AiSceneSelections) -> [String: AiAgentOverride] {
+        selections.agentOverrides.mapValues { override in
+            AiAgentOverride(
+                inherit: override.inherit,
+                llm: llm.config(id: override.llmConfigId)?.toChoice(),
+                asr: asr.config(id: override.asrConfigId)?.toChoice(),
+                tts: tts.config(id: override.ttsConfigId)?.toChoice()
+            )
+        }
+    }
+}
+
+extension AiSceneSelections {
+    fileprivate func normalized(library: AiServiceConfigLibrary) -> AiSceneSelections {
+        AiSceneSelections(
+            providerChat: AiProviderChatSelection(
+                llmConfigId: library.llm.validSelectableId(providerChat.llmConfigId)
+                    .ifEmpty(library.llm.firstSelectableId)
+            ),
+            recording: AiRecordingSelection(
+                asrConfigId: library.asr.validSelectableId(recording.asrConfigId)
+                    .ifEmpty(library.asr.firstSelectableId)
+            ),
+            playback: AiPlaybackSelection(
+                ttsConfigId: library.tts.validSelectableId(playback.ttsConfigId)
+                    .ifEmpty(library.tts.firstSelectableId)
+            ),
+            agentOverrides: agentOverrides.mapValues { override in
+                AiSceneAgentOverride(
+                    inherit: override.inherit,
+                    llmConfigId: library.llm.validSelectableId(override.llmConfigId),
+                    asrConfigId: library.asr.validSelectableId(override.asrConfigId),
+                    ttsConfigId: library.tts.validSelectableId(override.ttsConfigId)
+                )
+            }
+        )
+    }
+}
+
+extension Array where Element == AiServiceConfig {
+    fileprivate func config(id: String) -> AiServiceConfig? {
+        first { $0.id == id }
+    }
+
+    fileprivate var firstSelectable: AiServiceConfig? {
+        first { $0.isSelectable }
+    }
+
+    fileprivate var firstSelectableId: String {
+        firstSelectable?.id ?? first?.id ?? ""
+    }
+
+    fileprivate func validSelectableId(_ id: String) -> String {
+        contains { $0.id == id && $0.isSelectable } ? id : ""
+    }
+
+    fileprivate var distinctById: [AiServiceConfig] {
+        var seen = Set<String>()
+        var result: [AiServiceConfig] = []
+        for config in self where !seen.contains(config.id) {
+            seen.insert(config.id)
+            result.append(config)
+        }
+        return result
+    }
+
+    fileprivate func upserting(_ config: AiServiceConfig) -> [AiServiceConfig] {
+        (filter { $0.id != config.id } + [config]).distinctById
+    }
+}
+
+private func configId(capability: String, choice: AiServiceChoice) -> String {
+    let mode = choice.mode.normalizedMode(capability: capability)
+    switch mode {
+    case "router":
+        return "\(capability)-router-\((choice.profileId.isEmpty ? "default" : choice.profileId).slug)"
+    case "byok":
+        return "\(capability)-byok-\((choice.providerId.isEmpty ? "custom" : choice.providerId).slug)"
+    case "system":
+        return "\(capability)-system"
+    default:
+        return "\(capability)-agent-backend"
+    }
+}
+
+private func normalizeProviderBaseUrl(capability: String, providerId: String, baseUrl: String) -> String {
+    let fallback = baseUrl.isEmpty ? defaultBaseUrl(capability: capability, providerId: providerId) : baseUrl.trimmedTrailingSlash
+    if providerId == "minimax", fallback == "https://api.minimax.com/v1" {
+        return "https://api.minimaxi.com/v1"
+    }
+    return fallback
+}
+
+private func defaultBaseUrl(capability: String, providerId: String) -> String {
+    switch providerId {
+    case "minimax":
+        return "https://api.minimaxi.com/v1"
+    case "kimi":
+        return "https://api.moonshot.ai/v1"
+    case "claude":
+        return "https://api.anthropic.com/v1"
+    case "doubao":
+        return "https://ark.cn-beijing.volces.com/api/v3"
+    case "volcengine":
+        return capability == "asr"
+            ? "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel"
+            : "https://api.openai.com/v1"
+    default:
+        return "https://api.openai.com/v1"
+    }
+}
+
+private func defaultModel(capability: String, providerId: String) -> String {
+    if capability == "tts", providerId == "minimax" { return "speech-2.8-hd" }
+    if capability == "asr", providerId == "volcengine" { return "volc.bigasr.sauc.duration" }
+    if capability == "asr" { return "whisper-1" }
+    switch providerId {
+    case "minimax":
+        return "MiniMax-M2.7"
+    case "kimi":
+        return "moonshot-v1-8k"
+    case "claude":
+        return "claude-sonnet-4-20250514"
+    case "doubao":
+        return "doubao-seed-2-0-lite-260215"
+    default:
+        return "gpt-4o-mini"
+    }
+}
+
+private func inferDisplayName(capability: String, mode: String, providerId: String) -> String {
+    switch mode {
+    case "router":
+        return capability == "tts" ? "Router TTS" : "Router \(capability.uppercased())"
+    case "backend", "agent":
+        return "Agent 后端识别"
+    case "system":
+        return "系统 TTS"
+    default:
+        return providerId.isEmpty ? "BYOK" : providerId
+    }
+}
+
+private extension String {
+    var trimmed: String {
+        trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var trimmedTrailingSlash: String {
+        var value = trimmed
+        while value.hasSuffix("/") {
+            value.removeLast()
+        }
+        return value
+    }
+
+    var normalizedCapability: String {
+        switch self {
+        case "asr": return "asr"
+        case "tts": return "tts"
+        default: return "llm"
+        }
+    }
+
+    func normalizedMode(capability: String) -> String {
+        switch self {
+        case "router", "byok", "backend", "agent", "system":
+            return self
+        default:
+            return capability == "tts" ? "system" : "router"
+        }
+    }
+
+    var defaultByokProviderId: String {
+        self == "tts" ? "minimax" : "openai-compatible"
+    }
+
+    var slug: String {
+        let normalized = lowercased()
+            .map { character -> Character in
+                character.isLetter || character.isNumber ? character : "-"
+            }
+        let compact = String(normalized)
+            .split(separator: "-", omittingEmptySubsequences: true)
+            .joined(separator: "-")
+        return compact.isEmpty ? "default" : compact
+    }
+
+    func ifEmpty(_ fallback: String) -> String {
+        isEmpty ? fallback : self
     }
 }
 
@@ -1010,6 +1831,22 @@ struct RecordingSettings: Equatable {
         case .custom:
             return customPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
         }
+    }
+
+    var settingsTypeOptions: [RecordingType] {
+        RecordingType.allCases
+    }
+
+    var recordingSelectionTypeOptions: [RecordingType] {
+        settingsTypeOptions.filter { type in
+            type != .custom || !customPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+    }
+
+    var defaultSelectionType: RecordingType {
+        recordingSelectionTypeOptions.contains(defaultRecordingType)
+            ? defaultRecordingType
+            : (recordingSelectionTypeOptions.first ?? .audioOnly)
     }
 }
 

@@ -183,6 +183,28 @@ class SettingsManagerIOS : SettingsManager {
         saveAiSettings(settings)
     }
 
+    override suspend fun upsertAiServiceConfig(config: AiServiceConfig) {
+        saveAiSettings(_aiSettingsFlow.value.upsertingServiceConfig(config))
+    }
+
+    override suspend fun deleteAiServiceConfig(configId: String) {
+        saveAiSettings(_aiSettingsFlow.value.deletingServiceConfig(configId))
+    }
+
+    override suspend fun updateAiSceneSelection(
+        providerChatLlmConfigId: String?,
+        recordingAsrConfigId: String?,
+        playbackTtsConfigId: String?,
+    ) {
+        saveAiSettings(
+            _aiSettingsFlow.value.updatingSceneSelection(
+                providerChatLlmConfigId = providerChatLlmConfigId,
+                recordingAsrConfigId = recordingAsrConfigId,
+                playbackTtsConfigId = playbackTtsConfigId,
+            )
+        )
+    }
+
     override suspend fun updateLocalCredential(id: String, apiKey: String) = Unit
 
     override suspend fun localCredential(id: String): String? = null

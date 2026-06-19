@@ -245,7 +245,7 @@ private struct RecordingTypeSelectionView: View {
         self.colors = colors
         self.profiles = profiles
         self.onSelect = onSelect
-        _selectedType = State(initialValue: settings.defaultRecordingType == .custom && settings.customPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .audioOnly : settings.defaultRecordingType)
+        _selectedType = State(initialValue: settings.defaultSelectionType)
         _selectedProfileId = State(initialValue: settings.primaryAgentProfileId)
     }
 
@@ -277,7 +277,6 @@ private struct RecordingTypeSelectionView: View {
                                 }
                             }
                         }
-                        .disabled(type == .custom && settings.customPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
                 }
 
@@ -329,12 +328,7 @@ private struct RecordingTypeSelectionView: View {
     }
 
     private var availableTypes: [RecordingType] {
-        RecordingType.allCases.filter { type in
-            if type == .custom {
-                return !settings.customPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            }
-            return true
-        }
+        settings.recordingSelectionTypeOptions
     }
 
     private var selectedProfileName: String {

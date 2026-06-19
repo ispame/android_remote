@@ -519,6 +519,7 @@ class GatewayAuthClient(
         sizeBytes: Long,
         recordingType: String,
         asrProfileId: String?,
+        agentPrompt: String? = null,
     ): LongRecordingAsrJobResult {
         val response = client.post("${requireAuthBaseUrl(gatewayUrl)}/api/recordings/asr-jobs") {
             header(HttpHeaders.Authorization, "Bearer ${accessToken.trim()}")
@@ -531,6 +532,7 @@ class GatewayAuthClient(
                     sizeBytes = sizeBytes,
                     recordingType = recordingType,
                     asrProfileId = asrProfileId,
+                    agentPrompt = agentPrompt,
                 ).toString()
             )
         }
@@ -779,6 +781,7 @@ internal fun buildLongRecordingAsrJobPayload(
     sizeBytes: Long,
     recordingType: String,
     asrProfileId: String?,
+    agentPrompt: String? = null,
 ): JsonObject =
     buildJsonObject {
         put("recording_id", recordingId.trim())
@@ -787,6 +790,7 @@ internal fun buildLongRecordingAsrJobPayload(
         put("size_bytes", sizeBytes)
         put("recording_type", recordingType.trim().ifBlank { "meeting" })
         asrProfileId?.trim()?.takeIf { it.isNotEmpty() }?.let { put("asr_profile_id", it) }
+        agentPrompt?.trim()?.takeIf { it.isNotEmpty() }?.let { put("agent_prompt", it) }
     }
 
 internal fun parseLongRecordingAsrJob(body: JsonObject): LongRecordingAsrJobResult {

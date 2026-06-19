@@ -666,22 +666,20 @@ struct MainScreenView: View {
             wsManager.addLocalMessage("请先在 AI 服务中保存 ASR API Key", senderId: "assistant")
             return
         }
-        wsManager.addLocalMessage("正在使用本机 ASR 识别...", senderId: "assistant")
         do {
-            let transcript = try await OpenAICompatibleAsrClient().transcribe(
-                baseUrl: asr.baseUrl,
+            let transcript = try await ByokAsrTranscriptionClient.transcribe(
+                choice: asr,
                 apiKey: apiKey,
-                model: asr.model,
                 audioData: data
             )
             let text = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else {
-                wsManager.addLocalMessage("本机 ASR 没有识别到文本", senderId: "assistant")
+                wsManager.addLocalMessage("BYOK ASR 没有识别到文本", senderId: "assistant")
                 return
             }
             wsManager.sendText(text)
         } catch {
-            wsManager.addLocalMessage("本机 ASR 失败：\(error.localizedDescription)", senderId: "assistant")
+            wsManager.addLocalMessage("BYOK ASR 失败：\(error.localizedDescription)", senderId: "assistant")
         }
     }
 

@@ -408,6 +408,26 @@ final class SettingsManager: ObservableObject {
         }
     }
 
+    func upsertAiServiceConfig(_ config: AiServiceConfig, publish: Bool = true) {
+        updateAiSettings(aiSettings.upsertingServiceConfig(config), publish: publish)
+    }
+
+    func updateAiSceneSelection(
+        providerChatLlmConfigId: String? = nil,
+        recordingAsrConfigId: String? = nil,
+        playbackTtsConfigId: String? = nil,
+        publish: Bool = true
+    ) {
+        updateAiSettings(
+            aiSettings.updatingSceneSelection(
+                providerChatLlmConfigId: providerChatLlmConfigId,
+                recordingAsrConfigId: recordingAsrConfigId,
+                playbackTtsConfigId: playbackTtsConfigId
+            ),
+            publish: publish
+        )
+    }
+
     func updateLocalCredential(id: String, apiKey: String) {
         let trimmed = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
@@ -761,17 +781,13 @@ final class SettingsManager: ObservableObject {
     }
 
     private static func normalizedAiSettings(_ settings: AiServiceSettings) -> AiServiceSettings {
-        var normalized = settings
-        normalized.defaults = normalizedDefaults(settings.defaults)
-        normalized.agentOverrides = settings.agentOverrides.mapValues { override in
-            AiAgentOverride(
-                inherit: override.inherit,
-                llm: override.llm.map { normalizedLlmChoice($0) },
-                asr: override.asr.map { normalizedAsrChoice($0) },
-                tts: override.tts.map { normalizedTtsChoice($0) }
-            )
-        }
-        return normalized
+        AiServiceSettings(
+            version: settings.version,
+            serviceConfigs: settings.serviceConfigs,
+            sceneSelections: settings.sceneSelections,
+            defaults: settings.defaults,
+            agentOverrides: settings.agentOverrides
+        )
     }
 
     private static func normalizedDefaults(_ defaults: AiServiceDefaults) -> AiServiceDefaults {
@@ -827,19 +843,17 @@ final class SettingsManager: ObservableObject {
     private static func normalizedTtsChoice(_ choice: AiServiceChoice) -> AiServiceChoice {
         let provider = AiProviderCatalog.ttsProvider(id: choice.providerId) ?? AiProviderCatalog.ttsByokProviders[0]
         let isByok = choice.mode == "byok"
-        let isRouter = choice.mode == "router"
         let voiceId = choice.voiceId.trimmingCharacters(in: .whitespacesAndNewlines)
-        let profileId = choice.profileId.trimmingCharacters(in: .whitespacesAndNewlines)
         let displayName = choice.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
         return AiServiceChoice(
-            mode: isRouter ? "router" : (isByok ? "byok" : "system"),
-            profileId: isRouter ? profileId : "",
-            providerId: isRouter ? "router" : (isByok ? provider.id : "system"),
+            mode: isByok ? "byok" : "system",
+            profileId: "",
+            providerId: isByok ? provider.id : "system",
             voiceId: voiceId.isEmpty ? "male-qn-qingse" : voiceId,
             baseUrl: isByok ? (choice.baseUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? provider.baseUrlDefault : choice.baseUrl) : "",
             model: isByok ? (choice.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? provider.modelDefault : choice.model) : "",
             credentialId: isByok ? provider.credentialId : localMiniMaxCredentialId,
-            displayName: isRouter ? (displayName.isEmpty ? "Router TTS" : displayName) : (isByok ? (displayName.isEmpty ? provider.label : choice.displayName) : "系统 TTS")
+            displayName: isByok ? (displayName.isEmpty ? provider.label : choice.displayName) : "系统 TTS"
         )
     }
 

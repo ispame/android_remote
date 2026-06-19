@@ -38,7 +38,7 @@ struct AgentsTabView: View {
                     )
                 } label: {
                     AiProviderConversationRow(
-                        choice: settingsManager.aiSettings.defaults.llm,
+                        choice: providerChatChoice,
                         keyStatus: providerKeyStatus,
                         colors: colors
                     )
@@ -113,10 +113,14 @@ struct AgentsTabView: View {
     }
 
     private var providerKeyStatus: String {
-        let choice = settingsManager.aiSettings.defaults.llm
+        let choice = providerChatChoice
         guard choice.mode == "byok" else { return "" }
         let provider = AiProviderCatalog.llmProvider(id: choice.providerId) ?? AiProviderCatalog.llmByokProviders[0]
         return settingsManager.localCredential(id: provider.credentialId) == nil ? "Key 未保存" : "Key 已保存"
+    }
+
+    private var providerChatChoice: AiServiceChoice {
+        settingsManager.aiSettings.llmConfigForProviderChat()?.toChoice() ?? settingsManager.aiSettings.defaults.llm
     }
 
     private func delete(_ profile: AgentProfile) {
@@ -311,7 +315,7 @@ private struct ProviderChatScreen: View {
     private let bottomAnchorId = "provider-chat-bottom"
 
     private var choice: AiServiceChoice {
-        settingsManager.aiSettings.defaults.llm
+        settingsManager.aiSettings.llmConfigForProviderChat()?.toChoice() ?? settingsManager.aiSettings.defaults.llm
     }
 
     private var provider: AiByokProviderTemplate {
@@ -501,7 +505,7 @@ private struct ProviderChatScreen: View {
 
     @MainActor
     private func sendAudioUsingSelectedAsr(_ data: Data) async {
-        let asr = settingsManager.aiSettings.defaults.asr
+        let asr = settingsManager.aiSettings.asrConfigForRecording()?.toChoice() ?? settingsManager.aiSettings.defaults.asr
         guard asr.mode == "byok" else {
             statusMessage = "Provider 对话语音输入需要在 AI 服务中选择 BYOK ASR"
             inputMode = .text
@@ -515,23 +519,22 @@ private struct ProviderChatScreen: View {
             statusMessage = "请先在 AI 服务中保存 ASR API Key"
             return
         }
-        statusMessage = "正在使用本机 ASR 识别..."
+        statusMessage = nil
         do {
-            let transcript = try await OpenAICompatibleAsrClient().transcribe(
-                baseUrl: asr.baseUrl,
+            let transcript = try await ByokAsrTranscriptionClient.transcribe(
+                choice: asr,
                 apiKey: apiKey,
-                model: asr.model,
                 audioData: data
             )
             let text = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else {
-                statusMessage = "本机 ASR 没有识别到文本"
+                statusMessage = "BYOK ASR 没有识别到文本"
                 return
             }
             statusMessage = nil
             await send(text)
         } catch {
-            statusMessage = "本机 ASR 失败：\(error.localizedDescription)"
+            statusMessage = "BYOK ASR 失败：\(error.localizedDescription)"
         }
     }
 
@@ -828,11 +831,8 @@ private struct AgentConfigView: View {
             }
 
             Section("AI 服务") {
-                let resolved = settingsManager.aiSettings.resolved(for: profile.id)
-                AiServiceInfoRow(label: "LLM", value: llmSummary(resolved.llm))
-                AiServiceInfoRow(label: "ASR", value: asrSummary(resolved.asr))
-                AiServiceInfoRow(label: "TTS", value: ttsSummary(resolved.tts))
-                AIServiceNavigationLink(settingsManager: settingsManager, colors: colors)
+                AgentAiServicePicker(title: "ASR", selection: asrSelectionBinding, options: asrOptions)
+                AgentAiServicePicker(title: "TTS", selection: ttsSelectionBinding, options: ttsOptions)
             }
         }
         .navigationTitle("Agent 配置")
@@ -860,26 +860,17 @@ private struct AgentConfigView: View {
         dismiss()
     }
 
-    private func llmSummary(_ choice: AiServiceChoice) -> String {
-        switch choice.mode {
-        case "byok": return "BYOK \(providerLabel(choice)) · \(choice.model.isEmpty ? "gpt-4o-mini" : choice.model)"
-        case "agent": return "Agent 后端"
-        default: return "Router · \(choice.profileId.isEmpty ? "default" : choice.profileId)"
-        }
-    }
-
     private func asrSummary(_ choice: AiServiceChoice) -> String {
         switch choice.mode {
         case "byok": return "BYOK \(providerLabel(choice)) · \(choice.model.isEmpty ? "whisper-1" : choice.model)"
         case "backend": return "Agent 后端"
+        case "system": return "系统 ASR（Coming Soon）"
         default: return "Router · \(choice.profileId.isEmpty ? "默认" : choice.profileId)"
         }
     }
 
     private func ttsSummary(_ choice: AiServiceChoice) -> String {
         switch choice.mode {
-        case "router":
-            return "Router TTS"
         case "byok":
             return "\(providerLabel(choice)) · \(choice.voiceId.isEmpty ? MiniMaxVoiceCatalog.defaultVoiceId : choice.voiceId)"
         default:
@@ -892,6 +883,201 @@ private struct AgentConfigView: View {
         if !displayName.isEmpty { return displayName }
         let providerId = choice.providerId.trimmingCharacters(in: .whitespacesAndNewlines)
         return providerId.isEmpty ? "BYOK" : providerId
+    }
+
+    private var asrSelectionBinding: Binding<String> {
+        Binding(
+            get: { currentAsrSelectionId },
+            set: { updateAgentAiServiceOverride(asrSelection: $0) }
+        )
+    }
+
+    private var ttsSelectionBinding: Binding<String> {
+        Binding(
+            get: { currentTtsSelectionId },
+            set: { updateAgentAiServiceOverride(ttsSelection: $0) }
+        )
+    }
+
+    private var currentAsrSelectionId: String {
+        guard let configId = currentSceneOverride?.asrConfigId, !configId.isEmpty,
+              let config = settingsManager.aiSettings.serviceConfigs.asr.first(where: { $0.id == configId }) else {
+            return defaultAsrSelectionId
+        }
+        if config.mode == "byok", !hasCredential(for: config) { return defaultAsrSelectionId }
+        return availableSelectionId(selectionId(for: config, fallback: defaultAsrSelectionId), options: asrOptions, fallback: defaultAsrSelectionId)
+    }
+
+    private var currentTtsSelectionId: String {
+        guard let configId = currentSceneOverride?.ttsConfigId, !configId.isEmpty,
+              let config = settingsManager.aiSettings.serviceConfigs.tts.first(where: { $0.id == configId }) else {
+            return defaultTtsSelectionId
+        }
+        if config.mode == "byok", !hasCredential(for: config) { return defaultTtsSelectionId }
+        return availableSelectionId(selectionId(for: config, fallback: defaultTtsSelectionId), options: ttsOptions, fallback: defaultTtsSelectionId)
+    }
+
+    private var currentSceneOverride: AiSceneAgentOverride? {
+        settingsManager.aiSettings.sceneSelections.agentOverrides[profile.id]
+    }
+
+    private var defaultAsrSelectionId: String {
+        let config = settingsManager.aiSettings.defaults.asr.toServiceConfig(capability: "asr")
+        return availableSelectionId(selectionId(for: config, fallback: "router"), options: asrOptions, fallback: "router")
+    }
+
+    private var defaultTtsSelectionId: String {
+        let config = settingsManager.aiSettings.defaults.tts.toServiceConfig(capability: "tts")
+        return availableSelectionId(selectionId(for: config, fallback: "system"), options: ttsOptions, fallback: "system")
+    }
+
+    private var asrOptions: [AgentAiServiceOption] {
+        let router = AgentAiServiceOption(id: "router", title: "Router 会员")
+        let byok = configuredAsrByokProviders.map {
+            AgentAiServiceOption(id: byokSelectionId($0.id), title: "BYOK：\($0.label)")
+        }
+        let system = AgentAiServiceOption(id: "system", title: "系统 ASR（Coming Soon）", isEnabled: false)
+        return [router] + byok + [system]
+    }
+
+    private var ttsOptions: [AgentAiServiceOption] {
+        let byok = configuredTtsByokProviders.map {
+            AgentAiServiceOption(id: byokSelectionId($0.id), title: "BYOK：\($0.label)")
+        }
+        let system = AgentAiServiceOption(id: "system", title: "系统 TTS")
+        return byok + [system]
+    }
+
+    private var configuredAsrByokProviders: [AiByokProviderTemplate] {
+        AiProviderCatalog.asrByokProviders.filter { provider in
+            settingsManager.localCredential(id: provider.credentialId) != nil
+                || (provider.credentialId == localAsrVolcengineCredentialId && settingsManager.localCredential(id: localAsrVolcengineCredentialId) != nil)
+        }
+    }
+
+    private var configuredTtsByokProviders: [AiByokProviderTemplate] {
+        AiProviderCatalog.ttsByokProviders.filter { provider in
+            settingsManager.localCredential(id: provider.credentialId) != nil
+        }
+    }
+
+    private func updateAgentAiServiceOverride(asrSelection: String? = nil, ttsSelection: String? = nil) {
+        var nextSettings = settingsManager.aiSettings
+        var selections = nextSettings.sceneSelections
+        var override = selections.agentOverrides[profile.id] ?? AiSceneAgentOverride()
+        override.inherit = false
+
+        if let asrSelection {
+            override.asrConfigId = configIdForAsrSelection(asrSelection, settings: &nextSettings)
+        }
+        if let ttsSelection {
+            override.ttsConfigId = configIdForTtsSelection(ttsSelection, settings: &nextSettings)
+        }
+
+        if override.llmConfigId.isEmpty && override.asrConfigId.isEmpty && override.ttsConfigId.isEmpty {
+            selections.agentOverrides.removeValue(forKey: profile.id)
+        } else {
+            selections.agentOverrides[profile.id] = override
+        }
+
+        settingsManager.updateAiSettings(
+            AiServiceSettings(
+                version: nextSettings.version,
+                serviceConfigs: nextSettings.serviceConfigs,
+                sceneSelections: selections,
+                defaults: nextSettings.defaults,
+                agentOverrides: nextSettings.agentOverrides
+            )
+        )
+    }
+
+    private func configIdForAsrSelection(_ selection: String, settings: inout AiServiceSettings) -> String {
+        if selection == "router" {
+            let profileId = settings.defaults.asr.mode == "router" ? settings.defaults.asr.profileId : ""
+            return upsertChoice(
+                AiServiceChoice(mode: "router", profileId: profileId, providerId: "router", displayName: "Router ASR"),
+                capability: "asr",
+                settings: &settings
+            )
+        }
+        guard let providerId = providerIdFromByokSelection(selection),
+              let provider = configuredAsrByokProviders.first(where: { $0.id == providerId }) else {
+            return ""
+        }
+        return upsertChoice(asrByokChoice(provider), capability: "asr", settings: &settings)
+    }
+
+    private func configIdForTtsSelection(_ selection: String, settings: inout AiServiceSettings) -> String {
+        if selection == "system" {
+            return upsertChoice(
+                AiServiceChoice(mode: "system", providerId: "system", voiceId: resolvedTtsVoiceId, displayName: "系统 TTS"),
+                capability: "tts",
+                settings: &settings
+            )
+        }
+        guard let providerId = providerIdFromByokSelection(selection),
+              let provider = configuredTtsByokProviders.first(where: { $0.id == providerId }) else {
+            return ""
+        }
+        return upsertChoice(ttsByokChoice(provider), capability: "tts", settings: &settings)
+    }
+
+    private func upsertChoice(_ choice: AiServiceChoice, capability: String, settings: inout AiServiceSettings) -> String {
+        let config = choice.toServiceConfig(capability: capability)
+        settings = settings.upsertingServiceConfig(config)
+        return config.id
+    }
+
+    private func asrByokChoice(_ provider: AiByokProviderTemplate) -> AiServiceChoice {
+        if let config = settingsManager.aiSettings.serviceConfigs.asr.first(where: { $0.mode == "byok" && $0.providerId == provider.id }) {
+            return config.toChoice()
+        }
+        return AiProviderCatalog.choice(mode: "byok", provider: provider)
+    }
+
+    private func ttsByokChoice(_ provider: AiByokProviderTemplate) -> AiServiceChoice {
+        if let config = settingsManager.aiSettings.serviceConfigs.tts.first(where: { $0.mode == "byok" && $0.providerId == provider.id }) {
+            return config.toChoice()
+        }
+        return AiProviderCatalog.choice(mode: "byok", provider: provider, voiceId: resolvedTtsVoiceId)
+    }
+
+    private var resolvedTtsVoiceId: String {
+        let voiceId = settingsManager.aiSettings.defaults.tts.voiceId.trimmingCharacters(in: .whitespacesAndNewlines)
+        return voiceId.isEmpty ? MiniMaxVoiceCatalog.defaultVoiceId : voiceId
+    }
+
+    private func selectionId(for config: AiServiceConfig, fallback: String) -> String {
+        switch config.mode {
+        case "byok": return byokSelectionId(config.providerId)
+        case "system": return "system"
+        case "router": return fallback
+        default: return fallback
+        }
+    }
+
+    private func availableSelectionId(_ selection: String, options: [AgentAiServiceOption], fallback: String) -> String {
+        if options.contains(where: { $0.id == selection && $0.isEnabled }) {
+            return selection
+        }
+        if options.contains(where: { $0.id == fallback && $0.isEnabled }) {
+            return fallback
+        }
+        return options.first(where: { $0.isEnabled })?.id ?? fallback
+    }
+
+    private func hasCredential(for config: AiServiceConfig) -> Bool {
+        let credentialId = config.credentialId.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !credentialId.isEmpty && settingsManager.localCredential(id: credentialId) != nil
+    }
+
+    private func byokSelectionId(_ providerId: String) -> String {
+        "byok:\(providerId)"
+    }
+
+    private func providerIdFromByokSelection(_ selection: String) -> String? {
+        guard selection.hasPrefix("byok:") else { return nil }
+        return String(selection.dropFirst("byok:".count))
     }
 }
 
@@ -906,6 +1092,28 @@ private struct AiServiceInfoRow: View {
             Text(value)
                 .foregroundColor(.secondary)
                 .lineLimit(1)
+        }
+    }
+}
+
+private struct AgentAiServiceOption: Identifiable {
+    let id: String
+    let title: String
+    var isEnabled = true
+}
+
+private struct AgentAiServicePicker: View {
+    let title: String
+    @Binding var selection: String
+    let options: [AgentAiServiceOption]
+
+    var body: some View {
+        Picker(title, selection: $selection) {
+            ForEach(options) { option in
+                Text(option.title)
+                    .tag(option.id)
+                    .disabled(!option.isEnabled)
+            }
         }
     }
 }

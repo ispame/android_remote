@@ -69,7 +69,7 @@ struct AdvancedSettingsPageTests {
     private static func testAiServicePageUsesByokProviderPickers() throws {
         let source = try readSource("iosApp/OpenClawRemote/Sources/Views/SimpleSettingsTabView.swift")
         let aiServiceView = try extractStruct(named: "AiServiceSettingsView", from: source, isPrivate: false)
-        let agentOverrideView = try extractStruct(named: "AgentAiOverrideEditorView", from: source)
+        let agentOverrideView = try extractStruct(named: "AgentAiOverrideEditorView", from: source, isPrivate: false)
 
         for requiredText in [
             "AiProviderCatalog.llmByokProviders",
@@ -81,18 +81,19 @@ struct AdvancedSettingsPageTests {
             "Text(\"Router\").tag(\"router\")",
             "Text(\"BYOK\").tag(\"byok\")",
             "Text(\"系统 TTS\").tag(\"system\")",
-            "Router TTS",
             "applyLlmProviderDefaults",
             "applyAsrProviderDefaults",
             "applyTtsProviderDefaults"
         ] {
             try expect(aiServiceView.contains(requiredText), "AI service page should contain \(requiredText)")
         }
+        try expect(!aiServiceView.contains("AiSettingsInfoRow(label: \"Router TTS\""), "AI service page should not show Router TTS")
+        try expect(!aiServiceView.contains("draftTtsMode == \"router\""), "AI service page should not save Router TTS")
 
         try expect(agentOverrideView.contains("Picker(\"Provider\", selection: $llmProviderId)"), "Agent override should choose LLM BYOK provider")
         try expect(agentOverrideView.contains("Picker(\"Provider\", selection: $asrProviderId)"), "Agent override should choose ASR BYOK provider")
         try expect(agentOverrideView.contains("Picker(\"Provider\", selection: $ttsProviderId)"), "Agent override should choose TTS BYOK provider")
-        try expect(agentOverrideView.contains("Text(\"Router\").tag(\"router\")"), "Agent override should expose Router TTS as a top-level mode")
+        try expect(!agentOverrideView.contains("Router TTS"), "Agent override should not expose Router TTS")
         try expect(!aiServiceView.contains("Text(\"MiniMax\").tag(\"minimax\")"), "TTS should not expose MiniMax as a top-level mode")
     }
 
