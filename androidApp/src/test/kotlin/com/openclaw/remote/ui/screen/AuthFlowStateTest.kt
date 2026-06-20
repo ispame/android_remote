@@ -34,6 +34,18 @@ class AuthFlowStateTest {
     }
 
     @Test
+    fun gatewayUrlNormalizesHttpBaseToWebSocketEndpoint() {
+        assertEquals(
+            "wss://boson-tech.top/ws",
+            "https://boson-tech.top".normalizedGatewayUrl(),
+        )
+        assertEquals(
+            "wss://boson-tech.top/ws",
+            "wss://boson-tech.top/ws".normalizedGatewayUrl(),
+        )
+    }
+
+    @Test
     fun authSuccessPayloadCarriesIosSessionMetadata() {
         val payload = buildAuthSuccessPayload(
             session = AuthSessionResult(

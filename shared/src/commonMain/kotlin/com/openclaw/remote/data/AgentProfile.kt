@@ -68,8 +68,32 @@ data class AgentProfile(
     companion object {
         const val DEFAULT_GATEWAY_URL = "wss://boson-tech.top/ws"
 
-        fun normalizedGatewayKey(gatewayUrl: String): String =
-            gatewayUrl.trim().lowercase()
+        fun canonicalWebSocketGatewayUrl(gatewayUrl: String): String {
+            var value = gatewayUrl.trim()
+            if (value.isEmpty()) return DEFAULT_GATEWAY_URL
+            value = when {
+                value.startsWith("https://") -> "wss://" + value.removePrefix("https://")
+                value.startsWith("http://") -> "ws://" + value.removePrefix("http://")
+                value.startsWith("wss://") || value.startsWith("ws://") -> value
+                else -> "wss://$value"
+            }
+            value = value.trimEnd('/')
+            if (!value.endsWith("/ws")) {
+                value += "/ws"
+            }
+            return value
+        }
+
+        fun normalizedGatewayKey(gatewayUrl: String): String {
+            if (gatewayUrl.isBlank()) return ""
+            var value = canonicalWebSocketGatewayUrl(gatewayUrl)
+            value = when {
+                value.startsWith("wss://") -> "https://" + value.removePrefix("wss://")
+                value.startsWith("ws://") -> "http://" + value.removePrefix("ws://")
+                else -> value
+            }
+            return value.removeSuffix("/ws").lowercase()
+        }
     }
 }
 
@@ -161,7 +185,7 @@ private fun decodeProfile(element: JsonElement): AgentProfile? {
         id = id,
         platform = AgentPlatform.fromWireValue(obj.stringValue("platform")),
         displayName = obj.stringValue("displayName"),
-        gatewayUrl = obj.stringValue("gatewayUrl").ifBlank { AgentProfile.DEFAULT_GATEWAY_URL },
+        gatewayUrl = AgentProfile.canonicalWebSocketGatewayUrl(obj.stringValue("gatewayUrl")),
         backendId = backendId,
         backendLabel = obj.optionalStringValue("backendLabel"),
         token = obj.stringValue("token"),

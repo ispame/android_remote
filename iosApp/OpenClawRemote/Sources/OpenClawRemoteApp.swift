@@ -206,7 +206,10 @@ struct OpenClawRemoteApp: App {
                 accessToken: settingsManager.config.accessToken
             )
             wsManager.rememberBackendForPairing(backendId)
-            let authGatewayUrl = settingsManager.config.gatewayUrl
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                wsManager.requestPair(backendId: backendId)
+            }
+            let authGatewayUrl = profile.gatewayUrl
             let accessToken = settingsManager.config.accessToken
             Task {
                 do {
@@ -217,13 +220,7 @@ struct OpenClawRemoteApp: App {
                     )
                 } catch {
                     await MainActor.run {
-                        wsManager.addLocalMessage("Agent 配置同步失败，请稍后重试", senderId: "assistant")
-                    }
-                    return
-                }
-                await MainActor.run {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-                        wsManager.requestPair(backendId: backendId)
+                        wsManager.addLocalMessage("Agent 配置同步失败，已继续发起本地配对", senderId: "assistant")
                     }
                 }
             }

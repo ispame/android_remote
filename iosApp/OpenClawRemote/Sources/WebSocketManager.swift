@@ -1294,14 +1294,9 @@ final class WebSocketManager: ObservableObject {
     }
 
     private func normalizeGatewayUrl(_ urlString: String) -> String? {
-        var urlStr = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
-        if urlStr.isEmpty { return nil }
-        if !urlStr.hasPrefix("ws://") && !urlStr.hasPrefix("wss://") {
-            urlStr = "wss://" + urlStr
-        }
-        if !urlStr.hasSuffix("/ws") {
-            urlStr = urlStr.hasSuffix("/") ? urlStr + "ws" : urlStr + "/ws"
-        }
+        let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return nil }
+        let urlStr = AgentProfile.canonicalWebSocketGatewayUrl(trimmed)
         return URL(string: urlStr) == nil ? nil : urlStr
     }
 

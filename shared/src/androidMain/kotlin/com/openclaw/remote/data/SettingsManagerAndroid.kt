@@ -138,7 +138,10 @@ class SettingsManagerAndroid(
             val state = prefs.toProfilesState()
             val profiles = state.profiles.map { profile ->
                 if (profile.id == state.selectedProfileId) {
-                    profile.copy(gatewayUrl = url, updatedAt = currentTimestampMillis())
+                    profile.copy(
+                        gatewayUrl = AgentProfile.canonicalWebSocketGatewayUrl(url),
+                        updatedAt = currentTimestampMillis(),
+                    )
                 } else {
                     profile
                 }
@@ -212,7 +215,7 @@ class SettingsManagerAndroid(
         var saved: AgentProfile? = null
         context.dataStore.edit { prefs ->
             val state = prefs.toProfilesState()
-            val normalizedGateway = gatewayUrl.trim().ifEmpty { AgentProfile.DEFAULT_GATEWAY_URL }
+            val normalizedGateway = AgentProfile.canonicalWebSocketGatewayUrl(gatewayUrl)
             if (!canAcceptProfile(state.profiles, normalizedGateway, backendId)) {
                 return@edit
             }
@@ -534,7 +537,7 @@ class SettingsManagerAndroid(
 
     private fun AgentProfile.normalizedForSave(asrMode: String, asrProfileId: String): AgentProfile =
         copy(
-            gatewayUrl = gatewayUrl.trim().ifEmpty { AgentProfile.DEFAULT_GATEWAY_URL },
+            gatewayUrl = AgentProfile.canonicalWebSocketGatewayUrl(gatewayUrl),
             backendId = backendId.trim(),
             token = token.trim(),
             displayName = displayName.trim().ifEmpty { platform.defaultDisplayName },

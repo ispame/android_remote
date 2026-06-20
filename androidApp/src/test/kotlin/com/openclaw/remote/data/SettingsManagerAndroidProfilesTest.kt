@@ -112,6 +112,33 @@ class SettingsManagerAndroidProfilesTest {
     }
 
     @Test
+    fun scannedHttpsGatewayMatchesExistingWebSocketGateway() = runTest {
+        manager.upsertScannedProfile(
+            gatewayUrl = "wss://boson-tech.top/ws",
+            backendId = "bk_hermes",
+            token = "token-hermes",
+            platform = AgentPlatform.HERMES,
+            label = "Hermes",
+        )
+
+        val codex = manager.upsertScannedProfile(
+            gatewayUrl = "https://boson-tech.top",
+            backendId = "codex-mac-mini",
+            token = "token-codex",
+            platform = AgentPlatform.CODEX,
+            label = "Codex",
+        )
+
+        val state = manager.profilesFlow.first()
+
+        assertNotNull(codex)
+        assertEquals(2, state.profiles.size)
+        assertEquals("wss://boson-tech.top/ws", codex?.gatewayUrl)
+        assertEquals("wss://boson-tech.top/ws", state.selectedProfile.gatewayUrl)
+        assertNull(manager.profileAcceptError("https://boson-tech.top", "codex-mac-mini"))
+    }
+
+    @Test
     fun scannedProfileWithNewBackendAddsUntilMaximumOfThree() = runTest {
         manager.upsertScannedProfile("wss://boson-tech.top/ws", "bk_openclaw", "t1", AgentPlatform.OPENCLAW, "OpenClaw")
         manager.upsertScannedProfile("wss://boson-tech.top/ws", "bk_hermes", "t2", AgentPlatform.HERMES, "Hermes")

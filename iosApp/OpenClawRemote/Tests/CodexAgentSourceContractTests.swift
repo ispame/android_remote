@@ -8,6 +8,8 @@ struct CodexAgentSourceContractTests {
         let agentsTab = try read(root, "iosApp/OpenClawRemote/Sources/Views/AgentsTabView.swift")
         let codexViews = try read(root, "iosApp/OpenClawRemote/Sources/Views/CodexSessionViews.swift")
         let websocket = try read(root, "iosApp/OpenClawRemote/Sources/WebSocketManager.swift")
+        let settingsManager = try read(root, "iosApp/OpenClawRemote/Sources/SettingsManager.swift")
+        let app = try read(root, "iosApp/OpenClawRemote/Sources/OpenClawRemoteApp.swift")
 
         try expect(models.contains("case codex"), "AgentPlatform should decode the codex platform")
         try expect(models.contains("case .codex: return \"Codex\""), "Codex should have a Codex label")
@@ -32,6 +34,11 @@ struct CodexAgentSourceContractTests {
         }
         try expect(websocket.contains("\"session_key\": sessionId"), "Codex message/history frames should include session_key")
         try expect(websocket.contains("codexMessagesByProfileSession"), "Codex chat state should be profile/session scoped")
+        try expect(models.contains("canonicalWebSocketGatewayUrl"), "AgentProfile should canonicalize HTTP/WS gateway URLs")
+        try expect(websocket.contains("AgentProfile.canonicalWebSocketGatewayUrl(trimmed)"), "WebSocketManager should accept https QR gateway URLs")
+        try expect(settingsManager.contains("AgentProfile.canonicalWebSocketGatewayUrl(gatewayUrl)"), "Scanned profiles should store websocket gateway URLs")
+        try expect(app.contains("wsManager.requestPair(backendId: backendId)"), "QR pairing should be requested even when account sync fails")
+        try expect(!app.contains("Agent 配置同步失败，请稍后重试"), "Account sync failure should not block local pairing")
         print("CodexAgentSourceContractTests passed")
     }
 

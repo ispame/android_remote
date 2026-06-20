@@ -195,7 +195,7 @@ fun SettingsScreen(
     }
 
     fun normalizedGateway(value: String): String =
-        value.trim().ifEmpty { AgentProfile.DEFAULT_GATEWAY_URL }
+        AgentProfile.canonicalWebSocketGatewayUrl(value)
 
     fun authGatewayUrl(): String =
         normalizedGateway(

@@ -382,7 +382,7 @@ struct AgentProfile: Identifiable, Codable, Equatable {
         self.id = id
         self.platform = platform
         self.displayName = displayName
-        self.gatewayUrl = gatewayUrl
+        self.gatewayUrl = Self.canonicalWebSocketGatewayUrl(gatewayUrl)
         self.backendId = backendId
         self.backendLabel = backendLabel
         self.token = token
@@ -423,7 +423,9 @@ struct AgentProfile: Identifiable, Codable, Equatable {
         id = try container.decodeIfPresent(String.self, forKey: .id) ?? UUID().uuidString
         platform = try container.decodeIfPresent(AgentPlatform.self, forKey: .platform) ?? .openclaw
         displayName = try container.decodeIfPresent(String.self, forKey: .displayName) ?? ""
-        gatewayUrl = try container.decodeIfPresent(String.self, forKey: .gatewayUrl) ?? "wss://boson-tech.top/ws"
+        gatewayUrl = Self.canonicalWebSocketGatewayUrl(
+            try container.decodeIfPresent(String.self, forKey: .gatewayUrl) ?? "wss://boson-tech.top/ws"
+        )
         backendId = try container.decodeIfPresent(String.self, forKey: .backendId) ?? ""
         backendLabel = try container.decodeIfPresent(String.self, forKey: .backendLabel)
         token = try container.decodeIfPresent(String.self, forKey: .token) ?? ""
@@ -450,10 +452,40 @@ struct AgentProfile: Identifiable, Codable, Equatable {
         "\(Self.normalizedGatewayKey(gatewayUrl))|\(backendId)"
     }
 
+    static func canonicalWebSocketGatewayUrl(_ gatewayUrl: String) -> String {
+        var value = gatewayUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+        if value.isEmpty { return "wss://boson-tech.top/ws" }
+
+        if value.hasPrefix("https://") {
+            value = "wss://" + String(value.dropFirst("https://".count))
+        } else if value.hasPrefix("http://") {
+            value = "ws://" + String(value.dropFirst("http://".count))
+        } else if !value.hasPrefix("wss://") && !value.hasPrefix("ws://") {
+            value = "wss://" + value
+        }
+
+        while value.hasSuffix("/") {
+            value.removeLast()
+        }
+        if !value.hasSuffix("/ws") {
+            value += "/ws"
+        }
+        return value
+    }
+
     static func normalizedGatewayKey(_ gatewayUrl: String) -> String {
-        gatewayUrl
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
+        let trimmed = gatewayUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        var value = canonicalWebSocketGatewayUrl(trimmed)
+        if value.hasPrefix("wss://") {
+            value = "https://" + String(value.dropFirst("wss://".count))
+        } else if value.hasPrefix("ws://") {
+            value = "http://" + String(value.dropFirst("ws://".count))
+        }
+        if value.hasSuffix("/ws") {
+            value.removeLast(3)
+        }
+        return value.lowercased()
     }
 }
 

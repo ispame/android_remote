@@ -2,6 +2,7 @@ package com.openclaw.remote.network
 
 import com.openclaw.remote.data.ChatMessage
 import com.openclaw.remote.data.CodexSessionSummary
+import com.openclaw.remote.data.AgentProfile
 import com.openclaw.remote.data.MessageStatus
 import com.openclaw.remote.data.RecordingArtifact
 import com.openclaw.remote.data.RecordingAsrJob
@@ -121,7 +122,7 @@ class WebSocketManager(
 
         scope.launch {
             try {
-                val finalUrl = if (wsUrl.endsWith("/ws")) wsUrl else "$wsUrl/ws"
+                val finalUrl = AgentProfile.canonicalWebSocketGatewayUrl(wsUrl)
                 val session = client.webSocketSession(finalUrl)
                 if (intentionalDisconnect || generation != socketGeneration) {
                     session.close()

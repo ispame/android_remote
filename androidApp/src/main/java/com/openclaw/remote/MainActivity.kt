@@ -616,13 +616,12 @@ class MainActivity : ComponentActivity() {
                     GatewayAuthClient().also { authClient ->
                         try {
                             authClient.upsertAccountAgent(
-                                gatewayUrl = latestConfig.gatewayUrl.ifBlank { profile.gatewayUrl },
+                                gatewayUrl = profile.gatewayUrl,
                                 accessToken = latestConfig.accessToken,
                                 profile = profile.toAccountAgentProfileResult(),
                             )
                         } catch (error: Exception) {
-                            viewModel.addLocalMessage("Agent 配置同步失败，请稍后重试")
-                            return@launch
+                            viewModel.addLocalMessage("Agent 配置同步失败，已继续发起本地配对")
                         } finally {
                             authClient.close()
                         }

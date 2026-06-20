@@ -138,7 +138,7 @@ final class SettingsManager: ObservableObject {
                 let profile = AgentProfile(
                     platform: .openclaw,
                     displayName: AgentPlatform.openclaw.defaultDisplayName,
-                    gatewayUrl: config.gatewayUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "wss://boson-tech.top/ws" : config.gatewayUrl,
+                    gatewayUrl: AgentProfile.canonicalWebSocketGatewayUrl(config.gatewayUrl),
                     backendId: "",
                     backendLabel: nil,
                     token: "",
@@ -160,7 +160,7 @@ final class SettingsManager: ObservableObject {
             updateAiSettings(Self.aiSettings(from: config), publish: false)
         }
         var profile = selectedProfile
-        profile.gatewayUrl = config.gatewayUrl
+        profile.gatewayUrl = AgentProfile.canonicalWebSocketGatewayUrl(config.gatewayUrl)
         profile.backendId = config.pairedBackendId ?? profile.backendId
         profile.backendLabel = config.pairedBackendLabel
         profile.token = config.token
@@ -257,7 +257,7 @@ final class SettingsManager: ObservableObject {
 
     func updateGatewayUrl(_ url: String) {
         var profile = selectedProfile
-        profile.gatewayUrl = url
+        profile.gatewayUrl = AgentProfile.canonicalWebSocketGatewayUrl(url)
         profile.updatedAt = Date()
         replaceProfile(profile, select: true)
     }
@@ -305,6 +305,7 @@ final class SettingsManager: ObservableObject {
     @discardableResult
     func saveProfile(_ profile: AgentProfile, select: Bool = true) -> Bool {
         var normalizedProfile = profile
+        normalizedProfile.gatewayUrl = AgentProfile.canonicalWebSocketGatewayUrl(profile.gatewayUrl)
         normalizedProfile.asrMode = globalAsrMode
         normalizedProfile.asrProfileId = globalAsrProfileId
         normalizedProfile.updatedAt = Date()
@@ -503,13 +504,14 @@ final class SettingsManager: ObservableObject {
         label: String?
     ) -> AgentProfile? {
         let displayName = resolvedProfileName(platform: platform, label: label, backendId: backendId)
-        let normalizedKey = "\(AgentProfile.normalizedGatewayKey(gatewayUrl))|\(backendId)"
+        let canonicalGatewayUrl = AgentProfile.canonicalWebSocketGatewayUrl(gatewayUrl)
+        let normalizedKey = "\(AgentProfile.normalizedGatewayKey(canonicalGatewayUrl))|\(backendId)"
 
         if let index = profiles.firstIndex(where: { $0.uniqueBackendKey == normalizedKey }) {
             let previousProfile = profiles[index]
             profiles[index].platform = platform
             profiles[index].displayName = displayName
-            profiles[index].gatewayUrl = gatewayUrl
+            profiles[index].gatewayUrl = canonicalGatewayUrl
             profiles[index].backendId = backendId
             profiles[index].backendLabel = label ?? backendId
             profiles[index].token = token
@@ -527,7 +529,7 @@ final class SettingsManager: ObservableObject {
         if profiles.count == 1, profiles[0].backendId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             profiles[0].platform = platform
             profiles[0].displayName = displayName
-            profiles[0].gatewayUrl = gatewayUrl
+            profiles[0].gatewayUrl = canonicalGatewayUrl
             profiles[0].backendId = backendId
             profiles[0].backendLabel = label ?? backendId
             profiles[0].token = token
@@ -541,7 +543,7 @@ final class SettingsManager: ObservableObject {
             return profiles.first { $0.id == selectedProfileId }
         }
 
-        guard profiles.count < Self.maxAgentProfiles, isGatewayCompatible(gatewayUrl) else {
+        guard profiles.count < Self.maxAgentProfiles, isGatewayCompatible(canonicalGatewayUrl) else {
             return nil
         }
 
@@ -550,7 +552,7 @@ final class SettingsManager: ObservableObject {
             id: id,
             platform: platform,
             displayName: displayName,
-            gatewayUrl: gatewayUrl,
+            gatewayUrl: canonicalGatewayUrl,
             backendId: backendId,
             backendLabel: label ?? backendId,
             token: token,

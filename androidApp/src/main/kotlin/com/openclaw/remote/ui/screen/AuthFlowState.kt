@@ -65,7 +65,7 @@ fun buildAuthSuccessPayload(
     )
 
 fun String.normalizedGatewayUrl(): String =
-    trim().ifEmpty { AgentProfile.DEFAULT_GATEWAY_URL }
+    AgentProfile.canonicalWebSocketGatewayUrl(this)
 
 fun String.normalizedTerminalLabel(): String =
     trim().ifEmpty { "我的设备" }
