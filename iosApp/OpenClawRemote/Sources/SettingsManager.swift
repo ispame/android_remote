@@ -214,9 +214,18 @@ final class SettingsManager: ObservableObject {
                 }
                 return mappedProfile
             }
-        guard !mapped.isEmpty else { return }
-        profiles = mapped.sortedForAgentList()
-        selectedProfileId = profiles[0].id
+        let remoteKeys = Set(mapped.map(\.uniqueBackendKey))
+        let localOnlyProfiles = profiles.filter { profile in
+            !profile.backendId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && !remoteKeys.contains(profile.uniqueBackendKey)
+        }
+        let merged = (mapped + localOnlyProfiles).prefix(Self.maxAgentProfiles)
+        guard !merged.isEmpty else { return }
+        let previousSelectedProfileId = selectedProfileId
+        profiles = Array(merged).sortedForAgentList()
+        selectedProfileId = profiles.contains(where: { $0.id == previousSelectedProfileId })
+            ? previousSelectedProfileId
+            : profiles[0].id
         defaults.set(selectedProfileId, forKey: selectedProfileIdKey)
         persistProfiles()
         publishActiveConfig()

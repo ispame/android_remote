@@ -662,6 +662,16 @@ private fun CodexSessionListScreen(
         ).joinToString(" ").lowercase().contains(q)
     }
     val groups = groupCodexSessions(filteredSessions, mode)
+    val codexEndpointLabel = remember(profile.backendLabel, profile.backendId) {
+        val label = profile.backendLabel?.trim().orEmpty()
+        val backendId = profile.backendId.trim()
+        when {
+            label.isNotEmpty() && label.lowercase() != "hermes bosonrelay" -> label
+            backendId == "codex-mac-mini" -> "Mac-mini.local"
+            backendId.isNotEmpty() -> backendId
+            else -> "Codex"
+        }
+    }
 
     LaunchedEffect(profile.id, showingArchived) {
         viewModel.requestCodexSessions(profile.id, archived = showingArchived)
@@ -692,7 +702,7 @@ private fun CodexSessionListScreen(
             Column(modifier = Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
                 Text("Codex", fontWeight = FontWeight.SemiBold, maxLines = 1)
                 Text(
-                    "${profile.backendLabel?.takeIf { it.isNotBlank() } ?: profile.backendId} · ${status.label}",
+                    "$codexEndpointLabel · ${status.label}",
                     fontSize = 12.sp,
                     color = colors.textSecondary,
                     maxLines = 1,

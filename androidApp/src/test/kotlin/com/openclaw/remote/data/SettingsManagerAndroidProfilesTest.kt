@@ -139,6 +139,37 @@ class SettingsManagerAndroidProfilesTest {
     }
 
     @Test
+    fun serverProfileSyncKeepsLocalOnlyCodexProfile() = runTest {
+        val codex = manager.upsertScannedProfile(
+            gatewayUrl = "https://boson-tech.top",
+            backendId = "codex-mac-mini",
+            token = "token-codex",
+            platform = AgentPlatform.CODEX,
+            label = "Codex",
+        )!!
+
+        manager.replaceAccountProfiles(
+            listOf(
+                AgentProfile(
+                    id = "profile-hermes",
+                    platform = AgentPlatform.HERMES,
+                    displayName = "Hermes BosonRelay",
+                    gatewayUrl = "wss://boson-tech.top/ws",
+                    backendId = "hermes-bosonrelay-e1ee9248",
+                    backendLabel = "Hermes BosonRelay",
+                    isPaired = true,
+                )
+            )
+        )
+
+        val state = manager.profilesFlow.first()
+
+        assertTrue(state.profiles.any { it.id == codex.id && it.backendId == "codex-mac-mini" })
+        assertTrue(state.profiles.any { it.backendId == "hermes-bosonrelay-e1ee9248" })
+        assertEquals(codex.id, state.selectedProfileId)
+    }
+
+    @Test
     fun scannedProfileWithNewBackendAddsUntilMaximumOfThree() = runTest {
         manager.upsertScannedProfile("wss://boson-tech.top/ws", "bk_openclaw", "t1", AgentPlatform.OPENCLAW, "OpenClaw")
         manager.upsertScannedProfile("wss://boson-tech.top/ws", "bk_hermes", "t2", AgentPlatform.HERMES, "Hermes")

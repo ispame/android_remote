@@ -429,7 +429,8 @@ class SettingsManagerAndroid(
 
     suspend fun replaceAccountProfiles(profiles: List<AgentProfile>, selectedProfileId: String? = null) {
         context.dataStore.edit { prefs ->
-            val normalizedProfiles = profiles
+            val currentState = prefs.toProfilesState()
+            val normalizedRemoteProfiles = profiles
                 .take(SettingsManager.MAX_AGENT_PROFILES)
                 .map { profile ->
                     profile.normalizedForSave(
@@ -437,6 +438,11 @@ class SettingsManagerAndroid(
                         asrProfileId = if (profile.asrMode == "backend") "" else profile.asrProfileId,
                     )
                 }
+            val remoteKeys = normalizedRemoteProfiles.map { it.uniqueBackendKey }.toSet()
+            val localOnlyProfiles = currentState.profiles
+                .filter { it.backendId.isNotBlank() && it.uniqueBackendKey !in remoteKeys }
+            val normalizedProfiles = (normalizedRemoteProfiles + localOnlyProfiles)
+                .take(SettingsManager.MAX_AGENT_PROFILES)
                 .ifEmpty {
                     val profile = AgentProfilesState.default().selectedProfile.copy(
                         asrMode = prefs.globalAsrMode(),
@@ -446,6 +452,7 @@ class SettingsManagerAndroid(
                 }
             val selectedId = selectedProfileId
                 ?.takeIf { id -> normalizedProfiles.any { it.id == id } }
+                ?: currentState.selectedProfileId.takeIf { id -> normalizedProfiles.any { it.id == id } }
                 ?: normalizedProfiles.first().id
             persistProfiles(prefs, normalizedProfiles, selectedId)
         }

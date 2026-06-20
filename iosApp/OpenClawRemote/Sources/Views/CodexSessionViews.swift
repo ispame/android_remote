@@ -19,7 +19,14 @@ struct CodexSessionListScreen: View {
     @State private var handledCreatedSessionId: String?
 
     private var profile: AgentProfile {
-        settingsManager.profiles.first { $0.id == profileId } ?? settingsManager.selectedProfile
+        settingsManager.profiles.first { $0.id == profileId }
+            ?? AgentProfile(
+                platform: .codex,
+                displayName: "Codex",
+                gatewayUrl: AgentProfile.canonicalWebSocketGatewayUrl(""),
+                backendId: "",
+                backendLabel: nil
+            )
     }
 
     private var sessions: [CodexSessionSummary] {
@@ -42,6 +49,18 @@ struct CodexSessionListScreen: View {
 
     private var groups: [CodexSessionGroup] {
         CodexSessionGrouping.groups(for: sessions, mode: groupingMode)
+    }
+
+    private var codexEndpointLabel: String {
+        let backendLabel = profile.backendLabel?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let backendId = profile.backendId.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !backendLabel.isEmpty && backendLabel.lowercased() != "hermes bosonrelay" {
+            return backendLabel
+        }
+        if backendId == "codex-mac-mini" {
+            return "Mac-mini.local"
+        }
+        return backendId.isEmpty ? "Codex" : backendId
     }
 
     var body: some View {
@@ -109,10 +128,10 @@ struct CodexSessionListScreen: View {
         .hideTabBarWhileVisible()
         .onAppear {
             onSelectProfile(profileId)
-            wsManager.requestCodexSessions(profileId: profileId, archived: showingArchived)
+            requestSessionsOrPair()
         }
         .onChange(of: showingArchived) { archived in
-            wsManager.requestCodexSessions(profileId: profileId, archived: archived)
+            requestSessionsOrPair(archived: archived)
         }
         .onChange(of: wsManager.codexCreatedSessionIdsByProfile[profileId]) { sessionId in
             guard let sessionId,
@@ -153,7 +172,7 @@ struct CodexSessionListScreen: View {
                 Image(systemName: "laptopcomputer")
                     .font(.system(size: 13, weight: .medium))
                     .foregroundColor(colors.textSecondary)
-                Text(profile.backendLabel?.isEmpty == false ? profile.backendLabel! : profile.backendId)
+                Text(codexEndpointLabel)
                     .font(.system(size: 14, weight: .regular))
                     .foregroundColor(colors.textSecondary)
                     .lineLimit(1)
@@ -273,6 +292,19 @@ struct CodexSessionListScreen: View {
             deviceLabel: settingsManager.config.deviceLabel,
             accessToken: settingsManager.config.accessToken
         )
+    }
+
+    private func requestSessionsOrPair(archived: Bool? = nil) {
+        let targetArchived = archived ?? showingArchived
+        if wsManager.requestCodexSessions(profileId: profileId, archived: targetArchived) {
+            return
+        }
+        let backendId = profile.backendId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !backendId.isEmpty else { return }
+        wsManager.requestPair(backendId: backendId)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+            _ = wsManager.requestCodexSessions(profileId: profileId, archived: targetArchived)
+        }
     }
 }
 

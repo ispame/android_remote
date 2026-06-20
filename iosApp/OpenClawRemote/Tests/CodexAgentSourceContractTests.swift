@@ -37,8 +37,11 @@ struct CodexAgentSourceContractTests {
         try expect(models.contains("canonicalWebSocketGatewayUrl"), "AgentProfile should canonicalize HTTP/WS gateway URLs")
         try expect(websocket.contains("AgentProfile.canonicalWebSocketGatewayUrl(trimmed)"), "WebSocketManager should accept https QR gateway URLs")
         try expect(settingsManager.contains("AgentProfile.canonicalWebSocketGatewayUrl(gatewayUrl)"), "Scanned profiles should store websocket gateway URLs")
+        try expect(settingsManager.contains("localOnlyProfiles"), "Account profile sync should preserve local-only Codex profiles")
         try expect(app.contains("wsManager.requestPair(backendId: backendId)"), "QR pairing should be requested even when account sync fails")
         try expect(!app.contains("Agent 配置同步失败，请稍后重试"), "Account sync failure should not block local pairing")
+        try expect(codexViews.contains("requestSessionsOrPair()"), "Codex session screen should pair/retry before showing an empty list")
+        try expect(codexViews.contains("Mac-mini.local"), "Codex session header should avoid showing the Hermes label")
         print("CodexAgentSourceContractTests passed")
     }
 
