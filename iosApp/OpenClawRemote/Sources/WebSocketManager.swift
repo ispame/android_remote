@@ -23,6 +23,16 @@ private struct PendingAudioContext {
     let recordingPrompt: String?
 }
 
+private struct PendingCodexSessionListRequest {
+    let profileId: String
+    let archived: Bool
+}
+
+private struct PendingCodexSessionMutation {
+    let profileId: String
+    let sessionId: String?
+}
+
 private enum LongRecordingUploadError: Error, LocalizedError {
     case invalidResponse(String)
     case httpStatus(Int, String)
@@ -67,6 +77,11 @@ final class WebSocketManager: ObservableObject {
     @Published private(set) var unreadCounts: [String: Int] = [:]
     @Published private(set) var agentListActivities: [String: AgentListActivity] = [:]
     @Published private(set) var recordingExecutionSupported = false
+    @Published private(set) var codexSessionsByProfile: [String: [CodexSessionSummary]] = [:]
+    @Published private(set) var codexArchivedSessionsByProfile: [String: [CodexSessionSummary]] = [:]
+    @Published private(set) var codexMessagesByProfileSession: [String: [String: [ChatMessage]]] = [:]
+    @Published private(set) var codexSessionErrorsByProfile: [String: String] = [:]
+    @Published private(set) var codexCreatedSessionIdsByProfile: [String: String] = [:]
 
     private let messageSubject = PassthroughSubject<WsMessageEvent, Never>()
     var messageChannel: AnyPublisher<WsMessageEvent, Never> {
@@ -79,6 +94,13 @@ final class WebSocketManager: ObservableObject {
     private var knownProfiles: [String: AgentProfile] = [:]
     private var profileIdsByBackendId: [String: String] = [:]
     private var pendingHistoryProfileId: String?
+    private var pendingCodexSessionListRequests: [String: PendingCodexSessionListRequest] = [:]
+    private var pendingCodexSessionCreateRequests: [String: PendingCodexSessionMutation] = [:]
+    private var pendingCodexSessionArchiveRequests: [String: PendingCodexSessionMutation] = [:]
+    private var pendingCodexSessionUnarchiveRequests: [String: PendingCodexSessionMutation] = [:]
+    private var codexHistoryLoadingByProfileSession: [String: Set<String>] = [:]
+    private var codexHistoryLoadedByProfileSession: [String: Set<String>] = [:]
+    private var codexLoadedHistoryKeysByProfileSession: [String: [String: Set<String>]] = [:]
     private var pendingAudioContextsByClientMessageId: [String: PendingAudioContext] = [:]
     private var longRecordingJobTasks: [String: Task<Void, Never>] = [:]
     private var longRecordingJobTaskIds: [String: UUID] = [:]
@@ -98,6 +120,7 @@ final class WebSocketManager: ObservableObject {
     private var socketGeneration = 0
     private let reconnectBaseDelay: TimeInterval = 2
     private let reconnectMaxDelay: TimeInterval = 30
+    private var pendingPushToken: (token: String, environment: String, appVersion: String)?
 
     private var pendingAcks: [Int: (MessageStatus) -> Void] = [:]
     private var receivedMessageKeys = Set<String>()
@@ -111,12 +134,27 @@ final class WebSocketManager: ObservableObject {
         self.accessToken = accessToken
     }
 
+    func updatePushToken(_ token: String, environment: String, appVersion: String = "2.0.0-native") {
+        let normalizedToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedToken.isEmpty else { return }
+        pendingPushToken = (normalizedToken, environment, appVersion)
+        sendPendingPushTokenIfReady()
+    }
+
     func syncProfiles(_ profiles: [AgentProfile]) {
         let knownIds = Set(profiles.map(\.id))
         knownProfiles = Dictionary(uniqueKeysWithValues: profiles.map { ($0.id, $0) })
         profileStates = profileStates.filter { knownIds.contains($0.key) }
         unreadCounts = unreadCounts.filter { knownIds.contains($0.key) }
         agentListActivities = agentListActivities.filter { knownIds.contains($0.key) }
+        codexSessionsByProfile = codexSessionsByProfile.filter { knownIds.contains($0.key) }
+        codexArchivedSessionsByProfile = codexArchivedSessionsByProfile.filter { knownIds.contains($0.key) }
+        codexMessagesByProfileSession = codexMessagesByProfileSession.filter { knownIds.contains($0.key) }
+        codexSessionErrorsByProfile = codexSessionErrorsByProfile.filter { knownIds.contains($0.key) }
+        codexCreatedSessionIdsByProfile = codexCreatedSessionIdsByProfile.filter { knownIds.contains($0.key) }
+        codexHistoryLoadingByProfileSession = codexHistoryLoadingByProfileSession.filter { knownIds.contains($0.key) }
+        codexHistoryLoadedByProfileSession = codexHistoryLoadedByProfileSession.filter { knownIds.contains($0.key) }
+        codexLoadedHistoryKeysByProfileSession = codexLoadedHistoryKeysByProfileSession.filter { knownIds.contains($0.key) }
         profileIdsByBackendId = [:]
 
         for profile in profiles {
@@ -242,6 +280,7 @@ final class WebSocketManager: ObservableObject {
         profileStates[profileId] = ProfileRuntimeState()
         unreadCounts[profileId] = 0
         setAgentListActivity(AgentListActivity(), profileId: profileId)
+        clearCodexState(profileId: profileId)
         if profileId == activeProfileId {
             loadRuntimeState(ProfileRuntimeState())
         }
@@ -253,6 +292,7 @@ final class WebSocketManager: ObservableObject {
         knownProfiles.removeValue(forKey: profileId)
         unreadCounts.removeValue(forKey: profileId)
         agentListActivities.removeValue(forKey: profileId)
+        clearCodexState(profileId: profileId)
         profileIdsByBackendId = profileIdsByBackendId.filter { $0.value != profileId }
         pendingAudioContextsByClientMessageId = pendingAudioContextsByClientMessageId.filter { $0.value.profileId != profileId }
         if pendingHistoryProfileId == profileId {
@@ -535,6 +575,137 @@ final class WebSocketManager: ObservableObject {
         }
         persistActiveRuntimeState()
         sendJson(frame)
+    }
+
+    func codexSessions(profileId: String, archived: Bool = false) -> [CodexSessionSummary] {
+        archived ? (codexArchivedSessionsByProfile[profileId] ?? []) : (codexSessionsByProfile[profileId] ?? [])
+    }
+
+    func codexMessages(profileId: String, sessionId: String) -> [ChatMessage] {
+        codexMessagesByProfileSession[profileId]?[sessionId] ?? []
+    }
+
+    func codexHistoryLoading(profileId: String, sessionId: String) -> Bool {
+        codexHistoryLoadingByProfileSession[profileId]?.contains(sessionId) == true
+    }
+
+    @discardableResult
+    func requestCodexSessions(profileId: String, archived: Bool = false, limit: Int = 80) -> Bool {
+        guard let backendId = backendIdForProfile(profileId),
+              canSendBackendRequest(backendId) else { return false }
+        let requestId = "codex_sessions_\(UUID().uuidString)"
+        pendingCodexSessionListRequests[requestId] = PendingCodexSessionListRequest(
+            profileId: profileId,
+            archived: archived
+        )
+        sendJson([
+            "type": "agent_session_list_request",
+            "request_id": requestId,
+            "backend_id": backendId,
+            "archived": archived,
+            "limit": max(1, limit)
+        ])
+        return true
+    }
+
+    @discardableResult
+    func createCodexSession(profileId: String, initialPrompt: String? = nil) -> Bool {
+        guard let backendId = backendIdForProfile(profileId),
+              canSendBackendRequest(backendId) else { return false }
+        let requestId = "codex_create_\(UUID().uuidString)"
+        pendingCodexSessionCreateRequests[requestId] = PendingCodexSessionMutation(
+            profileId: profileId,
+            sessionId: nil
+        )
+        var frame: [String: Any] = [
+            "type": "agent_session_create_request",
+            "request_id": requestId,
+            "backend_id": backendId
+        ]
+        let prompt = initialPrompt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !prompt.isEmpty {
+            frame["initial_prompt"] = prompt
+        }
+        sendJson(frame)
+        return true
+    }
+
+    @discardableResult
+    func archiveCodexSession(profileId: String, sessionId: String) -> Bool {
+        guard let backendId = backendIdForProfile(profileId),
+              canSendBackendRequest(backendId) else { return false }
+        let requestId = "codex_archive_\(UUID().uuidString)"
+        pendingCodexSessionArchiveRequests[requestId] = PendingCodexSessionMutation(
+            profileId: profileId,
+            sessionId: sessionId
+        )
+        sendJson([
+            "type": "agent_session_archive_request",
+            "request_id": requestId,
+            "backend_id": backendId,
+            "session_id": sessionId
+        ])
+        return true
+    }
+
+    @discardableResult
+    func unarchiveCodexSession(profileId: String, sessionId: String) -> Bool {
+        guard let backendId = backendIdForProfile(profileId),
+              canSendBackendRequest(backendId) else { return false }
+        let requestId = "codex_unarchive_\(UUID().uuidString)"
+        pendingCodexSessionUnarchiveRequests[requestId] = PendingCodexSessionMutation(
+            profileId: profileId,
+            sessionId: sessionId
+        )
+        sendJson([
+            "type": "agent_session_unarchive_request",
+            "request_id": requestId,
+            "backend_id": backendId,
+            "session_id": sessionId
+        ])
+        return true
+    }
+
+    func sendCodexText(_ text: String, profileId: String, sessionId: String) {
+        guard let backendId = backendIdForProfile(profileId),
+              canSendBackendRequest(backendId) else { return }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let messageId = "msg_\(UUID().uuidString)"
+        appendCodexMessage(
+            ChatMessage(
+                content: trimmed,
+                timestamp: timestamp(),
+                senderId: "user",
+                status: .sending,
+                seq: nil
+            ),
+            profileId: profileId,
+            sessionId: sessionId
+        )
+        sendJson([
+            "type": "message",
+            "backend_id": backendId,
+            "message_id": messageId,
+            "content": trimmed,
+            "content_type": "text",
+            "timestamp": isoTimestamp(),
+            "session_key": sessionId
+        ])
+    }
+
+    func requestCodexHistory(profileId: String, sessionId: String, rounds: Int = 15, force: Bool = false) {
+        if codexHistoryLoading(profileId: profileId, sessionId: sessionId) { return }
+        if !force && codexHistoryLoadedByProfileSession[profileId]?.contains(sessionId) == true { return }
+        guard let backendId = backendIdForProfile(profileId),
+              canSendBackendRequest(backendId) else { return }
+        setCodexHistoryLoading(true, profileId: profileId, sessionId: sessionId)
+        sendJson([
+            "type": "history_request",
+            "backend_id": backendId,
+            "session_key": sessionId,
+            "limit": max(1, rounds) * 2
+        ])
     }
 
     @discardableResult
@@ -1195,6 +1366,18 @@ final class WebSocketManager: ObservableObject {
         ])
     }
 
+    private func sendPendingPushTokenIfReady() {
+        guard let token = pendingPushToken else { return }
+        guard connectionState == .registered || connectionState == .paired else { return }
+        sendJson([
+            "type": "push_token_update",
+            "platform": "ios",
+            "token": token.token,
+            "environment": token.environment,
+            "app_version": token.appVersion
+        ])
+    }
+
     private func sendJson(_ dict: [String: Any]) {
         guard let data = try? JSONSerialization.data(withJSONObject: dict),
               let text = String(data: data, encoding: .utf8) else { return }
@@ -1299,6 +1482,7 @@ final class WebSocketManager: ObservableObject {
                         self.preferredBackendId = (json["selected_backend_id"] as? String) ?? pairedBackends.first
                     }
                     self.messageSubject.send(.registered(self.accountId ?? ""))
+                    self.sendPendingPushTokenIfReady()
                     if pairedBackends.isEmpty, let backendId = self.preferredBackendId ?? self.registeredBackendId {
                         self.requestPair(backendId: backendId)
                     }
@@ -1343,7 +1527,26 @@ final class WebSocketManager: ObservableObject {
                 let responseProfileId = backendId.flatMap { self.profileId(forBackendId: $0) }
                     ?? self.pendingHistoryProfileId
                     ?? self.activeProfileId
+                if let sessionKey = json["session_key"] as? String,
+                   sessionKey != "current",
+                   let responseProfileId,
+                   self.knownProfiles[responseProfileId]?.platform == .codex {
+                    self.handleCodexHistoryResponse(json, profileId: responseProfileId, sessionId: sessionKey)
+                    return
+                }
                 self.handleHistoryResponse(json, profileId: responseProfileId)
+
+            case "agent_session_list_response":
+                self.handleCodexSessionListResponse(json)
+
+            case "agent_session_create_response":
+                self.handleCodexSessionCreateResponse(json)
+
+            case "agent_session_archive_response":
+                self.handleCodexSessionArchiveResponse(json)
+
+            case "agent_session_unarchive_response":
+                self.handleCodexSessionUnarchiveResponse(json)
 
             case "task_list_response":
                 self.messageSubject.send(.taskListResponse(TaskListResponsePayload(json: json)))
@@ -1455,6 +1658,13 @@ final class WebSocketManager: ObservableObject {
             item: json,
             fallbackTimestamp: timestamp()
         )
+        if let profileId,
+           knownProfiles[profileId]?.platform == .codex,
+           let sessionKey = json["session_key"] as? String,
+           !sessionKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            appendCodexMessage(message, profileId: profileId, sessionId: sessionKey)
+            return
+        }
         appendMessage(message, profileId: profileId)
     }
 
@@ -1553,6 +1763,165 @@ final class WebSocketManager: ObservableObject {
         state.historyLoaded = true
         state.historyError = nil
         saveRuntimeState(state, profileId: profileId)
+    }
+
+    private func handleCodexSessionListResponse(_ json: [String: Any]) {
+        let requestId = json["request_id"] as? String ?? ""
+        let pending = pendingCodexSessionListRequests.removeValue(forKey: requestId)
+        let backendId = json["backend_id"] as? String
+        guard let profileId = pending?.profileId
+                ?? backendId.flatMap({ profileId(forBackendId: $0) })
+                ?? activeProfileId else { return }
+        let archived = pending?.archived ?? (json["archived"] as? Bool ?? false)
+        if let error = json["error"] as? String, !error.isEmpty {
+            codexSessionErrorsByProfile[profileId] = error
+            return
+        }
+        let sessions = (json["sessions"] as? [[String: Any]] ?? [])
+            .compactMap(CodexSessionSummary.init(json:))
+            .sorted { $0.updatedDate > $1.updatedDate }
+        if archived {
+            codexArchivedSessionsByProfile[profileId] = sessions
+        } else {
+            codexSessionsByProfile[profileId] = sessions
+            refreshCodexActivityFromSessions(profileId: profileId)
+        }
+        codexSessionErrorsByProfile[profileId] = nil
+    }
+
+    private func handleCodexSessionCreateResponse(_ json: [String: Any]) {
+        let requestId = json["request_id"] as? String ?? ""
+        let pending = pendingCodexSessionCreateRequests.removeValue(forKey: requestId)
+        let backendId = json["backend_id"] as? String
+        guard let profileId = pending?.profileId
+                ?? backendId.flatMap({ profileId(forBackendId: $0) })
+                ?? activeProfileId else { return }
+        if let error = json["error"] as? String, !error.isEmpty {
+            codexSessionErrorsByProfile[profileId] = error
+            return
+        }
+        let accepted = json["accepted"] as? Bool ?? true
+        guard accepted,
+              let sessionId = json["session_id"] as? String,
+              !sessionId.isEmpty else { return }
+        let session: CodexSessionSummary
+        if let sessionJson = json["session"] as? [String: Any],
+           let parsed = CodexSessionSummary(json: sessionJson) {
+            session = parsed
+        } else {
+            session = CodexSessionSummary(
+                sessionId: sessionId,
+                title: (json["title"] as? String) ?? "新会话",
+                preview: "",
+                lastAssistantPreview: "",
+                projectPath: (json["project_path"] as? String) ?? "",
+                projectName: json["project_name"] as? String,
+                createdAt: (json["created_at"] as? String) ?? isoTimestamp(),
+                updatedAt: (json["updated_at"] as? String) ?? isoTimestamp(),
+                status: (json["status"] as? String) ?? "idle",
+                archived: false,
+                model: json["model"] as? String
+            )
+        }
+        upsertCodexSession(session, profileId: profileId, archived: false)
+        codexCreatedSessionIdsByProfile[profileId] = session.sessionId
+        codexSessionErrorsByProfile[profileId] = nil
+        requestCodexSessions(profileId: profileId, archived: false)
+    }
+
+    private func handleCodexSessionArchiveResponse(_ json: [String: Any]) {
+        let requestId = json["request_id"] as? String ?? ""
+        let pending = pendingCodexSessionArchiveRequests.removeValue(forKey: requestId)
+        let backendId = json["backend_id"] as? String
+        guard let profileId = pending?.profileId
+                ?? backendId.flatMap({ profileId(forBackendId: $0) })
+                ?? activeProfileId else { return }
+        if let error = json["error"] as? String, !error.isEmpty {
+            codexSessionErrorsByProfile[profileId] = error
+            return
+        }
+        let sessionId = (json["session_id"] as? String) ?? pending?.sessionId ?? ""
+        guard (json["archived"] as? Bool ?? true), !sessionId.isEmpty else { return }
+        var activeSessions = codexSessionsByProfile[profileId] ?? []
+        if let index = activeSessions.firstIndex(where: { $0.sessionId == sessionId }) {
+            var session = activeSessions.remove(at: index)
+            session.archived = true
+            codexSessionsByProfile[profileId] = activeSessions
+            upsertCodexSession(session, profileId: profileId, archived: true)
+        } else {
+            codexSessionsByProfile[profileId] = activeSessions.filter { $0.sessionId != sessionId }
+        }
+        refreshCodexActivityFromSessions(profileId: profileId)
+        codexSessionErrorsByProfile[profileId] = nil
+    }
+
+    private func handleCodexSessionUnarchiveResponse(_ json: [String: Any]) {
+        let requestId = json["request_id"] as? String ?? ""
+        let pending = pendingCodexSessionUnarchiveRequests.removeValue(forKey: requestId)
+        let backendId = json["backend_id"] as? String
+        guard let profileId = pending?.profileId
+                ?? backendId.flatMap({ profileId(forBackendId: $0) })
+                ?? activeProfileId else { return }
+        if let error = json["error"] as? String, !error.isEmpty {
+            codexSessionErrorsByProfile[profileId] = error
+            return
+        }
+        let sessionId = (json["session_id"] as? String) ?? pending?.sessionId ?? ""
+        guard (json["unarchived"] as? Bool ?? true), !sessionId.isEmpty else { return }
+        var archivedSessions = codexArchivedSessionsByProfile[profileId] ?? []
+        if let index = archivedSessions.firstIndex(where: { $0.sessionId == sessionId }) {
+            var session = archivedSessions.remove(at: index)
+            session.archived = false
+            codexArchivedSessionsByProfile[profileId] = archivedSessions
+            upsertCodexSession(session, profileId: profileId, archived: false)
+        } else {
+            codexArchivedSessionsByProfile[profileId] = archivedSessions.filter { $0.sessionId != sessionId }
+        }
+        refreshCodexActivityFromSessions(profileId: profileId)
+        codexSessionErrorsByProfile[profileId] = nil
+    }
+
+    private func handleCodexHistoryResponse(_ json: [String: Any], profileId: String, sessionId: String) {
+        setCodexHistoryLoading(false, profileId: profileId, sessionId: sessionId)
+        if let error = json["error"] as? String, !error.isEmpty {
+            codexSessionErrorsByProfile[profileId] = error
+            return
+        }
+        let items = json["messages"] as? [[String: Any]] ?? []
+        let parsed = items.compactMap { item -> ChatMessage? in
+            guard let content = item["content"] as? String else { return nil }
+            let role = item["role"] as? String ?? "assistant"
+            let normalizedRole = role.lowercased()
+            let displayContent: String
+            if normalizedRole == "user" || normalizedRole == "human" {
+                guard !self.shouldHideSystemNoise(content) else { return nil }
+                displayContent = content
+            } else {
+                guard let sanitized = self.displayableBackendContent(content) else { return nil }
+                displayContent = sanitized
+            }
+            return HistoryMessagePayload.chatMessage(content: displayContent, role: role, item: item)
+        }
+        var messagesBySession = codexMessagesByProfileSession[profileId] ?? [:]
+        let existing = messagesBySession[sessionId] ?? []
+        var loadedKeys = codexLoadedHistoryKeysByProfileSession[profileId]?[sessionId] ?? Set<String>()
+        let existingKeys = Set(existing.map(messageHistoryKey))
+        let newMessages = parsed.filter { message in
+            let key = messageHistoryKey(message)
+            return !existingKeys.contains(key) && !loadedKeys.contains(key)
+        }
+        loadedKeys.formUnion(parsed.map(messageHistoryKey))
+        messagesBySession[sessionId] = newMessages + existing
+        codexMessagesByProfileSession[profileId] = messagesBySession
+        var profileKeys = codexLoadedHistoryKeysByProfileSession[profileId] ?? [:]
+        profileKeys[sessionId] = loadedKeys
+        codexLoadedHistoryKeysByProfileSession[profileId] = profileKeys
+        codexHistoryLoadedByProfileSession[profileId, default: []].insert(sessionId)
+        for message in parsed where !message.isUser {
+            updateCodexSessionPreview(profileId: profileId, sessionId: sessionId, message: message)
+            updateMessageActivity(profileId: profileId, message: message, fallbackDate: .distantPast)
+        }
+        codexSessionErrorsByProfile[profileId] = nil
     }
 
     private func handleAsrResult(_ json: [String: Any]) {
@@ -1655,6 +2024,108 @@ final class WebSocketManager: ObservableObject {
         var activities = agentListActivities
         activities[profileId] = activity
         agentListActivities = activities
+    }
+
+    private func backendIdForProfile(_ profileId: String) -> String? {
+        if profileId == activeProfileId {
+            return registeredBackendId ?? preferredBackendId
+        }
+        let state = profileStates[profileId]
+        if let backendId = state?.registeredBackendId, !backendId.isEmpty {
+            return backendId
+        }
+        if let backendId = state?.preferredBackendId, !backendId.isEmpty {
+            return backendId
+        }
+        let backendId = knownProfiles[profileId]?.backendId.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return backendId.isEmpty ? nil : backendId
+    }
+
+    private func clearCodexState(profileId: String) {
+        codexSessionsByProfile.removeValue(forKey: profileId)
+        codexArchivedSessionsByProfile.removeValue(forKey: profileId)
+        codexMessagesByProfileSession.removeValue(forKey: profileId)
+        codexSessionErrorsByProfile.removeValue(forKey: profileId)
+        codexCreatedSessionIdsByProfile.removeValue(forKey: profileId)
+        codexHistoryLoadingByProfileSession.removeValue(forKey: profileId)
+        codexHistoryLoadedByProfileSession.removeValue(forKey: profileId)
+        codexLoadedHistoryKeysByProfileSession.removeValue(forKey: profileId)
+        pendingCodexSessionListRequests = pendingCodexSessionListRequests.filter { $0.value.profileId != profileId }
+        pendingCodexSessionCreateRequests = pendingCodexSessionCreateRequests.filter { $0.value.profileId != profileId }
+        pendingCodexSessionArchiveRequests = pendingCodexSessionArchiveRequests.filter { $0.value.profileId != profileId }
+        pendingCodexSessionUnarchiveRequests = pendingCodexSessionUnarchiveRequests.filter { $0.value.profileId != profileId }
+    }
+
+    private func setCodexHistoryLoading(_ loading: Bool, profileId: String, sessionId: String) {
+        var sessions = codexHistoryLoadingByProfileSession[profileId] ?? []
+        if loading {
+            sessions.insert(sessionId)
+        } else {
+            sessions.remove(sessionId)
+        }
+        codexHistoryLoadingByProfileSession[profileId] = sessions
+    }
+
+    private func upsertCodexSession(_ session: CodexSessionSummary, profileId: String, archived: Bool) {
+        if archived {
+            var sessions = codexArchivedSessionsByProfile[profileId] ?? []
+            sessions.removeAll { $0.sessionId == session.sessionId }
+            sessions.append(session)
+            codexArchivedSessionsByProfile[profileId] = sessions.sorted { $0.updatedDate > $1.updatedDate }
+        } else {
+            var sessions = codexSessionsByProfile[profileId] ?? []
+            sessions.removeAll { $0.sessionId == session.sessionId }
+            sessions.append(session)
+            codexSessionsByProfile[profileId] = sessions.sorted { $0.updatedDate > $1.updatedDate }
+            refreshCodexActivityFromSessions(profileId: profileId)
+        }
+    }
+
+    private func updateCodexSessionPreview(profileId: String, sessionId: String, message: ChatMessage) {
+        let preview = messagePreview(for: message.content) ?? ""
+        let updatedAt = message.rawTimestamp ?? isoTimestamp()
+        for archived in [false, true] {
+            var sessions = archived
+                ? (codexArchivedSessionsByProfile[profileId] ?? [])
+                : (codexSessionsByProfile[profileId] ?? [])
+            guard let index = sessions.firstIndex(where: { $0.sessionId == sessionId }) else {
+                continue
+            }
+            var session = sessions[index]
+            session.lastAssistantPreview = preview
+            session.updatedAt = updatedAt
+            sessions[index] = session
+            let sorted = sessions.sorted { $0.updatedDate > $1.updatedDate }
+            if archived {
+                codexArchivedSessionsByProfile[profileId] = sorted
+            } else {
+                codexSessionsByProfile[profileId] = sorted
+            }
+        }
+    }
+
+    private func refreshCodexActivityFromSessions(profileId: String) {
+        guard let session = (codexSessionsByProfile[profileId] ?? [])
+            .filter({ !$0.lastAssistantPreview.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })
+            .max(by: { $0.updatedDate < $1.updatedDate }) else { return }
+        var activity = agentListActivities[profileId] ?? AgentListActivity()
+        activity.latestMessagePreview = session.displayPreview
+        activity.latestMessageAt = session.updatedDate
+        setAgentListActivity(activity, profileId: profileId)
+    }
+
+    private func appendCodexMessage(_ message: ChatMessage, profileId: String, sessionId: String) {
+        var messagesBySession = codexMessagesByProfileSession[profileId] ?? [:]
+        messagesBySession[sessionId] = (messagesBySession[sessionId] ?? []) + [message]
+        codexMessagesByProfileSession[profileId] = messagesBySession
+        if !message.isUser {
+            updateCodexSessionPreview(profileId: profileId, sessionId: sessionId, message: message)
+            updateMessageActivity(profileId: profileId, message: message)
+            if profileId != activeProfileId {
+                unreadCounts[profileId, default: 0] += 1
+            }
+        }
+        messageSubject.send(.newMessage(profileId: profileId, message))
     }
 
     private func updateMessageActivity(

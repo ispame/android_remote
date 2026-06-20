@@ -3,6 +3,7 @@ package com.openclaw.remote
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
@@ -31,6 +32,8 @@ import com.openclaw.remote.headset.supportsStandbyControl
 import com.openclaw.remote.network.accessTokenRefreshDelayMillis
 import com.openclaw.remote.network.refreshFailureRequiresLogin
 import com.openclaw.remote.network.shouldRefreshAccessToken
+import com.openclaw.remote.push.BosonPushNotifications
+import com.openclaw.remote.push.BosonPushTokenReporter
 import com.openclaw.remote.ui.screen.AuthScreen
 import com.openclaw.remote.ui.screen.MainScreen
 import com.openclaw.remote.ui.screen.QRParseResult
@@ -72,6 +75,10 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private val requestNotificationPermission = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -103,7 +110,10 @@ class MainActivity : ComponentActivity() {
             soundPlaybackController.onHeadsetWake()
         })
 
+        BosonPushNotifications.createChannel(this)
         checkPermissions()
+        requestNotificationPermissionIfNeeded()
+        refreshPushToken()
         handleIntent(intent)
 
         setContent {
@@ -276,6 +286,7 @@ class MainActivity : ComponentActivity() {
                         settingsManager = settingsManager,
                         config = config,
                         authClient = authClient,
+                        chatViewModel = viewModel,
                         profiles = profiles,
                         selectedProfileId = selectedProfileId,
                         profileStatuses = profiles.associate { it.id to viewModel.availabilityStatus(it) },
@@ -529,12 +540,39 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleIntent(intent: Intent?) {
-        val uri = intent?.data ?: return
+        val uri = intent?.data
+            ?: intent?.getStringExtra("deep_link")
+                ?.trim()
+                ?.takeIf { it.startsWith("openclaw://") }
+                ?.let(Uri::parse)
+            ?: intent?.getStringExtra("deeplink")
+                ?.trim()
+                ?.takeIf { it.startsWith("openclaw://") }
+                ?.let(Uri::parse)
+            ?: return
         val uriString = uri.toString()
+        if (uriString.startsWith("openclaw://chat")) {
+            handleChatDeepLink(uri)
+            return
+        }
         if (uriString.startsWith("openclaw://connect")) {
             parseQRPack(uriString) { result ->
                 handleQRParseResult(result)
             }
+        }
+    }
+
+    private fun handleChatDeepLink(uri: Uri) {
+        val requestedProfileId = uri.getQueryParameter("profile_id")?.trim().orEmpty()
+        val requestedBackendId = uri.getQueryParameter("backend_id")?.trim().orEmpty()
+        if (requestedProfileId.isBlank() && requestedBackendId.isBlank()) return
+        scope.launch {
+            val state = settingsManager.profilesFlow.first()
+            val profile = state.profiles.firstOrNull { it.id == requestedProfileId }
+                ?: state.profiles.firstOrNull { it.backendId == requestedBackendId }
+                ?: return@launch
+            settingsManager.selectProfile(profile.id)
+            viewModel.selectProfile(profile.id)
         }
     }
 
@@ -704,6 +742,23 @@ class MainActivity : ComponentActivity() {
             permissions += Manifest.permission.BLUETOOTH_CONNECT
         }
         return permissions
+    }
+
+    private fun requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) return
+        requestNotificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+    }
+
+    private fun refreshPushToken() {
+        BosonPushTokenReporter.refresh(this) { token ->
+            viewModel.updatePushToken(
+                token = token,
+                platform = "android",
+                environment = if (BuildConfig.DEBUG) "development" else "production",
+                appVersion = "${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
+            )
+        }
     }
 }
 

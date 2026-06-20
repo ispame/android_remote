@@ -1,6 +1,7 @@
 import SwiftUI
 import Combine
 import UIKit
+import UserNotifications
 
 @main
 struct OpenClawRemoteApp: App {
@@ -117,6 +118,15 @@ struct OpenClawRemoteApp: App {
             .onReceive(settingsManager.$soundPlaybackEnabled) { enabled in
                 messageSpeechController.syncSoundPlaybackEnabled(enabled)
             }
+            .onReceive(NotificationCenter.default.publisher(for: .bosonRemotePushTokenDidUpdate)) { notification in
+                guard let token = notification.userInfo?[BosonRemoteControlAppDelegate.pushTokenUserInfoKey] as? String else { return }
+                let environment = notification.userInfo?[BosonRemoteControlAppDelegate.pushEnvironmentUserInfoKey] as? String ?? "development"
+                wsManager.updatePushToken(token, environment: environment)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .bosonRemotePushDeepLinkReceived)) { notification in
+                guard let deepLink = notification.userInfo?[BosonRemoteControlAppDelegate.pushDeepLinkUserInfoKey] as? String else { return }
+                handleRemotePushDeepLink(deepLink)
+            }
             .onAppear {
                 let isSystemDark = UITraitCollection.current.userInterfaceStyle == .dark
                 isDark = isSystemDark
@@ -131,6 +141,31 @@ struct OpenClawRemoteApp: App {
                 headsetController.start()
             }
         }
+    }
+
+    private func handleRemotePushDeepLink(_ rawValue: String) {
+        guard let url = URL(string: rawValue), url.scheme == "openclaw" else { return }
+        if url.host == "connect" {
+            handleQRParsed(rawValue)
+            return
+        }
+        guard url.host == "chat" else { return }
+        let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        let profileId = components?.queryItems?.first(where: { $0.name == "profile_id" })?.value?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let backendId = components?.queryItems?.first(where: { $0.name == "backend_id" })?.value?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let targetProfile = settingsManager.profiles.first(where: { profile in
+            if let profileId, !profileId.isEmpty, profile.id == profileId {
+                return true
+            }
+            if let backendId, !backendId.isEmpty, profile.backendId == backendId {
+                return true
+            }
+            return false
+        }) else {
+            return
+        }
+        settingsManager.selectProfile(targetProfile.id)
+        applySelectedProfile()
     }
 
     private func handleQRParsed(_ scannedText: String) {
@@ -480,12 +515,86 @@ struct OpenClawRemoteApp: App {
 }
 
 final class BosonRemoteControlAppDelegate: UIResponder, UIApplicationDelegate {
+    static let pushTokenUserInfoKey = "token"
+    static let pushEnvironmentUserInfoKey = "environment"
+    static let pushDeepLinkUserInfoKey = "deepLink"
+
     func application(
         _: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
+        UNUserNotificationCenter.current().delegate = self
+        requestRemoteNotifications()
         return true
     }
+
+    func application(_: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+        let token = deviceToken.map { String(format: "%02.2hhx", $0) }.joined()
+        NotificationCenter.default.post(
+            name: .bosonRemotePushTokenDidUpdate,
+            object: nil,
+            userInfo: [
+                Self.pushTokenUserInfoKey: token,
+                Self.pushEnvironmentUserInfoKey: pushEnvironment
+            ]
+        )
+    }
+
+    func application(_: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
+        NSLog("Boson remote notification registration failed: %@", error.localizedDescription)
+    }
+
+    private func requestRemoteNotifications() {
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, error in
+            if let error {
+                NSLog("Boson remote notification authorization failed: %@", error.localizedDescription)
+            }
+            guard granted else { return }
+            DispatchQueue.main.async {
+                UIApplication.shared.registerForRemoteNotifications()
+            }
+        }
+    }
+
+    private var pushEnvironment: String {
+        #if DEBUG
+        return "development"
+        #else
+        return "production"
+        #endif
+    }
+}
+
+extension BosonRemoteControlAppDelegate: UNUserNotificationCenterDelegate {
+    func userNotificationCenter(
+        _: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        completionHandler([.banner, .sound, .badge])
+    }
+
+    func userNotificationCenter(
+        _: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        let userInfo = response.notification.request.content.userInfo
+        let deepLink = (userInfo["deep_link"] as? String) ?? (userInfo["deeplink"] as? String)
+        if let deepLink, !deepLink.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            NotificationCenter.default.post(
+                name: .bosonRemotePushDeepLinkReceived,
+                object: nil,
+                userInfo: [Self.pushDeepLinkUserInfoKey: deepLink]
+            )
+        }
+        completionHandler()
+    }
+}
+
+extension Notification.Name {
+    static let bosonRemotePushTokenDidUpdate = Notification.Name("bosonRemotePushTokenDidUpdate")
+    static let bosonRemotePushDeepLinkReceived = Notification.Name("bosonRemotePushDeepLinkReceived")
 }
 
 private extension AgentProfile {

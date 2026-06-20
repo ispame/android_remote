@@ -19,9 +19,11 @@ enum class AgentPlatform(
     val wireValue: String,
     val label: String,
     val defaultDisplayName: String,
+    val supportsAudio: Boolean = true,
 ) {
     OPENCLAW("openclaw", "OpenClaw", "OpenClaw Agent"),
     HERMES("hermes", "Hermes", "Hermes BosonRelay"),
+    CODEX("codex", "Codex", "Codex", supportsAudio = false),
     CUSTOM("custom", "Custom", "Agent");
 
     companion object {

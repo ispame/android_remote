@@ -54,20 +54,31 @@ struct AgentsTabView: View {
                         .foregroundColor(.secondary)
                 } else {
                     ForEach(profiles) { profile in
-                        NavigationLink(
-                            destination: AgentChatScreen(
-                                profileId: profile.id,
-                                wsManager: wsManager,
-                                settingsManager: settingsManager,
-                                audioRecorder: audioRecorder,
-                                headsetController: headsetController,
-                                messageSpeechController: messageSpeechController,
-                                isDark: isDark,
-                                colors: colors,
-                                onToggleTheme: onToggleTheme,
-                                onSelectProfile: onSelectProfile
-                            )
-                        ) {
+                        NavigationLink {
+                            if profile.platform == .codex {
+                                CodexSessionListScreen(
+                                    profileId: profile.id,
+                                    wsManager: wsManager,
+                                    settingsManager: settingsManager,
+                                    audioRecorder: audioRecorder,
+                                    colors: colors,
+                                    onSelectProfile: onSelectProfile
+                                )
+                            } else {
+                                AgentChatScreen(
+                                    profileId: profile.id,
+                                    wsManager: wsManager,
+                                    settingsManager: settingsManager,
+                                    audioRecorder: audioRecorder,
+                                    headsetController: headsetController,
+                                    messageSpeechController: messageSpeechController,
+                                    isDark: isDark,
+                                    colors: colors,
+                                    onToggleTheme: onToggleTheme,
+                                    onSelectProfile: onSelectProfile
+                                )
+                            }
+                        } label: {
                             AgentRowView(
                                 profile: profile,
                                 status: wsManager.availabilityStatus(for: profile),
@@ -758,7 +769,7 @@ private struct AgentChatScreen: View {
 
 }
 
-private struct AgentConfigView: View {
+struct AgentConfigView: View {
     let profile: AgentProfile
     @ObservedObject var settingsManager: SettingsManager
     let colors: MochiColors

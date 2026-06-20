@@ -1,6 +1,7 @@
 package com.openclaw.remote.network
 
 import com.openclaw.remote.data.ChatMessage
+import com.openclaw.remote.data.CodexSessionSummary
 import com.openclaw.remote.data.MessageStatus
 import com.openclaw.remote.data.RecordingArtifact
 import com.openclaw.remote.data.RecordingAsrJob
@@ -39,6 +40,13 @@ import java.util.UUID
  * Implements reliable delivery: sends ack for received messages,
  * tracks outgoing message seq for delivery confirmation.
  */
+private data class PushTokenUpdate(
+    val platform: String,
+    val token: String,
+    val environment: String,
+    val appVersion: String,
+)
+
 class WebSocketManager(
     private val wsUrl: String,
     private val deviceLabel: String,
@@ -88,6 +96,7 @@ class WebSocketManager(
     private val pendingAudioTimeouts = mutableMapOf<String, Job>()
     private val receivedMessageKeys = mutableSetOf<String>()
     private val receivedMessageKeyOrder = mutableListOf<String>()
+    private var pendingPushToken: PushTokenUpdate? = null
 
     fun connect() {
         if (shouldIgnoreConnectRequest(webSocketSession != null, connectAttemptInFlight, reconnectJob != null, intentionalDisconnect)) {
@@ -248,6 +257,23 @@ class WebSocketManager(
         send(frame.toString(), label = "pair_request")
     }
 
+    fun updatePushToken(
+        token: String,
+        platform: String = "android",
+        environment: String = "production",
+        appVersion: String = "1.0",
+    ) {
+        val normalizedToken = token.trim()
+        if (normalizedToken.isEmpty()) return
+        pendingPushToken = PushTokenUpdate(
+            platform = platform,
+            token = normalizedToken,
+            environment = environment,
+            appVersion = appVersion,
+        )
+        sendPendingPushTokenIfReady()
+    }
+
     fun cancelPair() {
         pendingPairBackendId = null
         _pairingState.value = PairingState.UNPAIRED
@@ -360,6 +386,105 @@ class WebSocketManager(
         return true
     }
 
+    fun requestCodexSessions(backendId: String, archived: Boolean = false, limit: Int = 80): Boolean {
+        val targetBackendId = backendId.trim().takeIf { it.isNotEmpty() } ?: return false
+        if (!canSendExplicitBackendRequest(_connectionState.value, targetBackendId)) return false
+        val requestId = "codex_sessions_${UUID.randomUUID()}"
+        send(
+            codexSessionListRequestFrame(
+                requestId = requestId,
+                backendId = targetBackendId,
+                archived = archived,
+                limit = limit,
+            ).toString(),
+            label = "codex_session_list:$requestId",
+        )
+        return true
+    }
+
+    fun createCodexSession(backendId: String, initialPrompt: String? = null): Boolean {
+        val targetBackendId = backendId.trim().takeIf { it.isNotEmpty() } ?: return false
+        if (!canSendExplicitBackendRequest(_connectionState.value, targetBackendId)) return false
+        val requestId = "codex_create_${UUID.randomUUID()}"
+        send(
+            codexSessionCreateRequestFrame(
+                requestId = requestId,
+                backendId = targetBackendId,
+                initialPrompt = initialPrompt,
+            ).toString(),
+            label = "codex_session_create:$requestId",
+        )
+        return true
+    }
+
+    fun archiveCodexSession(backendId: String, sessionId: String): Boolean {
+        val targetBackendId = backendId.trim().takeIf { it.isNotEmpty() } ?: return false
+        val targetSessionId = sessionId.trim().takeIf { it.isNotEmpty() } ?: return false
+        if (!canSendExplicitBackendRequest(_connectionState.value, targetBackendId)) return false
+        val requestId = "codex_archive_${UUID.randomUUID()}"
+        send(
+            codexSessionArchiveRequestFrame(requestId, targetBackendId, targetSessionId).toString(),
+            label = "codex_session_archive:$requestId",
+        )
+        return true
+    }
+
+    fun unarchiveCodexSession(backendId: String, sessionId: String): Boolean {
+        val targetBackendId = backendId.trim().takeIf { it.isNotEmpty() } ?: return false
+        val targetSessionId = sessionId.trim().takeIf { it.isNotEmpty() } ?: return false
+        if (!canSendExplicitBackendRequest(_connectionState.value, targetBackendId)) return false
+        val requestId = "codex_unarchive_${UUID.randomUUID()}"
+        send(
+            codexSessionUnarchiveRequestFrame(requestId, targetBackendId, targetSessionId).toString(),
+            label = "codex_session_unarchive:$requestId",
+        )
+        return true
+    }
+
+    fun sendCodexText(text: String, backendId: String, sessionId: String): Boolean {
+        val targetBackendId = backendId.trim().takeIf { it.isNotEmpty() } ?: return false
+        val targetSessionId = sessionId.trim().takeIf { it.isNotEmpty() } ?: return false
+        if (!canSendExplicitBackendRequest(_connectionState.value, targetBackendId)) return false
+        val messageId = "msg_${UUID.randomUUID()}"
+        offerEvent(
+            WsMessageEvent.NewMessage(
+                message = ChatMessage(
+                    content = text,
+                    timestamp = timestamp(),
+                    senderId = "user",
+                    status = MessageStatus.SENDING,
+                ),
+                backendId = targetBackendId,
+                sessionKey = targetSessionId,
+            )
+        )
+        send(
+            codexMessageFrame(
+                backendId = targetBackendId,
+                messageId = messageId,
+                content = text,
+                sessionId = targetSessionId,
+                timestamp = isoTimestamp(),
+            ).toString(),
+            label = "codex_message:$messageId",
+        )
+        return true
+    }
+
+    fun requestCodexHistory(backendId: String, sessionId: String, rounds: Int = 15): Boolean {
+        val targetBackendId = backendId.trim().takeIf { it.isNotEmpty() } ?: return false
+        val targetSessionId = sessionId.trim().takeIf { it.isNotEmpty() } ?: return false
+        if (!canSendExplicitBackendRequest(_connectionState.value, targetBackendId)) return false
+        val frame = buildJsonObject {
+            put("type", "history_request")
+            put("backend_id", targetBackendId)
+            put("session_key", targetSessionId)
+            put("limit", maxOf(1, rounds) * 2)
+        }
+        send(frame.toString(), label = "codex_history:$targetSessionId")
+        return true
+    }
+
     fun unpair() {
         if (registeredBackendId == null) return
         autoPairEnabled = false
@@ -382,6 +507,19 @@ class WebSocketManager(
             put("app_version", "2.0.0-kmp")
         }
         send(frame.toString(), label = "app_register")
+    }
+
+    private fun sendPendingPushTokenIfReady() {
+        val token = pendingPushToken ?: return
+        if (_connectionState.value != ConnectionState.REGISTERED && _connectionState.value != ConnectionState.PAIRED) return
+        val frame = buildJsonObject {
+            put("type", "push_token_update")
+            put("platform", token.platform)
+            put("token", token.token)
+            put("environment", token.environment)
+            put("app_version", token.appVersion)
+        }
+        send(frame.toString(), label = "push_token_update")
     }
 
     private fun send(text: String, label: String = "frame", onFailure: ((String) -> Unit)? = null) {
@@ -471,6 +609,7 @@ class WebSocketManager(
                             sendPairRequest(autoPairBackendId)
                         }
                         offerEvent(WsMessageEvent.Registered(accountId.orEmpty(), pairedBackendIds))
+                        sendPendingPushTokenIfReady()
                     }
                 }
                 "session_preempted" -> {
@@ -537,6 +676,7 @@ class WebSocketManager(
                                 fallbackTimestamp = timestamp(),
                             ),
                             backendId,
+                            obj["session_key"]?.jsonPrimitive?.contentOrNull,
                         )
                     )
                 }
@@ -550,7 +690,27 @@ class WebSocketManager(
                     }.orEmpty()
                     val hasMore = obj["has_more"]?.jsonPrimitive?.content?.toBoolean() ?: false
                     val error = obj["error"]?.jsonPrimitive?.contentOrNull
-                    offerEvent(WsMessageEvent.HistoryResponse(messages, hasMore, error, backendId))
+                    offerEvent(
+                        WsMessageEvent.HistoryResponse(
+                            messages = messages,
+                            hasMore = hasMore,
+                            error = error,
+                            backendId = backendId,
+                            sessionKey = obj["session_key"]?.jsonPrimitive?.contentOrNull,
+                        )
+                    )
+                }
+                "agent_session_list_response" -> {
+                    offerEvent(parseCodexSessionListResponse(obj))
+                }
+                "agent_session_create_response" -> {
+                    offerEvent(parseCodexSessionCreateResponse(obj))
+                }
+                "agent_session_archive_response" -> {
+                    offerEvent(parseCodexSessionArchiveResponse(obj))
+                }
+                "agent_session_unarchive_response" -> {
+                    offerEvent(parseCodexSessionUnarchiveResponse(obj))
                 }
                 "asr_result" -> {
                     val clientMessageId = obj["client_message_id"]?.jsonPrimitive?.content
@@ -770,10 +930,171 @@ class WebSocketManager(
 internal fun parseWsMessageEventForTest(text: String): WsMessageEvent? {
     val obj = Json.parseToJsonElement(text) as? JsonObject ?: return null
     return when (obj["type"]?.jsonPrimitive?.contentOrNull) {
+        "message" -> {
+            val content = obj["content"]?.jsonPrimitive?.contentOrNull ?: return null
+            WsMessageEvent.NewMessage(
+                message = chatMessageFromPayload(
+                    content = content,
+                    role = "assistant",
+                    item = obj,
+                ),
+                backendId = obj["backend_id"]?.jsonPrimitive?.contentOrNull ?: obj["from"]?.jsonPrimitive?.contentOrNull,
+                sessionKey = obj["session_key"]?.jsonPrimitive?.contentOrNull,
+            )
+        }
+        "history_response" -> {
+            val messages = obj["messages"]?.jsonArray?.mapNotNull { element ->
+                val item = element as? JsonObject ?: return@mapNotNull null
+                val content = item["content"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+                val role = item["role"]?.jsonPrimitive?.contentOrNull ?: "assistant"
+                chatMessageFromPayload(content, role, item)
+            }.orEmpty()
+            WsMessageEvent.HistoryResponse(
+                messages = messages,
+                hasMore = obj["has_more"]?.jsonPrimitive?.contentOrNull?.toBoolean() ?: false,
+                error = obj["error"]?.jsonPrimitive?.contentOrNull,
+                backendId = obj["backend_id"]?.jsonPrimitive?.contentOrNull,
+                sessionKey = obj["session_key"]?.jsonPrimitive?.contentOrNull,
+            )
+        }
+        "agent_session_list_response" -> parseCodexSessionListResponse(obj)
+        "agent_session_create_response" -> parseCodexSessionCreateResponse(obj)
+        "agent_session_archive_response" -> parseCodexSessionArchiveResponse(obj)
+        "agent_session_unarchive_response" -> parseCodexSessionUnarchiveResponse(obj)
         "recording_event" -> parseRecordingEventFrame(obj)
         "long_recording_asr_status" -> parseLongRecordingAsrStatusFrame(obj)
         else -> null
     }
+}
+
+internal fun codexMessageFrame(
+    backendId: String,
+    messageId: String,
+    content: String,
+    sessionId: String,
+    timestamp: String,
+): JsonObject = buildJsonObject {
+    put("type", "message")
+    put("backend_id", backendId)
+    put("message_id", messageId)
+    put("content", content)
+    put("content_type", "text")
+    put("timestamp", timestamp)
+    put("session_key", sessionId)
+}
+
+internal fun codexSessionListRequestFrame(
+    requestId: String,
+    backendId: String,
+    archived: Boolean,
+    limit: Int,
+): JsonObject = buildJsonObject {
+    put("type", "agent_session_list_request")
+    put("request_id", requestId)
+    put("backend_id", backendId)
+    put("archived", archived)
+    put("limit", maxOf(1, limit))
+}
+
+internal fun codexSessionCreateRequestFrame(
+    requestId: String,
+    backendId: String,
+    initialPrompt: String?,
+): JsonObject = buildJsonObject {
+    put("type", "agent_session_create_request")
+    put("request_id", requestId)
+    put("backend_id", backendId)
+    initialPrompt?.trim()?.takeIf { it.isNotEmpty() }?.let { put("initial_prompt", it) }
+}
+
+internal fun codexSessionArchiveRequestFrame(
+    requestId: String,
+    backendId: String,
+    sessionId: String,
+): JsonObject = buildJsonObject {
+    put("type", "agent_session_archive_request")
+    put("request_id", requestId)
+    put("backend_id", backendId)
+    put("session_id", sessionId)
+}
+
+internal fun codexSessionUnarchiveRequestFrame(
+    requestId: String,
+    backendId: String,
+    sessionId: String,
+): JsonObject = buildJsonObject {
+    put("type", "agent_session_unarchive_request")
+    put("request_id", requestId)
+    put("backend_id", backendId)
+    put("session_id", sessionId)
+}
+
+private fun parseCodexSessionListResponse(obj: JsonObject): WsMessageEvent.CodexSessionListResponse =
+    WsMessageEvent.CodexSessionListResponse(
+        sessions = obj["sessions"]?.jsonArray?.mapNotNull { (it as? JsonObject)?.toCodexSessionSummary() }.orEmpty(),
+        archived = obj["archived"]?.jsonPrimitive?.contentOrNull?.toBoolean() ?: false,
+        error = obj["error"]?.jsonPrimitive?.contentOrNull,
+        backendId = obj["backend_id"]?.jsonPrimitive?.contentOrNull,
+        requestId = obj["request_id"]?.jsonPrimitive?.contentOrNull,
+    )
+
+private fun parseCodexSessionCreateResponse(obj: JsonObject): WsMessageEvent.CodexSessionCreateResponse {
+    val session = (obj["session"] as? JsonObject)?.toCodexSessionSummary()
+    val sessionId = obj["session_id"]?.jsonPrimitive?.contentOrNull ?: session?.sessionId
+    return WsMessageEvent.CodexSessionCreateResponse(
+        session = session ?: sessionId?.let {
+            CodexSessionSummary(
+                sessionId = it,
+                title = obj.stringFieldValue("title").ifBlank { "新会话" },
+                projectPath = obj.stringFieldValue("project_path"),
+                projectName = obj.optionalStringFieldValue("project_name"),
+                createdAt = obj.stringFieldValue("created_at"),
+                updatedAt = obj.stringFieldValue("updated_at"),
+                status = obj.stringFieldValue("status").ifBlank { "idle" },
+                model = obj.optionalStringFieldValue("model"),
+            )
+        },
+        sessionId = sessionId,
+        accepted = obj["accepted"]?.jsonPrimitive?.contentOrNull?.toBoolean() ?: obj["error"] == null,
+        error = obj["error"]?.jsonPrimitive?.contentOrNull,
+        backendId = obj["backend_id"]?.jsonPrimitive?.contentOrNull,
+        requestId = obj["request_id"]?.jsonPrimitive?.contentOrNull,
+    )
+}
+
+private fun parseCodexSessionArchiveResponse(obj: JsonObject): WsMessageEvent.CodexSessionArchiveResponse =
+    WsMessageEvent.CodexSessionArchiveResponse(
+        sessionId = obj.stringFieldValue("session_id"),
+        archived = obj["archived"]?.jsonPrimitive?.contentOrNull?.toBoolean() ?: obj["error"] == null,
+        error = obj["error"]?.jsonPrimitive?.contentOrNull,
+        backendId = obj["backend_id"]?.jsonPrimitive?.contentOrNull,
+        requestId = obj["request_id"]?.jsonPrimitive?.contentOrNull,
+    )
+
+private fun parseCodexSessionUnarchiveResponse(obj: JsonObject): WsMessageEvent.CodexSessionUnarchiveResponse =
+    WsMessageEvent.CodexSessionUnarchiveResponse(
+        sessionId = obj.stringFieldValue("session_id"),
+        unarchived = obj["unarchived"]?.jsonPrimitive?.contentOrNull?.toBoolean() ?: obj["error"] == null,
+        error = obj["error"]?.jsonPrimitive?.contentOrNull,
+        backendId = obj["backend_id"]?.jsonPrimitive?.contentOrNull,
+        requestId = obj["request_id"]?.jsonPrimitive?.contentOrNull,
+    )
+
+private fun JsonObject.toCodexSessionSummary(): CodexSessionSummary? {
+    val sessionId = stringFieldValue("session_id").ifBlank { return null }
+    return CodexSessionSummary(
+        sessionId = sessionId,
+        title = stringFieldValue("title"),
+        preview = stringFieldValue("preview"),
+        lastAssistantPreview = stringFieldValue("last_assistant_preview"),
+        projectPath = stringFieldValue("project_path"),
+        projectName = optionalStringFieldValue("project_name"),
+        createdAt = stringFieldValue("created_at"),
+        updatedAt = stringFieldValue("updated_at"),
+        status = stringFieldValue("status"),
+        archived = this["archived"]?.jsonPrimitive?.contentOrNull?.toBoolean() ?: false,
+        model = optionalStringFieldValue("model"),
+    )
 }
 
 private fun parseRecordingEventFrame(obj: JsonObject): WsMessageEvent.RecordingEventReceived? {
@@ -890,6 +1211,13 @@ internal fun canSendHistoryRequest(
     return (connectionState == ConnectionState.REGISTERED || connectionState == ConnectionState.PAIRED) &&
         (hasExplicitTarget || hasImplicitPairedTarget)
 }
+
+internal fun canSendExplicitBackendRequest(
+    connectionState: ConnectionState,
+    backendId: String?,
+): Boolean =
+    (connectionState == ConnectionState.REGISTERED || connectionState == ConnectionState.PAIRED) &&
+        !backendId.isNullOrBlank()
 
 internal fun shouldSkipPairRequest(
     connectionState: ConnectionState,

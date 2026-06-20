@@ -820,13 +820,21 @@ private struct FullscreenMarkdownTableView: View {
 
     var body: some View {
         NavigationView {
-            ScrollView([.horizontal, .vertical], showsIndicators: true) {
-                MarkdownTableGrid(
-                    table: table,
-                    colors: colors,
-                    textColor: colors.textPrimary
-                )
-                .padding(16)
+            GeometryReader { geometry in
+                ScrollView([.horizontal, .vertical], showsIndicators: true) {
+                    MarkdownTableGrid(
+                        table: table,
+                        colors: colors,
+                        textColor: colors.textPrimary
+                    )
+                    .fixedSize(horizontal: true, vertical: true)
+                    .padding(16)
+                    .frame(
+                        minWidth: geometry.size.width,
+                        minHeight: geometry.size.height,
+                        alignment: .topLeading
+                    )
+                }
             }
             .background(colors.background)
             .navigationTitle("表格")

@@ -1,9 +1,11 @@
 package com.openclaw.remote.viewmodel
 
 import com.openclaw.remote.data.AgentAvailabilityStatus
+import com.openclaw.remote.data.AgentPlatform
 import com.openclaw.remote.data.AgentProfile
 import com.openclaw.remote.data.AgentProfilesState
 import com.openclaw.remote.data.ChatMessage
+import com.openclaw.remote.data.CodexSessionSummary
 import com.openclaw.remote.data.GatewayConfig
 import com.openclaw.remote.data.MessageStatus
 import com.openclaw.remote.data.RecordingWorkflow
@@ -33,6 +35,23 @@ class ChatViewModel(
 ) {
     private val _messages = MutableStateFlow<List<ChatMessage>>(emptyList())
     val messages: StateFlow<List<ChatMessage>> = _messages.asStateFlow()
+
+    private val _codexSessions = MutableStateFlow<Map<String, List<CodexSessionSummary>>>(emptyMap())
+    val codexSessions: StateFlow<Map<String, List<CodexSessionSummary>>> = _codexSessions.asStateFlow()
+
+    private val _codexArchivedSessions = MutableStateFlow<Map<String, List<CodexSessionSummary>>>(emptyMap())
+    val codexArchivedSessions: StateFlow<Map<String, List<CodexSessionSummary>>> = _codexArchivedSessions.asStateFlow()
+
+    private val _codexMessagesByProfileSession =
+        MutableStateFlow<Map<String, Map<String, List<ChatMessage>>>>(emptyMap())
+    val codexMessagesByProfileSession: StateFlow<Map<String, Map<String, List<ChatMessage>>>> =
+        _codexMessagesByProfileSession.asStateFlow()
+
+    private val _codexAgentPreviews = MutableStateFlow<Map<String, String>>(emptyMap())
+    val codexAgentPreviews: StateFlow<Map<String, String>> = _codexAgentPreviews.asStateFlow()
+
+    private val _codexCreatedSessionIds = MutableStateFlow<Map<String, String>>(emptyMap())
+    val codexCreatedSessionIds: StateFlow<Map<String, String>> = _codexCreatedSessionIds.asStateFlow()
 
     private val _profiles = MutableStateFlow<List<AgentProfile>>(emptyList())
     val profiles: StateFlow<List<AgentProfile>> = _profiles.asStateFlow()
@@ -85,6 +104,7 @@ class ChatViewModel(
     private val startupHistoryRequestedProfileIds = mutableSetOf<String>()
     private val startupHistoryPendingBackendIds = linkedSetOf<String>()
     private val connectionMutex = Mutex()
+    private var pendingPushToken: ChatPushTokenBinding? = null
 
     init {
         viewModelScope.launch {
@@ -182,6 +202,14 @@ class ChatViewModel(
         )
         val manager = wsManager!!
         val managerProfileId = connectionKey.profileId
+        pendingPushToken?.let { token ->
+            manager.updatePushToken(
+                token = token.token,
+                platform = token.platform,
+                environment = token.environment,
+                appVersion = token.appVersion,
+            )
+        }
 
         activeManagerJobs = listOf(
             viewModelScope.launch {
@@ -264,6 +292,10 @@ class ChatViewModel(
                                 backendId = event.backendId,
                                 activeProfileId = managerProfileId,
                             ) ?: return@collect
+                            if (!event.sessionKey.isNullOrBlank() && isCodexProfile(profileId)) {
+                                appendCodexMessageToSession(profileId, event.sessionKey, displayMessage)
+                                return@collect
+                            }
                             updateProfileState(profileId) { state ->
                                 state.withReachableBackend(event.backendId)
                             }
@@ -275,6 +307,14 @@ class ChatViewModel(
                                 backendId = event.backendId,
                                 activeProfileId = managerProfileId,
                             ) ?: return@collect
+                            if (!event.sessionKey.isNullOrBlank() && isCodexProfile(profileId)) {
+                                applyCodexHistoryResponseToSession(
+                                    profileId = profileId,
+                                    sessionId = event.sessionKey,
+                                    messages = event.messages,
+                                )
+                                return@collect
+                            }
                             applyHistoryResponseToProfile(
                                 profileId = profileId,
                                 backendId = event.backendId,
@@ -319,6 +359,49 @@ class ChatViewModel(
                         }
                         is WsMessageEvent.LongRecordingAsrStatusReceived -> {
                             _longRecordingAsrStatuses.emit(event)
+                        }
+                        is WsMessageEvent.CodexSessionListResponse -> {
+                            val profileId = resolveProfileIdForBackendId(
+                                profiles = _profiles.value,
+                                backendId = event.backendId,
+                                activeProfileId = managerProfileId,
+                            ) ?: return@collect
+                            applyCodexSessionList(profileId, event.sessions, event.archived)
+                        }
+                        is WsMessageEvent.CodexSessionCreateResponse -> {
+                            val profileId = resolveProfileIdForBackendId(
+                                profiles = _profiles.value,
+                                backendId = event.backendId,
+                                activeProfileId = managerProfileId,
+                            ) ?: return@collect
+                            if (event.accepted && !event.sessionId.isNullOrBlank()) {
+                                val session = event.session ?: CodexSessionSummary(
+                                    sessionId = event.sessionId,
+                                    title = "新会话",
+                                )
+                                upsertCodexSession(profileId, session.copy(archived = false), archived = false)
+                                _codexCreatedSessionIds.value = _codexCreatedSessionIds.value + (profileId to session.sessionId)
+                            }
+                        }
+                        is WsMessageEvent.CodexSessionArchiveResponse -> {
+                            val profileId = resolveProfileIdForBackendId(
+                                profiles = _profiles.value,
+                                backendId = event.backendId,
+                                activeProfileId = managerProfileId,
+                            ) ?: return@collect
+                            if (event.archived) {
+                                moveCodexSession(profileId, event.sessionId, archived = true)
+                            }
+                        }
+                        is WsMessageEvent.CodexSessionUnarchiveResponse -> {
+                            val profileId = resolveProfileIdForBackendId(
+                                profiles = _profiles.value,
+                                backendId = event.backendId,
+                                activeProfileId = managerProfileId,
+                            ) ?: return@collect
+                            if (event.unarchived) {
+                                moveCodexSession(profileId, event.sessionId, archived = false)
+                            }
                         }
                         is WsMessageEvent.Unpaired -> {
                             val profileId = resolveProfileIdForBackendId(
@@ -417,6 +500,29 @@ class ChatViewModel(
         )
 
         manager.connect()
+    }
+
+    fun updatePushToken(
+        token: String,
+        platform: String = "android",
+        environment: String = "production",
+        appVersion: String = "1.0",
+    ) {
+        val normalizedToken = token.trim()
+        if (normalizedToken.isEmpty()) return
+        val binding = ChatPushTokenBinding(
+            token = normalizedToken,
+            platform = platform,
+            environment = environment,
+            appVersion = appVersion,
+        )
+        pendingPushToken = binding
+        wsManager?.updatePushToken(
+            token = binding.token,
+            platform = binding.platform,
+            environment = binding.environment,
+            appVersion = binding.appVersion,
+        )
     }
 
     fun connect() {
@@ -554,6 +660,46 @@ class ChatViewModel(
         }
     }
 
+    fun requestCodexSessions(profileId: String, archived: Boolean = false) {
+        val backendId = backendIdForProfile(profileId) ?: return
+        wsManager?.requestCodexSessions(backendId = backendId, archived = archived)
+    }
+
+    fun createCodexSession(profileId: String) {
+        val backendId = backendIdForProfile(profileId) ?: return
+        wsManager?.createCodexSession(backendId = backendId)
+    }
+
+    fun archiveCodexSession(profileId: String, sessionId: String) {
+        val backendId = backendIdForProfile(profileId) ?: return
+        wsManager?.archiveCodexSession(backendId = backendId, sessionId = sessionId)
+    }
+
+    fun unarchiveCodexSession(profileId: String, sessionId: String) {
+        val backendId = backendIdForProfile(profileId) ?: return
+        wsManager?.unarchiveCodexSession(backendId = backendId, sessionId = sessionId)
+    }
+
+    fun requestCodexHistory(profileId: String, sessionId: String) {
+        val backendId = backendIdForProfile(profileId) ?: return
+        wsManager?.requestCodexHistory(backendId = backendId, sessionId = sessionId)
+    }
+
+    fun sendCodexText(profileId: String, sessionId: String, text: String) {
+        val backendId = backendIdForProfile(profileId) ?: return
+        if (wsManager?.sendCodexText(text = text, backendId = backendId, sessionId = sessionId) != true) {
+            appendCodexMessageToSession(
+                profileId = profileId,
+                sessionId = sessionId,
+                message = ChatMessage(
+                    content = "请先配对当前 Codex",
+                    timestamp = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date()),
+                    senderId = "assistant",
+                ),
+            )
+        }
+    }
+
     fun unpair() {
         wsManager?.unpair()
     }
@@ -608,6 +754,101 @@ class ChatViewModel(
             loadRuntimeState(profileId)
         }
     }
+
+    private fun appendCodexMessageToSession(profileId: String, sessionId: String, message: ChatMessage) {
+        val profileMessages = _codexMessagesByProfileSession.value[profileId].orEmpty()
+        val sessionMessages = profileMessages[sessionId].orEmpty() + message
+        _codexMessagesByProfileSession.value = _codexMessagesByProfileSession.value +
+            (profileId to (profileMessages + (sessionId to sessionMessages)))
+        if (message.senderId != "user") {
+            updateCodexSessionPreview(profileId, sessionId, message)
+            _codexAgentPreviews.value = _codexAgentPreviews.value +
+                (profileId to message.content.compactPreview())
+        }
+    }
+
+    private fun applyCodexHistoryResponseToSession(
+        profileId: String,
+        sessionId: String,
+        messages: List<ChatMessage>,
+    ) {
+        val profileMessages = _codexMessagesByProfileSession.value[profileId].orEmpty()
+        val existing = profileMessages[sessionId].orEmpty()
+        val mergeResult = mergeHistoryMessages(
+            existingMessages = existing,
+            loadedHistoryKeys = existing.map(::stableHistoryKey).toSet(),
+            incomingMessages = messages,
+        )
+        _codexMessagesByProfileSession.value = _codexMessagesByProfileSession.value +
+            (profileId to (profileMessages + (sessionId to mergeResult.messages)))
+        messages.lastOrNull { it.senderId != "user" }?.let { message ->
+            updateCodexSessionPreview(profileId, sessionId, message)
+            _codexAgentPreviews.value = _codexAgentPreviews.value + (profileId to message.content.compactPreview())
+        }
+    }
+
+    private fun applyCodexSessionList(
+        profileId: String,
+        sessions: List<CodexSessionSummary>,
+        archived: Boolean,
+    ) {
+        val sorted = sessions.sortedByDescending { it.updatedAt.ifBlank { it.createdAt } }
+        if (archived) {
+            _codexArchivedSessions.value = _codexArchivedSessions.value + (profileId to sorted)
+        } else {
+            _codexSessions.value = _codexSessions.value + (profileId to sorted)
+            sorted.firstOrNull { it.lastAssistantPreview.isNotBlank() }?.let { session ->
+                _codexAgentPreviews.value = _codexAgentPreviews.value + (profileId to session.displayPreview)
+            }
+        }
+    }
+
+    private fun upsertCodexSession(profileId: String, session: CodexSessionSummary, archived: Boolean) {
+        val source = if (archived) _codexArchivedSessions else _codexSessions
+        val sessions = source.value[profileId].orEmpty()
+            .filterNot { it.sessionId == session.sessionId } + session
+        source.value = source.value + (
+            profileId to sessions.sortedByDescending { it.updatedAt.ifBlank { it.createdAt } }
+        )
+        if (!archived && session.lastAssistantPreview.isNotBlank()) {
+            _codexAgentPreviews.value = _codexAgentPreviews.value + (profileId to session.displayPreview)
+        }
+    }
+
+    private fun moveCodexSession(profileId: String, sessionId: String, archived: Boolean) {
+        val active = _codexSessions.value[profileId].orEmpty()
+        val archivedSessions = _codexArchivedSessions.value[profileId].orEmpty()
+        if (archived) {
+            val session = active.firstOrNull { it.sessionId == sessionId }?.copy(archived = true)
+            _codexSessions.value = _codexSessions.value + (profileId to active.filterNot { it.sessionId == sessionId })
+            if (session != null) upsertCodexSession(profileId, session, archived = true)
+        } else {
+            val session = archivedSessions.firstOrNull { it.sessionId == sessionId }?.copy(archived = false)
+            _codexArchivedSessions.value = _codexArchivedSessions.value +
+                (profileId to archivedSessions.filterNot { it.sessionId == sessionId })
+            if (session != null) upsertCodexSession(profileId, session, archived = false)
+        }
+    }
+
+    private fun updateCodexSessionPreview(profileId: String, sessionId: String, message: ChatMessage) {
+        val sessions = _codexSessions.value[profileId].orEmpty()
+        val index = sessions.indexOfFirst { it.sessionId == sessionId }
+        if (index < 0) return
+        val updated = sessions.toMutableList()
+        updated[index] = updated[index].copy(
+            lastAssistantPreview = message.content.compactPreview(),
+            updatedAt = message.rawTimestamp ?: updated[index].updatedAt,
+        )
+        _codexSessions.value = _codexSessions.value +
+            (profileId to updated.sortedByDescending { it.updatedAt.ifBlank { it.createdAt } })
+    }
+
+    private fun backendIdForProfile(profileId: String): String? =
+        profileStates[profileId]?.registeredBackendId?.takeIf { it.isNotBlank() }
+            ?: _profiles.value.firstOrNull { it.id == profileId }?.backendId?.trim()?.takeIf { it.isNotEmpty() }
+
+    private fun isCodexProfile(profileId: String): Boolean =
+        _profiles.value.firstOrNull { it.id == profileId }?.platform == AgentPlatform.CODEX
 
     private fun clearProfilePairing(profileId: String) {
         updateProfileState(profileId) { state ->
@@ -849,6 +1090,13 @@ data class PaymentRequiredRequest(
 internal fun oldestHistoryTimestamp(messages: List<ChatMessage>): String? =
     messages.firstNotNullOfOrNull { it.rawTimestamp?.takeIf { timestamp -> timestamp.isNotBlank() } }
 
+private fun String.compactPreview(): String =
+    trim()
+        .split(Regex("\\s+"))
+        .filter { it.isNotBlank() }
+        .joinToString(" ")
+        .take(180)
+
 internal data class ChatProfileRuntimeState(
     val registeredBackendId: String? = null,
     val pairedBackendLabel: String? = null,
@@ -972,6 +1220,13 @@ internal enum class ChatPayloadRouteBlockReason {
 internal data class ChatPayloadRouteCheck(
     val canSend: Boolean,
     val reason: ChatPayloadRouteBlockReason? = null,
+)
+
+private data class ChatPushTokenBinding(
+    val token: String,
+    val platform: String,
+    val environment: String,
+    val appVersion: String,
 )
 
 internal fun checkSelectedProfilePayloadRoute(

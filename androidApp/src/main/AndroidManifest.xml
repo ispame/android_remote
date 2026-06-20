@@ -7,6 +7,7 @@
     <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <uses-feature android:name="android.hardware.camera" android:required="false" />
 
@@ -16,6 +17,10 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:theme="@style/Theme.BosonRelay"
         android:networkSecurityConfig="@xml/network_security_config">
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_channel_id"
+            android:value="boson_relay_messages" />
+
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -24,6 +29,10 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <intent-filter>
+                <action android:name="OPEN_BOSON_RELAY_CONVERSATION" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
             <!-- Deep link: openclaw://connect?... -->
             <intent-filter android:autoVerify="true">
                 <action android:name="android.intent.action.VIEW" />
@@ -31,7 +40,20 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="openclaw" android:host="connect" />
             </intent-filter>
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="openclaw" android:host="chat" />
+            </intent-filter>
         </activity>
+        <service
+            android:name=".push.BosonFirebaseMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
     </application>
 
 </manifest>

@@ -650,7 +650,7 @@ struct MessageContentAnalysis {
 }
 
 private let collapsedLineLimit = 10
-private let markdownTableFoldRowLimit = 10
+private let markdownTableFoldRowLimit = 20
 private let collapsedCharacterLimit = 650
 private let denseContinuousCharacterLimit = 900
 
@@ -801,6 +801,10 @@ struct MarkdownTable: Identifiable, Equatable {
         max(0, rows.count - markdownTableFoldRowLimit)
     }
 
+    var shouldFitInlineColumns: Bool {
+        headers.count <= 4
+    }
+
     func visibleRows(isExpanded: Bool) -> [[String]] {
         guard shouldFoldRows, !isExpanded else { return rows }
         return Array(rows.prefix(markdownTableFoldRowLimit))
@@ -854,8 +858,18 @@ struct MarkdownTableView: View {
             .padding(.vertical, 8)
             .background(colors.surface.opacity(0.72))
 
-            ScrollView(.horizontal, showsIndicators: true) {
-                MarkdownTableGrid(table: visibleTable, colors: colors, textColor: textColor)
+            if table.shouldFitInlineColumns {
+                MarkdownTableGrid(
+                    table: visibleTable,
+                    colors: colors,
+                    textColor: textColor,
+                    fitsWidth: true
+                )
+            } else {
+                ScrollView(.horizontal, showsIndicators: true) {
+                    MarkdownTableGrid(table: visibleTable, colors: colors, textColor: textColor)
+                        .fixedSize(horizontal: true, vertical: true)
+                }
             }
 
             if table.shouldFoldRows {
@@ -907,6 +921,7 @@ struct MarkdownTableGrid: View {
     let table: MarkdownTable
     let colors: MochiColors
     let textColor: Color
+    var fitsWidth = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -915,6 +930,7 @@ struct MarkdownTableGrid: View {
                 tableRow(row, isHeader: false)
             }
         }
+        .frame(maxWidth: fitsWidth ? .infinity : nil, alignment: .leading)
     }
 
     private func tableRow(_ cells: [String], isHeader: Bool) -> some View {
@@ -927,11 +943,16 @@ struct MarkdownTableGrid: View {
                 )
                     .padding(.horizontal, 10)
                     .padding(.vertical, 8)
-                    .frame(minWidth: 86, maxWidth: 180, alignment: .leading)
+                    .frame(
+                        minWidth: fitsWidth ? 0 : 86,
+                        maxWidth: fitsWidth ? .infinity : 180,
+                        alignment: .leading
+                    )
                     .background(isHeader ? colors.surface.opacity(0.45) : Color.clear)
                     .border(colors.divider.opacity(0.65), width: 0.5)
             }
         }
+        .frame(maxWidth: fitsWidth ? .infinity : nil, alignment: .leading)
     }
 }
 

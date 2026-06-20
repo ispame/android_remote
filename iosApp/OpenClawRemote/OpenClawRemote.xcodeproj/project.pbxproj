@@ -36,6 +36,8 @@
 		A8C9EB0C43E66C5D634C4D39 /* OpenClawRemoteApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A4955135A9774CBE701184A /* OpenClawRemoteApp.swift */; };
 		AF3E9FC091BD594AE23769B4 /* EarphoneLocalStores.swift in Sources */ = {isa = PBXBuildFile; fileRef = 57E4B5479FB4EB89A59AD424 /* EarphoneLocalStores.swift */; };
 		C1B553EB17B6EEFF9EC66F56 /* MochiTypography.swift in Sources */ = {isa = PBXBuildFile; fileRef = ACC1BA8D2A85A4A40055F08E /* MochiTypography.swift */; };
+		C0D3A001C0D3A001C0D3A001 /* CodexSessionModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0D3F001C0D3F001C0D3F001 /* CodexSessionModels.swift */; };
+		C0D3A002C0D3A002C0D3A002 /* CodexSessionViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0D3F002C0D3F002C0D3F002 /* CodexSessionViews.swift */; };
 		C5BACC2298682E9D9CBE0671 /* AgentsTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6FF090AB17E92E2BE7DA7FA /* AgentsTabView.swift */; };
 		D6FEA86A12707E3151B05274 /* EarphoneSharedViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90479CF918A09AE199E83FAE /* EarphoneSharedViews.swift */; };
 		E28515B792A354E3C6609424 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7A4D618EC6F318502FD22F9 /* Models.swift */; };
@@ -80,6 +82,8 @@
 		B27E22F8A4595C431A3223ED /* Pods_OpenClawRemote.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Pods_OpenClawRemote.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		BA99CF9EC0C0759B08A5E4E0 /* AgentTaskModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentTaskModels.swift; sourceTree = "<group>"; };
 		BF27902A11DB4EFB0E211233 /* WebSocketManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebSocketManager.swift; sourceTree = "<group>"; };
+		C0D3F001C0D3F001C0D3F001 /* CodexSessionModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexSessionModels.swift; sourceTree = "<group>"; };
+		C0D3F002C0D3F002C0D3F002 /* CodexSessionViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexSessionViews.swift; sourceTree = "<group>"; };
 		CC3E02E2C53F30B646483BA2 /* Pods-OpenClawRemote.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-OpenClawRemote.release.xcconfig"; path = "Target Support Files/Pods-OpenClawRemote/Pods-OpenClawRemote.release.xcconfig"; sourceTree = "<group>"; };
 		CFF62CA2DACEAB18522B07FE /* A9UltraBLEManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = A9UltraBLEManager.swift; sourceTree = "<group>"; };
 		D0B613F270534D9FC37C175B /* Pods-OpenClawRemote.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-OpenClawRemote.debug.xcconfig"; path = "Target Support Files/Pods-OpenClawRemote/Pods-OpenClawRemote.debug.xcconfig"; sourceTree = "<group>"; };
@@ -119,6 +123,7 @@
 			isa = PBXGroup;
 			children = (
 				BA99CF9EC0C0759B08A5E4E0 /* AgentTaskModels.swift */,
+				C0D3F001C0D3F001C0D3F001 /* CodexSessionModels.swift */,
 				63155F121643AE1EC381DFB9 /* EarphoneLocalModels.swift */,
 			);
 			path = Models;
@@ -128,6 +133,7 @@
 			isa = PBXGroup;
 			children = (
 				A6FF090AB17E92E2BE7DA7FA /* AgentsTabView.swift */,
+				C0D3F002C0D3F002C0D3F002 /* CodexSessionViews.swift */,
 				90479CF918A09AE199E83FAE /* EarphoneSharedViews.swift */,
 				5FD0B61744FDE21EAFBBD242 /* HeadsetTabView.swift */,
 				946F3E489BE259CFEA074CD7 /* RootTabView.swift */,
@@ -359,6 +365,8 @@
 				CC3D4E5F6A7B8C9D0E1F2A3B /* OTAUpgradeView.swift in Sources */,
 				EE5F6A7B8C9D0E1F2A3B4C5D /* FindHeadsetView.swift in Sources */,
 				1B5B33DFF38C672BE1947434 /* InputAreaView.swift in Sources */,
+				C0D3A001C0D3A001C0D3A001 /* CodexSessionModels.swift in Sources */,
+				C0D3A002C0D3A002C0D3A002 /* CodexSessionViews.swift in Sources */,
 				97BCF21F9FEFBE50BB814EDC /* MainScreenView.swift in Sources */,
 				895CCA6DF685313BBF44A9A8 /* MessageBubbleView.swift in Sources */,
 				A4A32D4C9EE8B2006D2CD314 /* MessageSpeechController.swift in Sources */,
@@ -385,9 +393,10 @@
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = CC3E02E2C53F30B646483BA2 /* Pods-OpenClawRemote.release.xcconfig */;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_IDENTITY = "iPhone Developer";
-				DEVELOPMENT_TEAM = A3V5JPZR2J;
+					ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+					CODE_SIGN_ENTITLEMENTS = OpenClawRemote.entitlements;
+					CODE_SIGN_IDENTITY = "iPhone Developer";
+					DEVELOPMENT_TEAM = A3V5JPZR2J;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -533,9 +542,10 @@
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = D0B613F270534D9FC37C175B /* Pods-OpenClawRemote.debug.xcconfig */;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_IDENTITY = "iPhone Developer";
-				DEVELOPMENT_TEAM = A3V5JPZR2J;
+					ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+					CODE_SIGN_ENTITLEMENTS = OpenClawRemote.entitlements;
+					CODE_SIGN_IDENTITY = "iPhone Developer";
+					DEVELOPMENT_TEAM = A3V5JPZR2J;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",

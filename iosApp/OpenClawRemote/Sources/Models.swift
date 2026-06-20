@@ -301,6 +301,7 @@ struct HistoryMessagePayload {
 enum AgentPlatform: String, Codable, CaseIterable, Identifiable {
     case openclaw
     case hermes
+    case codex
     case custom
 
     var id: String { rawValue }
@@ -309,6 +310,7 @@ enum AgentPlatform: String, Codable, CaseIterable, Identifiable {
         switch self {
         case .openclaw: return "OpenClaw"
         case .hermes: return "Hermes"
+        case .codex: return "Codex"
         case .custom: return "Custom"
         }
     }
@@ -317,18 +319,23 @@ enum AgentPlatform: String, Codable, CaseIterable, Identifiable {
         switch self {
         case .openclaw: return "OpenClaw Agent"
         case .hermes: return "Hermes BosonRelay"
+        case .codex: return "Codex"
         case .custom: return "Agent"
         }
     }
 
     var supportsAudio: Bool {
-        true
+        switch self {
+        case .codex: return false
+        case .openclaw, .hermes, .custom: return true
+        }
     }
 
     var iconName: String {
         switch self {
         case .openclaw: return "pawprint.fill"
         case .hermes: return "sparkles"
+        case .codex: return "circle.hexagongrid.fill"
         case .custom: return "antenna.radiowaves.left.and.right"
         }
     }

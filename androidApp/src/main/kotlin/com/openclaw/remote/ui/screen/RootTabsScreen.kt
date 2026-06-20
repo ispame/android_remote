@@ -50,6 +50,8 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Divider
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ElevatedButton
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
@@ -92,6 +94,7 @@ import com.openclaw.remote.auth.OpenAICompatibleChatClient
 import com.openclaw.remote.auth.resolvedCredentialId
 import com.openclaw.remote.audio.AudioRecorder
 import com.openclaw.remote.data.AgentAvailabilityStatus
+import com.openclaw.remote.data.AgentPlatform
 import com.openclaw.remote.data.AgentProfile
 import com.openclaw.remote.data.AgentProfilesState
 import com.openclaw.remote.data.AiAgentOverride
@@ -102,6 +105,9 @@ import com.openclaw.remote.data.AiServiceChoice
 import com.openclaw.remote.data.AiServiceConfig
 import com.openclaw.remote.data.AiServiceDefaults
 import com.openclaw.remote.data.AiServiceSettings
+import com.openclaw.remote.data.ChatMessage
+import com.openclaw.remote.data.CodexSessionGroupingMode
+import com.openclaw.remote.data.CodexSessionSummary
 import com.openclaw.remote.data.GatewayConfig
 import com.openclaw.remote.data.Recording
 import com.openclaw.remote.data.RecordingAsrJob
@@ -125,8 +131,10 @@ import com.openclaw.remote.data.sortedForAgentList
 import com.openclaw.remote.data.toAiServiceChoice
 import com.openclaw.remote.data.toAiServiceConfig
 import com.openclaw.remote.data.ttsConfigForPlayback
+import com.openclaw.remote.data.groupCodexSessions
 import com.openclaw.remote.headset.A9UltraStandbyMode
 import com.openclaw.remote.ui.theme.MochiTheme
+import com.openclaw.remote.viewmodel.ChatViewModel
 import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
@@ -145,6 +153,8 @@ enum class AndroidRootTab(val label: String) {
 data class RootNavigationState(
     val selectedTab: AndroidRootTab = AndroidRootTab.AGENTS,
     val openChatProfileId: String? = null,
+    val openCodexProfileId: String? = null,
+    val openCodexSessionId: String? = null,
     val isProviderChatOpen: Boolean = false,
     val openAgentConfigProfileId: String? = null,
 )
@@ -173,6 +183,7 @@ fun RootTabsScreen(
     settingsManager: SettingsManager,
     config: GatewayConfig,
     authClient: GatewayAuthClient,
+    chatViewModel: ChatViewModel,
     profiles: List<AgentProfile>,
     selectedProfileId: String,
     profileStatuses: Map<String, AgentAvailabilityStatus>,
@@ -203,6 +214,7 @@ fun RootTabsScreen(
     val colors = MochiTheme.colors
     val context = LocalContext.current
     val aiSettings by settingsManager.aiSettingsFlow.collectAsState(initial = AiServiceSettings())
+    val codexAgentPreviews by chatViewModel.codexAgentPreviews.collectAsState()
     val recordingPrefs = remember(context) {
         context.getSharedPreferences("openclaw_recordings", Context.MODE_PRIVATE)
     }
@@ -257,6 +269,44 @@ fun RootTabsScreen(
                 onBack = { onNavigationStateChange(navigationState.copy(isProviderChatOpen = false)) },
             )
             return
+        }
+        navigationState.openCodexProfileId != null && navigationState.openCodexSessionId != null -> {
+            val profile = profiles.firstOrNull { it.id == navigationState.openCodexProfileId }
+            if (profile != null) {
+                CodexSessionChatScreen(
+                    profile = profile,
+                    sessionId = navigationState.openCodexSessionId,
+                    viewModel = chatViewModel,
+                    onBack = {
+                        onNavigationStateChange(navigationState.copy(openCodexSessionId = null))
+                    },
+                )
+                return
+            }
+        }
+        navigationState.openCodexProfileId != null -> {
+            val profile = profiles.firstOrNull { it.id == navigationState.openCodexProfileId }
+            if (profile != null) {
+                CodexSessionListScreen(
+                    profile = profile,
+                    status = profileStatuses[profile.id] ?: AgentAvailabilityStatus.UNCONFIGURED,
+                    viewModel = chatViewModel,
+                    onBack = {
+                        onNavigationStateChange(
+                            navigationState.copy(openCodexProfileId = null, openCodexSessionId = null)
+                        )
+                    },
+                    onOpenSettings = {
+                        onNavigationStateChange(
+                            navigationState.copy(openAgentConfigProfileId = profile.id)
+                        )
+                    },
+                    onOpenSession = { sessionId ->
+                        onNavigationStateChange(navigationState.copy(openCodexSessionId = sessionId))
+                    },
+                )
+                return
+            }
         }
         navigationState.openChatProfileId != null -> {
             Column(
@@ -335,13 +385,24 @@ fun RootTabsScreen(
                     profiles = profiles,
                     selectedProfileId = selectedProfileId,
                     profileStatuses = profileStatuses,
+                    codexAgentPreviews = codexAgentPreviews,
                     onOpenProviderChat = {
                         onNavigationStateChange(navigationState.copy(isProviderChatOpen = true))
                     },
                     onOpenProfileChat = { profileId ->
                         onSelectProfile(profileId)
                         onOpenProfileChat(profileId)
-                        onNavigationStateChange(navigationState.copy(openChatProfileId = profileId))
+                        val profile = profiles.firstOrNull { it.id == profileId }
+                        if (profile?.platform == AgentPlatform.CODEX) {
+                            onNavigationStateChange(
+                                navigationState.copy(
+                                    openCodexProfileId = profileId,
+                                    openCodexSessionId = null,
+                                )
+                            )
+                        } else {
+                            onNavigationStateChange(navigationState.copy(openChatProfileId = profileId))
+                        }
                     },
                     onOpenQrScanner = onOpenQrScanner,
                     onDeleteProfile = onDeleteProfile,
@@ -395,6 +456,7 @@ private fun AgentsTabScreen(
     profiles: List<AgentProfile>,
     selectedProfileId: String,
     profileStatuses: Map<String, AgentAvailabilityStatus>,
+    codexAgentPreviews: Map<String, String>,
     onOpenProviderChat: () -> Unit,
     onOpenProfileChat: (String) -> Unit,
     onOpenQrScanner: () -> Unit,
@@ -448,6 +510,7 @@ private fun AgentsTabScreen(
                             profile = profile,
                             selected = profile.id == selectedProfileId,
                             status = profileStatuses[profile.id] ?: AgentAvailabilityStatus.UNCONFIGURED,
+                            codexPreview = codexAgentPreviews[profile.id],
                             onOpen = { onOpenProfileChat(profile.id) },
                             onDelete = { onDeleteProfile(profile.id) },
                             onTogglePin = { onToggleProfilePin(profile.id, !profile.isPinned) },
@@ -496,6 +559,7 @@ private fun AgentRow(
     profile: AgentProfile,
     selected: Boolean,
     status: AgentAvailabilityStatus,
+    codexPreview: String?,
     onOpen: () -> Unit,
     onDelete: () -> Unit,
     onTogglePin: () -> Unit,
@@ -537,7 +601,8 @@ private fun AgentRow(
                 overflow = TextOverflow.Ellipsis,
             )
             Text(
-                profile.backendLabel?.takeIf { it.isNotBlank() }
+                codexPreview?.takeIf { profile.platform == AgentPlatform.CODEX && it.isNotBlank() }
+                    ?: profile.backendLabel?.takeIf { it.isNotBlank() }
                     ?: profile.backendId.ifBlank { "暂无最近消息" },
                 fontSize = 12.sp,
                 color = MochiTheme.colors.textSecondary,
@@ -559,6 +624,286 @@ private fun AgentRow(
         }
         TextButton(onClick = onDelete) {
             Text("删除", color = MaterialTheme.colorScheme.error)
+        }
+    }
+}
+
+@Composable
+private fun CodexSessionListScreen(
+    profile: AgentProfile,
+    status: AgentAvailabilityStatus,
+    viewModel: ChatViewModel,
+    onBack: () -> Unit,
+    onOpenSettings: () -> Unit,
+    onOpenSession: (String) -> Unit,
+) {
+    val colors = MochiTheme.colors
+    val sessionsByProfile by viewModel.codexSessions.collectAsState()
+    val archivedByProfile by viewModel.codexArchivedSessions.collectAsState()
+    val createdSessionIds by viewModel.codexCreatedSessionIds.collectAsState()
+    var mode by remember { mutableStateOf(CodexSessionGroupingMode.TIME) }
+    var showingArchived by remember { mutableStateOf(false) }
+    var query by remember { mutableStateOf("") }
+    var menuExpanded by remember { mutableStateOf(false) }
+    var handledCreatedSessionId by remember(profile.id) { mutableStateOf<String?>(null) }
+    val loadedSessions = if (showingArchived) {
+        archivedByProfile[profile.id].orEmpty()
+    } else {
+        sessionsByProfile[profile.id].orEmpty()
+    }
+    val filteredSessions = loadedSessions.filter { session ->
+        val q = query.trim().lowercase()
+        q.isEmpty() || listOf(
+            session.displayTitle,
+            session.displayPreview,
+            session.displayProjectName,
+            session.projectPath,
+            session.model.orEmpty(),
+        ).joinToString(" ").lowercase().contains(q)
+    }
+    val groups = groupCodexSessions(filteredSessions, mode)
+
+    LaunchedEffect(profile.id, showingArchived) {
+        viewModel.requestCodexSessions(profile.id, archived = showingArchived)
+    }
+    LaunchedEffect(createdSessionIds[profile.id]) {
+        val sessionId = createdSessionIds[profile.id] ?: return@LaunchedEffect
+        if (sessionId != handledCreatedSessionId) {
+            handledCreatedSessionId = sessionId
+            onOpenSession(sessionId)
+        }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(colors.background)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(56.dp)
+                .padding(horizontal = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconButton(onClick = onBack) {
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+            }
+            Column(modifier = Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                Text("Codex", fontWeight = FontWeight.SemiBold, maxLines = 1)
+                Text(
+                    "${profile.backendLabel?.takeIf { it.isNotBlank() } ?: profile.backendId} · ${status.label}",
+                    fontSize = 12.sp,
+                    color = colors.textSecondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Box {
+                IconButton(onClick = { menuExpanded = true }) {
+                    Icon(Icons.Filled.MoreHoriz, contentDescription = "Codex menu")
+                }
+                DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
+                    DropdownMenuItem(
+                        text = { Text("按项目") },
+                        onClick = {
+                            mode = CodexSessionGroupingMode.PROJECT
+                            menuExpanded = false
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("按时间顺序排列的列表") },
+                        onClick = {
+                            mode = CodexSessionGroupingMode.TIME
+                            menuExpanded = false
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text(if (showingArchived) "当前会话" else "已归档会话") },
+                        onClick = {
+                            showingArchived = !showingArchived
+                            menuExpanded = false
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("设置") },
+                        onClick = {
+                            menuExpanded = false
+                            onOpenSettings()
+                        },
+                    )
+                }
+            }
+        }
+
+        LazyColumn(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth(),
+            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            if (groups.isEmpty()) {
+                item {
+                    EmptyState(
+                        title = if (showingArchived) "没有已归档会话" else "还没有 Codex 会话",
+                        subtitle = "点击聊天创建新的 Codex session",
+                    )
+                }
+            } else {
+                groups.forEach { group ->
+                    item {
+                        Text(group.title, fontWeight = FontWeight.SemiBold, color = colors.textPrimary)
+                    }
+                    items(group.sessions) { session ->
+                        CodexSessionRow(
+                            session = session,
+                            onOpen = { onOpenSession(session.sessionId) },
+                            onArchiveToggle = {
+                                if (showingArchived) {
+                                    viewModel.unarchiveCodexSession(profile.id, session.sessionId)
+                                } else {
+                                    viewModel.archiveCodexSession(profile.id, session.sessionId)
+                                }
+                            },
+                            archived = showingArchived,
+                        )
+                    }
+                }
+            }
+        }
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            OutlinedTextField(
+                value = query,
+                onValueChange = { query = it },
+                modifier = Modifier.weight(1f),
+                placeholder = { Text("搜索聊天记录") },
+                singleLine = true,
+            )
+            Spacer(Modifier.width(8.dp))
+            Button(onClick = { viewModel.createCodexSession(profile.id) }) {
+                Icon(Icons.Filled.Chat, contentDescription = null)
+                Spacer(Modifier.width(6.dp))
+                Text("聊天")
+            }
+        }
+    }
+}
+
+@Composable
+private fun CodexSessionRow(
+    session: CodexSessionSummary,
+    archived: Boolean,
+    onOpen: () -> Unit,
+    onArchiveToggle: () -> Unit,
+) {
+    IosPlainRow(onClick = onOpen) {
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(
+                session.displayTitle,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                session.displayPreview,
+                fontSize = 13.sp,
+                color = MochiTheme.colors.textSecondary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                session.displayProjectName,
+                fontSize = 12.sp,
+                color = MochiTheme.colors.textSecondary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        TextButton(onClick = onArchiveToggle) {
+            Text(if (archived) "恢复" else "归档")
+        }
+    }
+}
+
+@Composable
+private fun CodexSessionChatScreen(
+    profile: AgentProfile,
+    sessionId: String,
+    viewModel: ChatViewModel,
+    onBack: () -> Unit,
+) {
+    val colors = MochiTheme.colors
+    val sessionsByProfile by viewModel.codexSessions.collectAsState()
+    val messagesByProfileSession by viewModel.codexMessagesByProfileSession.collectAsState()
+    val session = sessionsByProfile[profile.id].orEmpty().firstOrNull { it.sessionId == sessionId }
+    val messages = messagesByProfileSession[profile.id]?.get(sessionId).orEmpty()
+    var input by remember { mutableStateOf("") }
+
+    LaunchedEffect(profile.id, sessionId) {
+        viewModel.requestCodexHistory(profile.id, sessionId)
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(colors.background)
+    ) {
+        ScreenTopBar(
+            title = session?.displayTitle ?: "Codex",
+            onBack = onBack,
+        )
+        LazyColumn(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth(),
+            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            if (messages.isEmpty()) {
+                item {
+                    EmptyState(title = "开始 Codex 会话", subtitle = "发送文本后将写入当前 session")
+                }
+            } else {
+                items(messages) { message ->
+                    MessageBubble(
+                        message = message,
+                        isUser = message.senderId == "user",
+                    )
+                }
+            }
+        }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            OutlinedTextField(
+                value = input,
+                onValueChange = { input = it },
+                modifier = Modifier.weight(1f),
+                minLines = 1,
+                maxLines = 4,
+                placeholder = { Text("输入消息") },
+            )
+            Spacer(Modifier.width(8.dp))
+            Button(
+                enabled = input.isNotBlank(),
+                onClick = {
+                    val text = input.trim()
+                    input = ""
+                    viewModel.sendCodexText(profile.id, sessionId, text)
+                },
+            ) {
+                Icon(Icons.Filled.Send, contentDescription = "Send")
+            }
         }
     }
 }

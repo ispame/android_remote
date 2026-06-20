@@ -28,3 +28,6 @@ targets:
       base:
         PRODUCT_NAME: OpenClawRemote
         DEVELOPMENT_TEAM: ""
+        # Personal development teams cannot sign the Push Notifications entitlement.
+        # Use OpenClawRemotePush.entitlements only with a paid Apple Developer Team.
+        CODE_SIGN_ENTITLEMENTS: OpenClawRemote.entitlements

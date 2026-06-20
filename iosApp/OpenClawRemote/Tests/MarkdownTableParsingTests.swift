@@ -4,8 +4,10 @@ import Foundation
 struct MarkdownTableParsingTests {
     static func main() throws {
         try testMarkdownTableExportsMarkdownAndCsv()
-        try testTableWithTenRowsShowsAllRows()
-        try testTableWithMoreThanTenRowsDefaultsToFirstTenRows()
+        try testTableWithTwentyRowsShowsAllRows()
+        try testTableWithMoreThanTwentyRowsDefaultsToFirstTwentyRows()
+        try testFourColumnTablesFitInlinePreview()
+        try testWiderTablesKeepScrollablePreview()
         try testNonTableTextIsNotParsedAsTable()
         print("MarkdownTableParsingTests passed")
     }
@@ -42,25 +44,46 @@ struct MarkdownTableParsingTests {
         )
     }
 
-    private static func testTableWithTenRowsShowsAllRows() throws {
+    private static func testTableWithTwentyRowsShowsAllRows() throws {
         let table = MarkdownTable(
             headers: ["股票代码", "公司名称"],
-            rows: (1...10).map { ["00\($0)", "公司\($0)"] }
+            rows: (1...20).map { ["00\($0)", "公司\($0)"] }
         )
 
-        try expect(!table.shouldFoldRows, "10-row table should not show a table fold control")
-        try expect(table.visibleRows(isExpanded: false).count == 10, "10-row table should show all rows")
+        try expect(!table.shouldFoldRows, "20-row table should not show a table fold control")
+        try expect(table.visibleRows(isExpanded: false).count == 20, "20-row table should show all rows")
     }
 
-    private static func testTableWithMoreThanTenRowsDefaultsToFirstTenRows() throws {
+    private static func testTableWithMoreThanTwentyRowsDefaultsToFirstTwentyRows() throws {
         let table = MarkdownTable(
             headers: ["股票代码", "公司名称"],
-            rows: (1...11).map { ["00\($0)", "公司\($0)"] }
+            rows: (1...21).map { ["00\($0)", "公司\($0)"] }
         )
 
-        try expect(table.shouldFoldRows, "11-row table should show a table fold control")
-        try expect(table.visibleRows(isExpanded: false).count == 10, "11-row table should default to 10 visible rows")
-        try expect(table.visibleRows(isExpanded: true).count == 11, "expanded table should show every row")
+        try expect(table.shouldFoldRows, "21-row table should show a table fold control")
+        try expect(table.visibleRows(isExpanded: false).count == 20, "21-row table should default to 20 visible rows")
+        try expect(table.visibleRows(isExpanded: true).count == 21, "expanded table should show every row")
+    }
+
+    private static func testFourColumnTablesFitInlinePreview() throws {
+        let table = MarkdownTable(
+            headers: ["", "名称", "调度", "下次"],
+            rows: [
+                ["1", "美股早报", "每天 8:00", "6/21 周日"],
+                ["2", "杭州早安天气", "每天 7:55", "6/21 7:55"]
+            ]
+        )
+
+        try expect(table.shouldFitInlineColumns, "four-column task tables should fit within the inline conversation preview")
+    }
+
+    private static func testWiderTablesKeepScrollablePreview() throws {
+        let table = MarkdownTable(
+            headers: ["A", "B", "C", "D", "E"],
+            rows: [["1", "2", "3", "4", "5"]]
+        )
+
+        try expect(!table.shouldFitInlineColumns, "wide tables should keep horizontal scrolling instead of over-compressing columns")
     }
 
     private static func testNonTableTextIsNotParsedAsTable() throws {

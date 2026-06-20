@@ -5,7 +5,7 @@ struct MessageContentAnalysisTests {
     static func main() throws {
         try testTenLinesAreNotCollapsed()
         try testElevenLinesAreCollapsed()
-        try testTenRowMarkdownTableIsNotCollapsedByMessageAnalysis()
+        try testTwentyRowMarkdownTableIsNotCollapsedByMessageAnalysis()
         try testLongMarkdownTableIsNotCollapsedByMessageAnalysis()
         print("MessageContentAnalysisTests passed")
     }
@@ -24,15 +24,15 @@ struct MessageContentAnalysisTests {
         try expect(analysis.kind == .longText, "11-line message should collapse")
     }
 
-    private static func testTenRowMarkdownTableIsNotCollapsedByMessageAnalysis() throws {
-        let table = markdownTable(rowCount: 10)
+    private static func testTwentyRowMarkdownTableIsNotCollapsedByMessageAnalysis() throws {
+        let table = markdownTable(rowCount: 20)
         let analysis = analyzeMessageContent(table)
 
-        try expect(analysis.kind == .normal, "10-row markdown table should not be truncated by message analysis")
+        try expect(analysis.kind == .normal, "20-row markdown table should not be truncated by message analysis")
     }
 
     private static func testLongMarkdownTableIsNotCollapsedByMessageAnalysis() throws {
-        let table = markdownTable(rowCount: 11)
+        let table = markdownTable(rowCount: 21)
         let analysis = analyzeMessageContent(table)
 
         try expect(analysis.kind == .normal, "long markdown table should be handled by table row folding, not message analysis")
