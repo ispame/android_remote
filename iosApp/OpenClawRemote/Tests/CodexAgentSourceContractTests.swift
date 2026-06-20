@@ -42,6 +42,7 @@ struct CodexAgentSourceContractTests {
         try expect(!app.contains("Agent 配置同步失败，请稍后重试"), "Account sync failure should not block local pairing")
         try expect(codexViews.contains("requestSessionsOrPair()"), "Codex session screen should pair/retry before showing an empty list")
         try expect(codexViews.contains("Mac-mini.local"), "Codex session header should avoid showing the Hermes label")
+        try expect(codexViews.contains("codexFallbackProfile"), "Codex chat should not fall back to the currently selected Hermes profile")
         print("CodexAgentSourceContractTests passed")
     }
 

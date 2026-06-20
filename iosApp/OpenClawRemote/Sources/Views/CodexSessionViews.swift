@@ -363,7 +363,17 @@ struct CodexSessionChatScreen: View {
     }
 
     private var profile: AgentProfile {
-        settingsManager.profiles.first { $0.id == profileId } ?? settingsManager.selectedProfile
+        settingsManager.profiles.first { $0.id == profileId } ?? codexFallbackProfile
+    }
+
+    private var codexFallbackProfile: AgentProfile {
+        AgentProfile(
+            platform: .codex,
+            displayName: "Codex",
+            gatewayUrl: AgentProfile.canonicalWebSocketGatewayUrl(""),
+            backendId: "",
+            backendLabel: nil
+        )
     }
 
     var body: some View {
